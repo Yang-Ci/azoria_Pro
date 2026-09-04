@@ -144,6 +144,9 @@ AZORIA Desktop 的渲染进程没有 Node.js 权限，硬件操作通过白名�
 校验后保存到本机配置目录，不允许指定命令、可执行文件或网络地址。验证成熟的配置表
 可以直接加入 `desktop/profiles/`，随之后的软件版本内置。
 
+AOC U27P10 使用视频链路 DDC/CI，现场验证步骤见
+[docs/aoc-u27p10-field-test.md](docs/aoc-u27p10-field-test.md)。
+
 USB HID 报文封装可能因厂商而异，因此配置表只能引用软件内置的命名适配器，不能自行
 注入底层报文或程序路径。当前内置 `lg-monitor-controls-v1`；增加其他厂商时先实现并审计
 对应适配器，再由配置表完成型号匹配和 VCP 路由。

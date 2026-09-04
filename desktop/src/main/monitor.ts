@@ -211,9 +211,20 @@ export class MonitorController {
 
   private async detectDisplayName(): Promise<string> {
     try {
-      const payload = JSON.parse(await this.command("system_profiler", ["SPDisplaysDataType", "-json"], 8000))
-      return collectDisplayNames(payload)[0] || "外接显示器"
+      if (process.platform === "darwin") {
+        const payload = JSON.parse(await this.command("system_profiler", ["SPDisplaysDataType", "-json"], 8000))
+        return collectDisplayNames(payload)[0] || "外接显示器"
+      }
+      const result = await this.sidecar({ operation: "enumerate" })
+      if (Array.isArray(result) && result.length > 0) {
+        const display = result[0] as { manufacturer?: unknown; model?: unknown }
+        const manufacturer = typeof display.manufacturer === "string" ? display.manufacturer.trim() : ""
+        const model = typeof display.model === "string" ? display.model.trim() : ""
+        const name = [manufacturer, model].filter(Boolean).join(" ")
+        if (name) return name
+      }
     } catch { return "外接显示器" }
+    return "外接显示器"
   }
 
   private async probeHidDdc(): Promise<{ vendorId: number; productId: number } | undefined> {

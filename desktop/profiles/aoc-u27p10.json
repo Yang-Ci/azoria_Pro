@@ -1,0 +1,25 @@
+{
+  "id": "aoc-u27p10",
+  "name": "AOC U27P10",
+  "match": {
+    "displayNamePattern": "AOC.*U27P10"
+  },
+  "transports": ["video-ddc"],
+  "ddc": {
+    "inputReadValues": {
+      "15": "dp1",
+      "16": "dp1",
+      "17": "hdmi1",
+      "18": "hdmi2",
+      "27": "usbc",
+      "3840": "usbc"
+    },
+    "inputWriteValues": {
+      "dp1": "15",
+      "hdmi1": "17",
+      "hdmi2": "18",
+      "usbc": "27"
+    },
+    "inputWriteFeature": "input"
+  }
+}
