@@ -33,6 +33,7 @@ const inputOptions: Array<{ value: InputSource; label: string }> = [
 function transportLabel(transport: MonitorTransport) {
   if (transport === "usb-hid-ddc") return "USB HID → DDC/CI"
   if (transport === "video-ddc") return "视频链路 → DDC/CI"
+  if (transport === "internal-panel") return "Windows 内屏 WMI"
   return "不可用"
 }
 
@@ -92,6 +93,21 @@ export function ProfileWizard({ onConnectionChange }: { onConnectionChange(conne
     }
     catch (cause) {
       setError(cause instanceof Error ? cause.message : "配置应用失败")
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
+  const changeDisplay = async (displayId: string) => {
+    setBusy(true)
+    try {
+      const connection = await window.azoria.monitor.selectDisplay(displayId)
+      onConnectionChange(connection)
+      await load(true)
+    }
+    catch (cause) {
+      setError(cause instanceof Error ? cause.message : "显示器切换失败")
     }
     finally {
       setBusy(false)
@@ -163,6 +179,7 @@ export function ProfileWizard({ onConnectionChange }: { onConnectionChange(conne
 
   const selectedProfile = info?.profiles.find((profile) => profile.id === selectedProfileId)
   const activeProfile = info?.profiles.find((profile) => profile.id === info.selectedProfileId)
+  const internalPanel = info?.activeTransport === "internal-panel"
 
   return (
     <Dialog
@@ -196,6 +213,17 @@ export function ProfileWizard({ onConnectionChange }: { onConnectionChange(conne
 
         {step === 0 && (
           <div className="space-y-3">
+            <div className="grid grid-cols-[80px_1fr] items-center gap-4">
+              <Label>目标</Label>
+              <Select value={info?.activeDisplayId ?? ""} onValueChange={(value) => void changeDisplay(value)}>
+                <SelectTrigger disabled={busy}><SelectValue placeholder="选择显示器" /></SelectTrigger>
+                <SelectContent>
+                  {info?.displays.map((display) => (
+                    <SelectItem key={display.id} value={display.id}>{display.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <InfoRow label="显示器" value={info?.displayName ?? "--"} />
             <InfoRow label="可用路径" value={info?.availableTransports.map(transportLabel).join(" / ") || "--"} />
             <InfoRow label="USB HID" value={info?.detectedUsbHid ? `${info.detectedUsbHid.vendorId} / ${info.detectedUsbHid.productId}` : "--"} />
@@ -242,7 +270,9 @@ export function ProfileWizard({ onConnectionChange }: { onConnectionChange(conne
             <div className="flex items-center gap-4">
               <Button variant="outline" disabled={busy} onClick={() => void readStatus()}><RefreshCw />读取状态</Button>
               <span className="font-mono text-sm tabular-nums text-zinc-400">
-                亮度 {status?.brightness ?? "--"} · 音量 {status?.volume ?? "--"} · 输入 {status?.input ?? "--"}
+                {internalPanel
+                  ? `亮度 ${status?.brightness ?? "--"}`
+                  : `亮度 ${status?.brightness ?? "--"} · 音量 ${status?.volume ?? "--"} · 输入 {status?.input ?? "--"}`}
               </span>
             </div>
             <Separator />
@@ -257,7 +287,7 @@ export function ProfileWizard({ onConnectionChange }: { onConnectionChange(conne
             <Separator />
             <div className="grid grid-cols-[80px_1fr] items-center gap-4">
               <Label>输入源</Label>
-              <Select value={input} onValueChange={(next) => setInput(next as InputSource)}>
+              <Select value={input} onValueChange={(next) => setInput(next as InputSource)} disabled={internalPanel}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {inputOptions.map((option) => (
@@ -267,7 +297,7 @@ export function ProfileWizard({ onConnectionChange }: { onConnectionChange(conne
               </Select>
             </div>
             <div className="flex justify-end">
-              <Button variant="outline" disabled={busy} onClick={() => void writeInput()}>切换输入源</Button>
+              <Button variant="outline" disabled={busy || internalPanel} onClick={() => void writeInput()}>切换输入源</Button>
             </div>
           </div>
         )}

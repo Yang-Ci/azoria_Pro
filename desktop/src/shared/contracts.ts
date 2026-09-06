@@ -1,6 +1,6 @@
 export type InputSource = "dp1" | "hdmi1" | "hdmi2" | "usbc"
 export type ControlName = "brightness" | "volume" | "mute" | "input"
-export type MonitorTransport = "usb-hid-ddc" | "video-ddc" | "unavailable"
+export type MonitorTransport = "usb-hid-ddc" | "video-ddc" | "internal-panel" | "unavailable"
 
 export interface MonitorStatus {
   brightness: number
@@ -17,12 +17,28 @@ export interface ControlRequest {
 }
 
 export interface MonitorConnectionInfo {
+  displayId: string
   displayName: string
   profileId: string
   profileName: string
   summary: string
   availableTransports: MonitorTransport[]
   transport: MonitorTransport
+}
+
+export interface MonitorDisplaySummary {
+  id: string
+  index: number
+  name: string
+  manufacturer?: string
+  model?: string
+  driver?: string
+  transport?: MonitorTransport
+}
+
+export interface MonitorDisplayList {
+  activeDisplayId: string
+  displays: MonitorDisplaySummary[]
 }
 
 export type MonitorProfileSource = "built-in" | "user"
@@ -38,6 +54,8 @@ export interface MonitorProfileSummary {
 }
 
 export interface MonitorProfileWizardInfo {
+  activeDisplayId: string
+  displays: MonitorDisplaySummary[]
   displayName: string
   activeTransport: MonitorTransport
   availableTransports: MonitorTransport[]
@@ -136,6 +154,8 @@ export interface DesktopApi {
     relayControl(request: ControlRequest, sourceNonce: string, sourceCommandId: string): Promise<ControlRequest["value"]>
     connection(): Promise<MonitorConnectionInfo>
     importProfile(): Promise<MonitorConnectionInfo | null>
+    listDisplays(): Promise<MonitorDisplayList>
+    selectDisplay(displayId: string): Promise<MonitorConnectionInfo>
     profileWizard(force?: boolean): Promise<MonitorProfileWizardInfo>
     activateProfile(profileId: string): Promise<MonitorConnectionInfo>
     resetProfile(): Promise<MonitorConnectionInfo>

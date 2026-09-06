@@ -1,0 +1,8 @@
+{
+  "id": "internal-panel",
+  "name": "Windows 内屏",
+  "match": {
+    "displayNamePattern": "^笔记本内屏"
+  },
+  "transports": ["internal-panel"]
+}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Activity, Bluetooth, Cable, Check, FileUp, Radio, RefreshCw, Router, Settings, ShieldCheck, Sun, Volume2, VolumeX, Zap } from "lucide-react"
-import type { ControlName, DiagnosticsReport, FirmwareImage, InputSource, LanDevice, MonitorConnectionInfo, MonitorStatus, MonitorTransport, UsbDevice } from "../../shared/contracts"
+import type { ControlName, DiagnosticsReport, FirmwareImage, InputSource, LanDevice, MonitorConnectionInfo, MonitorDisplaySummary, MonitorStatus, MonitorTransport, UsbDevice } from "../../shared/contracts"
 import { connectBle } from "./ble"
 import { AzoriaDesktopBrand } from "./components/brand"
 import { ProfileWizard } from "./components/profile-wizard"
@@ -17,7 +17,7 @@ import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 const emptyStatus: MonitorStatus = { brightness: 50, volume: 20, mute: false, input: "usbc" }
-const emptyConnection: MonitorConnectionInfo = { displayName: "未检测到显示器", profileId: "generic-ddc", profileName: "通用 DDC/CI 显示器", summary: "未连接", availableTransports: [], transport: "unavailable" }
+const emptyConnection: MonitorConnectionInfo = { displayId: "1", displayName: "未检测到显示器", profileId: "generic-ddc", profileName: "通用 DDC/CI 显示器", summary: "未连接", availableTransports: [], transport: "unavailable" }
 const inputs: Array<{ value: InputSource; label: string }> = [
   { value: "dp1", label: "DisplayPort" }, { value: "hdmi1", label: "HDMI 1" },
   { value: "hdmi2", label: "HDMI 2" }, { value: "usbc", label: "USB-C" },
@@ -36,6 +36,7 @@ function MetricSlider({ icon, label, value, disabled, onCommit, onEditingChange 
 function transportLabel(transport: MonitorTransport) {
   if (transport === "usb-hid-ddc") return "USB HID → DDC/CI"
   if (transport === "video-ddc") return "视频链路 → DDC/CI"
+  if (transport === "internal-panel") return "Windows 内屏 WMI"
   return "不可用"
 }
 
@@ -54,6 +55,8 @@ export default function App() {
   const [developerMode, setDeveloperMode] = useState(() => localStorage.getItem("azoria.developerMode") === "1")
   const [status, setStatus] = useState(emptyStatus)
   const [connection, setConnection] = useState(emptyConnection)
+  const [displays, setDisplays] = useState<MonitorDisplaySummary[]>([])
+  const [activeDisplayId, setActiveDisplayId] = useState("1")
   const [online, setOnline] = useState(false)
   const [busy, setBusy] = useState(false)
   const [pendingControls, setPendingControls] = useState<Set<ControlName>>(() => new Set())
@@ -82,7 +85,19 @@ export default function App() {
   const refresh = useCallback(async () => {
     try { setStatus(await window.azoria.monitor.status()); setOnline(true); setMessage("显示器已连接") }
     catch (error) { setOnline(false); setMessage(error instanceof Error ? error.message : "显示器未连接") }
-    try { setConnection(await window.azoria.monitor.connection()) } catch { /* Keep the last detected route visible. */ }
+    try {
+      const next = await window.azoria.monitor.connection()
+      setConnection(next)
+      setActiveDisplayId(next.displayId)
+    } catch { /* Keep the last detected route visible. */ }
+  }, [])
+  const refreshDisplays = useCallback(async () => {
+    try {
+      const next = await window.azoria.monitor.listDisplays()
+      setDisplays(next.displays)
+      setActiveDisplayId(next.activeDisplayId)
+    }
+    catch { /* DDC/CI enumeration is retried when the display page refreshes. */ }
   }, [])
   const refreshSnapshot = useCallback(async () => {
     try { setStatus(await window.azoria.monitor.statusSnapshot()); setOnline(true) }
@@ -103,6 +118,29 @@ export default function App() {
       setBusy(false)
     }
   }, [])
+  const changeDisplay = useCallback(async (displayId: string) => {
+    setBusy(true)
+    try {
+      const connection = await window.azoria.monitor.selectDisplay(displayId)
+      setConnection(connection)
+      setActiveDisplayId(connection.displayId)
+      try {
+        setStatus(await window.azoria.monitor.status())
+        setOnline(true)
+        setMessage(`已切换到 ${connection.displayName}`)
+      }
+      catch {
+        setOnline(false)
+        setMessage(`已切换到 ${connection.displayName}，DDC/CI 暂不可用`)
+      }
+    }
+    catch (error) {
+      setMessage(error instanceof Error ? error.message : "显示器切换失败")
+    }
+    finally {
+      setBusy(false)
+    }
+  }, [])
   const refreshLan = useCallback(async () => {
     try { setLanDevices(await window.azoria.device.listLan()) }
     catch { /* Preserve the last known device until its main-process lease expires. */ }
@@ -115,6 +153,7 @@ export default function App() {
     if (!initializedRef.current) {
       initializedRef.current = true
       void refresh()
+      void refreshDisplays()
       void detectUsb()
       void discoverLan()
     }
@@ -126,7 +165,7 @@ export default function App() {
     const diagnosticsTimer = window.setInterval(() => void refreshDiagnostics(), 2000)
     void refreshDiagnostics()
     return () => { window.clearInterval(statusTimer); window.clearInterval(connectionTimer); window.clearInterval(lanTimer); window.clearInterval(diagnosticsTimer) }
-  }, [refresh, detectUsb, discoverLan, refreshLan, refreshSnapshot, refreshDiagnostics])
+  }, [refresh, refreshDisplays, detectUsb, discoverLan, refreshLan, refreshSnapshot, refreshDiagnostics])
 
   const setControl = async (control: ControlName, value: number | boolean | InputSource) => {
     pendingCountRef.current++
@@ -144,6 +183,7 @@ export default function App() {
     }
   }
   const selectedDevice = useMemo(() => usb.find((device) => device.path === selectedUsb), [usb, selectedUsb])
+  const internalPanel = connection.transport === "internal-panel"
   const scanWifi = () => { setBusy(true); void window.azoria.device.scanWifi(selectedUsb).then(setNetworks).catch((error) => setMessage(String(error))).finally(() => setBusy(false)) }
   const saveWifi = () => { setBusy(true); void window.azoria.device.configureWifi(selectedUsb, ssid, password).then(() => { setPassword(""); setMessage("AZORIA Touch Wi‑Fi 配置完成") }).catch((error) => setMessage(String(error))).finally(() => setBusy(false)) }
   const prepareBluetooth = () => { setBusy(true); void window.azoria.device.prepareBle(selectedUsb).then(() => { setBlePrepared(true); setMessage("AZORIA Touch 蓝牙已就绪") }).catch((error) => setMessage(error instanceof Error ? error.message : "蓝牙配对准备失败")).finally(() => setBusy(false)) }
@@ -189,8 +229,22 @@ export default function App() {
         </TabsList>
 
         <TabsContent value="control" className="grid gap-5 lg:grid-cols-[1.45fr_.7fr]">
-          <Card><CardHeader><CardTitle>显示器控制</CardTitle><CardDescription>{connection.displayName}</CardDescription></CardHeader><CardContent><MetricSlider icon={<Sun />} label="亮度" value={status.brightness} disabled={pendingControls.has("brightness") || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("brightness", value)} /><Separator /><MetricSlider icon={<Volume2 />} label="音量" value={status.volume} disabled={pendingControls.has("volume") || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("volume", value)} /></CardContent></Card>
-          <div className="grid gap-5"><Card><CardHeader><CardTitle>输入源</CardTitle></CardHeader><CardContent className="grid grid-cols-2 gap-2">{inputs.map((input) => <Button key={input.value} variant={status.input === input.value ? "default" : "outline"} className="h-12" disabled={pendingControls.has("input") || !online} onClick={() => void setControl("input", input.value)}>{status.input === input.value && <Check />}{input.label}</Button>)}</CardContent></Card><Card><CardContent className="pt-6"><Button variant={status.mute ? "default" : "outline"} className="h-12 w-full" disabled={pendingControls.has("mute") || !online} onClick={() => void setControl("mute", !status.mute)}>{status.mute ? <VolumeX /> : <Volume2 />}{status.mute ? "取消静音" : "静音"}</Button></CardContent></Card></div>
+          <Card>
+            <CardHeader className="flex flex-row items-start justify-between space-y-0">
+              <div>
+                <CardTitle>显示器控制</CardTitle>
+                <CardDescription>{connection.displayName}</CardDescription>
+              </div>
+              <Select value={activeDisplayId} onValueChange={(value) => void changeDisplay(value)}>
+                <SelectTrigger className="w-56"><SelectValue placeholder="选择显示器" /></SelectTrigger>
+                <SelectContent>
+                  {displays.map((display) => <SelectItem key={display.id} value={display.id}>{display.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </CardHeader>
+            <CardContent><MetricSlider icon={<Sun />} label="亮度" value={status.brightness} disabled={pendingControls.has("brightness") || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("brightness", value)} /><Separator /><MetricSlider icon={<Volume2 />} label="音量" value={status.volume} disabled={internalPanel || pendingControls.has("volume") || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("volume", value)} /></CardContent>
+          </Card>
+          <div className="grid gap-5"><Card><CardHeader><CardTitle>输入源</CardTitle></CardHeader><CardContent className="grid grid-cols-2 gap-2">{inputs.map((input) => <Button key={input.value} variant={status.input === input.value ? "default" : "outline"} className="h-12" disabled={internalPanel || pendingControls.has("input") || !online} onClick={() => void setControl("input", input.value)}>{status.input === input.value && <Check />}{input.label}</Button>)}</CardContent></Card><Card><CardContent className="pt-6"><Button variant={status.mute ? "default" : "outline"} className="h-12 w-full" disabled={internalPanel || pendingControls.has("mute") || !online} onClick={() => void setControl("mute", !status.mute)}>{status.mute ? <VolumeX /> : <Volume2 />}{status.mute ? "取消静音" : "静音"}</Button></CardContent></Card></div>
         </TabsContent>
 
         <TabsContent value="touch" className="grid gap-5 lg:grid-cols-2">

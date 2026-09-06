@@ -7,6 +7,7 @@ import type {
   ControlName,
   ControlRequest,
   InputSource,
+  MonitorDisplaySummary,
   MonitorConnectionInfo,
   MonitorProfileMatchState,
   MonitorProfileSource,
@@ -19,7 +20,7 @@ import type { LocalLogger } from "./logger"
 const run = promisify(execFile)
 const controls: ControlName[] = ["brightness", "volume", "mute", "input"]
 const inputSources: InputSource[] = ["dp1", "hdmi1", "hdmi2", "usbc"]
-const transportIds: MonitorTransport[] = ["usb-hid-ddc", "video-ddc"]
+const transportIds: MonitorTransport[] = ["usb-hid-ddc", "video-ddc", "internal-panel"]
 export type ControlSource = "desktop-ui" | "touch" | "desktop-peer" | "internal"
 
 interface MonitorProfile {
@@ -76,7 +77,7 @@ function validateProfile(value: unknown): MonitorProfile {
   if (!Array.isArray(profile.transports) || !profile.transports.length ||
       profile.transports.some((item) => !transportIds.includes(item)) ||
       new Set(profile.transports).size !== profile.transports.length) {
-    throw new Error("配置档 DDC/CI 承载路径无效")
+    throw new Error("配置档显示器承载路径无效")
   }
   const requested = profile.transports
   if (requested.includes("usb-hid-ddc") && !profile.usbHid) throw new Error("配置档缺少 USB HID DDC/CI 映射")
@@ -126,6 +127,7 @@ export class MonitorController {
   private profileSources = new Map<string, MonitorProfileSource>()
   private manualProfileId?: string
   private detectedUsbHid?: { vendorId: number; productId: number }
+  private displays: MonitorDisplaySummary[] = []
   private displayName = "未检测到显示器"
   private available = new Set<MonitorTransport>()
   private transport: MonitorTransport = "unavailable"
@@ -145,10 +147,11 @@ export class MonitorController {
   private backgroundPending = false
   private readonly latestControl = new Map<ControlName, number>()
   private requestSequence = 0
+  private displayGeneration = 0
   private lastPreview?: { control: ControlName; value: ControlRequest["value"]; source: ControlSource; transport: MonitorTransport; at: number }
 
   constructor(
-    private readonly display = "1",
+    private display = "1",
     private readonly bundledProfiles = path.resolve("desktop/profiles"),
     private readonly userProfiles = path.resolve("profiles"),
     private readonly sidecarBinary = path.resolve("sidecar/target/release/azoria-ddc-sidecar"),
@@ -192,8 +195,31 @@ export class MonitorController {
     return this.connection(true)
   }
 
+  async listDisplays(): Promise<{ activeDisplayId: string; displays: MonitorDisplaySummary[] }> {
+    this.displays = await this.enumerateDisplays()
+    return { activeDisplayId: this.activeDisplayId(), displays: this.displays }
+  }
+
+  async selectDisplay(displayId: string): Promise<MonitorConnectionInfo> {
+    if (typeof displayId !== "string" || !displayId || displayId.length > 128) throw new Error("显示器 ID 无效")
+    if (displayId !== this.display) this.displayGeneration++
+    this.displays = await this.enumerateDisplays()
+    const numeric = Number.parseInt(displayId, 10)
+    const selected = Number.isSafeInteger(numeric) && numeric > 0 && String(numeric) === displayId
+      ? this.displays.find((display) => display.index === numeric)
+      : this.displays.find((display) => display.id === displayId)
+    if (!selected) throw new Error("显示器不存在")
+    if (this.display !== selected.id) {
+      this.display = selected.id
+      this.resetActiveDisplayState()
+      await this.enqueue(() => this.detect(true))
+    }
+    return this.connectionSnapshot()
+  }
+
   async profileWizard(force = false): Promise<MonitorProfileWizardInfo> {
     if (force || !this.profile) await this.enqueue(() => this.detect(force))
+    if (!this.displays.length) this.displays = await this.enumerateDisplays()
     return this.wizardInfo()
   }
 
@@ -238,7 +264,9 @@ export class MonitorController {
 
   private displayIndex(): number {
     const value = Number.parseInt(this.display, 10)
-    return Number.isInteger(value) && value > 0 ? value : 1
+    if (Number.isSafeInteger(value) && value > 0) return value
+    const matched = this.displays.find((display) => display.id === this.display)
+    return matched?.index || 1
   }
 
   private vcp(control: ControlName): number {
@@ -254,28 +282,52 @@ export class MonitorController {
     return result as Record<string, unknown>
   }
 
-  private get(transport: "native-ddc" | "lg-hid-ddc", vcp: number): Promise<Record<string, unknown>> {
+  private async enumerateDisplays(): Promise<MonitorDisplaySummary[]> {
+    const result = await this.sidecar({ operation: "enumerate" })
+    if (!Array.isArray(result)) return []
+    return result.flatMap((item, position) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return []
+      const display = item as { display?: unknown; id?: unknown; manufacturer?: unknown; model?: unknown; driver?: unknown; transport?: unknown }
+      const index = Number(display.display)
+      if (!Number.isSafeInteger(index) || index < 1 || index !== position + 1) return []
+      const stableId = typeof display.id === "string" && display.id.trim() ? display.id.trim() : String(index)
+      const manufacturer = typeof display.manufacturer === "string" ? display.manufacturer.trim() : ""
+      const model = typeof display.model === "string" ? display.model.trim() : ""
+      const driver = typeof display.driver === "string" ? display.driver.trim() : ""
+      const transport = display.transport === "internal-panel" ? "internal-panel" as const : undefined
+      const name = transport === "internal-panel"
+        ? `笔记本内屏${model ? ` ${model}` : ""}`
+        : [manufacturer, model].filter(Boolean).join(" ") || `显示器 ${index}`
+      return [{
+        id: stableId,
+        index,
+        name,
+        ...(manufacturer ? { manufacturer } : {}),
+        ...(model ? { model } : {}),
+        ...(driver ? { driver } : {}),
+        ...(transport ? { transport } : {}),
+      }]
+    })
+  }
+
+  private get(transport: "native-ddc" | "lg-hid-ddc" | "internal-panel", vcp: number): Promise<Record<string, unknown>> {
     return this.sidecarValue({ operation: "get", transport, display: this.displayIndex(), vcp })
   }
 
-  private set(transport: "native-ddc" | "lg-hid-ddc", vcp: number, value: number): Promise<Record<string, unknown>> {
+  private set(transport: "native-ddc" | "lg-hid-ddc" | "internal-panel", vcp: number, value: number): Promise<Record<string, unknown>> {
     return this.sidecarValue({ operation: "set", transport, display: this.displayIndex(), vcp, value })
   }
 
   private async detectDisplayName(): Promise<string> {
     try {
+      this.displays = await this.enumerateDisplays()
       if (process.platform === "darwin") {
         const payload = JSON.parse(await this.command("system_profiler", ["SPDisplaysDataType", "-json"], 8000))
-        return collectDisplayNames(payload)[0] || "外接显示器"
-      }
-      const result = await this.sidecar({ operation: "enumerate" })
-      if (Array.isArray(result) && result.length > 0) {
-        const display = result[0] as { manufacturer?: unknown; model?: unknown }
-        const manufacturer = typeof display.manufacturer === "string" ? display.manufacturer.trim() : ""
-        const model = typeof display.model === "string" ? display.model.trim() : ""
-        const name = [manufacturer, model].filter(Boolean).join(" ")
+        const name = collectDisplayNames(payload)[this.displayIndex() - 1]
         if (name) return name
       }
+      const current = this.displays.find((display) => display.index === this.displayIndex())
+      if (current) return current.name
     } catch { return "外接显示器" }
     return "外接显示器"
   }
@@ -294,28 +346,55 @@ export class MonitorController {
     } catch { return false }
   }
 
+  private async probeInternalPanel(): Promise<boolean> {
+    try {
+      const result = await this.get("internal-panel", 0x10)
+      return Number.isFinite(Number(result.current))
+    } catch { return false }
+  }
+
   private async detect(force = false): Promise<void> {
     if (!force && this.profile && Date.now() - this.detectedAt < 5000) return
     this.detectedAt = Date.now()
-    const [name, hid, videoDdc] = await Promise.all([this.detectDisplayName(), this.probeHidDdc(), this.probeVideoDdc()])
+    const [name, hid] = await Promise.all([this.detectDisplayName(), this.probeHidDdc()])
+    const selected = this.displays.find((display) => display.id === this.display || display.index === Number.parseInt(this.display, 10))
+    const selectedInternalPanel = selected?.transport === "internal-panel"
+    const videoDdc = selectedInternalPanel ? false : await this.probeVideoDdc()
     this.displayName = name
     this.detectedUsbHid = hid
     const manualProfile = this.manualProfileId ? this.profiles.find((candidate) => candidate.id === this.manualProfileId) : undefined
     const matchedProfile = manualProfile || this.profiles.find((candidate) => !candidate.fallback && this.profileMatches(candidate, name, hid)) ||
       this.profiles.find((candidate) => candidate.fallback) || this.profiles[0]
     if (!matchedProfile) throw new Error("没有可用的显示器配置档")
-    const detectedAvailable = new Set<MonitorTransport>([
+    let detectedAvailable = new Set<MonitorTransport>([
       ...(hid && matchedProfile.usbHid?.adapter === "lg-monitor-controls-v1" &&
           matchedProfile.match?.usbHid?.vendorId === hid.vendorId &&
           matchedProfile.match.usbHid.productId === hid.productId ? ["usb-hid-ddc" as const] : []),
       ...(videoDdc ? ["video-ddc" as const] : []),
     ])
+    let profile = matchedProfile
+    if (!detectedAvailable.size && !selectedInternalPanel) {
+      const internalPanel = this.displays.find((display) => display.transport === "internal-panel")
+      if (internalPanel) {
+        this.display = internalPanel.id
+        this.resetActiveDisplayState()
+        this.detectedAt = Date.now()
+        this.displayName = internalPanel.name
+        const internalProfile = this.profiles.find((candidate) => !candidate.fallback && this.profileMatches(candidate, this.displayName)) ||
+          this.profiles.find((candidate) => candidate.fallback) || this.profiles[0]
+        if (!internalProfile) throw new Error("没有可用的显示器配置档")
+        profile = internalProfile
+      }
+    }
+    if (this.activeDisplay()?.transport === "internal-panel" && await this.probeInternalPanel()) {
+      detectedAvailable = new Set<MonitorTransport>(["internal-panel"])
+    }
     // Input switching can make DDC reads disappear briefly. Keep the last
     // working route during that transient window so a switch-back command can
     // still attempt its write.
     const canReusePreviousRoute = detectedAvailable.size === 0 && this.available.size > 0 &&
       Date.now() - this.lastTransportSuccessAt < this.transportGraceMs
-    this.profile = canReusePreviousRoute && this.profile ? this.profile : matchedProfile
+    this.profile = canReusePreviousRoute && this.profile ? this.profile : profile
     this.available = canReusePreviousRoute ? new Set(this.available) : detectedAvailable
     if (this.transport === "unavailable" || !this.available.has(this.transport) || !this.profile.transports.includes(this.transport)) {
       this.selectTransport(this.profile.transports.find((item) => this.available.has(item)) || "unavailable")
@@ -332,6 +411,8 @@ export class MonitorController {
 
   private wizardInfo(): MonitorProfileWizardInfo {
     return {
+      activeDisplayId: this.activeDisplayId(),
+      displays: this.displays,
       displayName: this.displayName,
       activeTransport: this.transport,
       availableTransports: [...this.available],
@@ -356,9 +437,35 @@ export class MonitorController {
     return "available"
   }
 
+  private activeDisplay(): MonitorDisplaySummary | undefined {
+    return this.displays.find((display) => display.id === this.display || display.index === Number.parseInt(this.display, 10))
+  }
+
+  private activeDisplayId(): string {
+    return this.activeDisplay()?.id || this.display
+  }
+
+  private resetActiveDisplayState(): void {
+    this.profile = undefined
+    this.manualProfileId = undefined
+    this.detectedUsbHid = undefined
+    this.displayName = "未检测到显示器"
+    this.available.clear()
+    this.transport = "unavailable"
+    this.detectedAt = 0
+    this.lastStatus = { ...initialStatus }
+    this.statusReady = false
+    this.trustedControls.clear()
+    this.transportFailures = 0
+    this.lastKnownTransport = undefined
+    this.lastTransportSuccessAt = 0
+    this.lastPreview = undefined
+  }
+
   private label(transport: MonitorTransport): string {
     if (transport === "usb-hid-ddc") return "USB HID → DDC/CI"
     if (transport === "video-ddc") return "视频链路 → DDC/CI"
+    if (transport === "internal-panel") return "Windows 内屏 WMI"
     return "不可用"
   }
 
@@ -367,6 +474,7 @@ export class MonitorController {
       await this.enqueue(() => this.detect(force))
     }
     return {
+      displayId: this.activeDisplayId(),
       displayName: this.displayName,
       profileId: this.profile!.id,
       profileName: this.profile!.name,
@@ -378,6 +486,7 @@ export class MonitorController {
 
   connectionSnapshot(): MonitorConnectionInfo {
     return {
+      displayId: this.activeDisplayId(),
       displayName: this.displayName,
       profileId: this.profile?.id || "generic-ddc",
       profileName: this.profile?.name || "通用 DDC/CI 显示器",
@@ -421,6 +530,11 @@ export class MonitorController {
   }
 
   private async read(control: ControlName, transport: MonitorTransport): Promise<number | boolean | InputSource> {
+    if (transport === "internal-panel") {
+      if (control !== "brightness") throw new Error("内屏 WMI 通道只支持亮度")
+      const result = await this.get("internal-panel", 0x10)
+      return percentage(Number(result.current))
+    }
     if (transport === "video-ddc") {
       const result = await this.get("native-ddc", this.vcp(control))
       const current = Number(result.current)
@@ -436,7 +550,7 @@ export class MonitorController {
       if (control === "mute") return current === 1
       return this.profile.usbHid.inputReadValues[String(current)] || this.lastStatus.input
     }
-    throw new Error("DDC/CI 承载路径不可用")
+    throw new Error("显示器承载路径不可用")
   }
 
   private async readWithFallback(control: ControlName): Promise<number | boolean | InputSource> {
@@ -493,7 +607,7 @@ export class MonitorController {
     }
     if (!success) {
       await this.detect(true)
-      throw new Error("未检测到可用的 DDC/CI 连接")
+      throw new Error("未检测到可用的显示器控制通道")
     }
     this.statusReady = true
     return { ...this.lastStatus }
@@ -582,6 +696,11 @@ export class MonitorController {
   }
 
   private async write(control: ControlName, value: ControlRequest["value"], transport: MonitorTransport): Promise<void> {
+    if (transport === "internal-panel") {
+      if (control !== "brightness" || typeof value !== "number") throw new Error("内屏 WMI 通道只支持亮度")
+      await this.set("internal-panel", 0x10, value)
+      return
+    }
     if (transport === "video-ddc" && this.profile?.ddc) {
       if ((control === "brightness" || control === "volume") && typeof value === "number") await this.set("native-ddc", this.vcp(control), value)
       else if (control === "mute" && typeof value === "boolean") await this.set("native-ddc", this.vcp(control), value ? 1 : 2)
@@ -713,11 +832,13 @@ export class MonitorController {
 
   control(request: ControlRequest, source: ControlSource = "internal"): Promise<MonitorStatus> {
     const sequence = ++this.requestSequence
+    const displayGeneration = this.displayGeneration
     const queuedAt = Date.now()
     this.latestControl.set(request.control, sequence)
     this.pendingControls++
     this.lastControlAt = queuedAt
     return this.enqueue(async () => {
+      if (displayGeneration !== this.displayGeneration) return this.snapshot()
       // A queued preview is obsolete once a newer value (including release)
       // arrives. Never discard a final command or an in-flight transaction.
       if (request.final === false && this.latestControl.get(request.control) !== sequence) {

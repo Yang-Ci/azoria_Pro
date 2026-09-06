@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto"
 import path from "node:path"
 import { app, BrowserWindow, dialog, ipcMain, type OpenDialogOptions } from "electron"
 import type { ControlRequest } from "../shared/contracts"
-import { loadConfig } from "./config"
+import { loadConfig, saveDisplayPreference } from "./config"
 import { DiagnosticsController } from "./diagnostics"
 import { TouchManager } from "./touch"
 import { LanController } from "./lan"
@@ -110,6 +110,10 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
     logger,
   )
   await monitor.initialize()
+  const initialConnection = monitor.connectionSnapshot()
+  if (initialConnection.displayId !== config.display) {
+    await saveDisplayPreference(app.getPath("userData"), initialConnection.displayId)
+  }
   monitor.startBackgroundStatus()
   const lan = new LanController(config.desktopId, monitor)
   await lan.start()
@@ -123,6 +127,12 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   ipcMain.handle("monitor:relay-control", (_event, request: ControlRequest, sourceNonce: string, sourceCommandId: string) =>
     lan.relayControl(request, sourceNonce, sourceCommandId))
   ipcMain.handle("monitor:connection", () => monitor.connection())
+  ipcMain.handle("monitor:list-displays", () => monitor.listDisplays())
+  ipcMain.handle("monitor:select-display", async (_event, displayId: string) => {
+    const connection = await monitor.selectDisplay(displayId)
+    await saveDisplayPreference(app.getPath("userData"), connection.displayId)
+    return connection
+  })
   ipcMain.handle("monitor:profile-wizard", (_event, force: boolean | undefined) => monitor.profileWizard(force === true))
   ipcMain.handle("monitor:activate-profile", (_event, profileId: string) => monitor.activateProfile(profileId))
   ipcMain.handle("monitor:reset-profile", () => monitor.resetProfile())

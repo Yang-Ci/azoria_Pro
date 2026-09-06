@@ -5,6 +5,8 @@ use serde_json::{Value, json};
 use std::env;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
+#[cfg(target_os = "windows")]
+use wmi::WMIConnection;
 
 const LG_VENDOR_ID: u16 = 0x043e;
 const LG_PRODUCT_ID: u16 = 0x9a39;
@@ -40,6 +42,7 @@ enum Request {
 enum Transport {
     NativeDdc,
     LgHidDdc,
+    InternalPanel,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -59,6 +62,33 @@ struct Response {
     result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Deserialize)]
+#[serde(rename = "WmiMonitorBrightness")]
+#[serde(rename_all = "PascalCase")]
+struct InternalBrightness {
+    instance_name: String,
+    current_brightness: u8,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Deserialize)]
+#[serde(rename = "WmiMonitorBrightnessMethods")]
+#[serde(rename_all = "PascalCase")]
+struct InternalBrightnessMethods {
+    #[serde(rename = "__Path")]
+    object_path: String,
+    instance_name: String,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct InternalBrightnessInput {
+    timeout: u32,
+    brightness: u8,
 }
 
 impl Response {
@@ -81,6 +111,91 @@ impl Response {
 
 fn native_displays() -> Vec<Display> {
     Display::enumerate()
+}
+
+#[cfg(target_os = "windows")]
+fn internal_brightness_displays() -> Result<Vec<InternalBrightness>, String> {
+    let connection = WMIConnection::with_namespace_path("ROOT\\WMI")
+        .map_err(|error| format!("WMI initialization failed: {error}"))?;
+    connection
+        .raw_query(
+            "SELECT InstanceName, CurrentBrightness FROM WmiMonitorBrightness WHERE Active = TRUE",
+        )
+        .map_err(|error| format!("WMI brightness enumeration failed: {error}"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn internal_brightness_displays() -> Result<Vec<()>, String> {
+    Err("internal-panel brightness is only available on Windows".into())
+}
+
+#[cfg(target_os = "windows")]
+fn internal_brightness_display(display: usize) -> Result<InternalBrightness, String> {
+    if display == 0 {
+        return Err("display indexes start at 1".into());
+    }
+    let native_count = native_displays().len();
+    let internal_index = display
+        .checked_sub(native_count)
+        .ok_or_else(|| format!("internal panel {display} was not found"))?;
+    if internal_index == 0 {
+        return Err(format!("display {display} is a DDC/CI display"));
+    }
+    internal_brightness_displays()?
+        .into_iter()
+        .nth(internal_index - 1)
+        .ok_or_else(|| format!("internal panel {display} was not found"))
+}
+
+#[cfg(target_os = "windows")]
+fn internal_get(display: usize) -> Result<Value, String> {
+    let panel = internal_brightness_display(display)?;
+    Ok(json!({
+        "driver": "wmi",
+        "id": panel.instance_name,
+        "vcp": 0x10,
+        "maximum": 100,
+        "current": panel.current_brightness
+    }))
+}
+
+#[cfg(target_os = "windows")]
+fn internal_set(display: usize, value: u16) -> Result<Value, String> {
+    let brightness = u8::try_from(value)
+        .map_err(|_| "internal-panel brightness must be 0-100".to_string())?;
+    let panel = internal_brightness_display(display)?;
+    let connection = WMIConnection::with_namespace_path("ROOT\\WMI")
+        .map_err(|error| format!("WMI initialization failed: {error}"))?;
+    let methods: Vec<InternalBrightnessMethods> = connection
+        .raw_query(
+            "SELECT __Path, InstanceName FROM WmiMonitorBrightnessMethods WHERE Active = TRUE",
+        )
+        .map_err(|error| format!("WMI brightness methods enumeration failed: {error}"))?;
+    let method = methods
+        .into_iter()
+        .find(|candidate| candidate.instance_name == panel.instance_name)
+        .ok_or_else(|| "WMI brightness method was not found for this internal panel".to_string())?;
+    let () = connection
+        .exec_instance_method::<InternalBrightnessMethods, _>(
+            &method.object_path,
+            "WmiSetBrightness",
+            InternalBrightnessInput {
+                timeout: 0,
+                brightness,
+            },
+        )
+        .map_err(|error| format!("WMI SetBrightness failed: {error}"))?;
+    Ok(json!({ "vcp": 0x10, "value": value, "acknowledged": true }))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn internal_get(_display: usize) -> Result<Value, String> {
+    Err("internal-panel brightness is only available on Windows".into())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn internal_set(_display: usize, _value: u16) -> Result<Value, String> {
+    Err("internal-panel brightness is only available on Windows".into())
 }
 
 fn native_display(display: usize) -> Result<Display, String> {
@@ -284,8 +399,14 @@ fn execute(request: Request) -> Result<Value, String> {
                 json!({ "transport": "lg-hid-ddc", "vendor_id": LG_VENDOR_ID, "product_id": LG_PRODUCT_ID }),
             )
         }
-        Request::Enumerate => Ok(Value::Array(
-            native_displays()
+        Request::Probe {
+            transport: Transport::InternalPanel,
+        } => {
+            let displays = internal_brightness_displays()?;
+            Ok(json!({ "transport": "internal-panel", "count": displays.len() }))
+        }
+        Request::Enumerate => {
+            let mut displays: Vec<Value> = native_displays()
                 .into_iter()
                 .enumerate()
                 .map(|(index, display)| {
@@ -297,13 +418,40 @@ fn execute(request: Request) -> Result<Value, String> {
                         "model": display.info.model_name
                     })
                 })
-                .collect(),
-        )),
+                .collect();
+            let ddc_count = displays.len();
+            displays.extend(
+                internal_brightness_displays()?
+                    .into_iter()
+                    .enumerate()
+                    .map(|(offset, panel)| {
+                        let model = panel
+                            .instance_name
+                            .split('\\')
+                            .nth(1)
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("Internal Panel");
+                        json!({
+                            "display": ddc_count + offset + 1,
+                            "driver": "wmi",
+                            "id": format!("internal-panel:{}", panel.instance_name),
+                            "model": model,
+                            "transport": "internal-panel"
+                        })
+                    }),
+            );
+            Ok(Value::Array(displays))
+        }
         Request::Get {
             transport: Transport::NativeDdc,
             display,
             vcp,
         } => native_get(display, vcp),
+        Request::Get {
+            transport: Transport::InternalPanel,
+            display,
+            ..
+        } => internal_get(display),
         Request::Get {
             transport: Transport::LgHidDdc,
             vcp,
@@ -315,6 +463,12 @@ fn execute(request: Request) -> Result<Value, String> {
             vcp,
             value,
         } => native_set(display, vcp, value),
+        Request::Set {
+            transport: Transport::InternalPanel,
+            display,
+            value,
+            ..
+        } => internal_set(display, value),
         Request::Set {
             transport: Transport::LgHidDdc,
             vcp,
@@ -329,6 +483,10 @@ fn execute(request: Request) -> Result<Value, String> {
             transport: Transport::NativeDdc,
             ..
         } => Err("native input changes use Set VCP 0x60".into()),
+        Request::Input {
+            transport: Transport::InternalPanel,
+            ..
+        } => Err("internal-panel supports brightness only".into()),
     }
 }
 

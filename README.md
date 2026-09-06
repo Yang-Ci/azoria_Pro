@@ -37,6 +37,7 @@ firmware management in the background.
 
 - **One control surface** for brightness, volume, mute, and input switching.
 - **Real transport probing** across video-link DDC/CI and vendor USB HID paths.
+- **Multi-monitor targeting** across enumerated DDC/CI displays.
 - **Native hardware access** through a Rust sidecar for macOS, Windows, and Linux.
 - **Optional physical controller** with BLE and private-LAN connectivity.
 - **Resilient coordination** when multiple Desktop instances can reach the same display.
@@ -158,11 +159,18 @@ features. A monitor can expose those features over either:
 
 - `usb-hid-ddc` — vendor USB HID transport carrying DDC/CI messages;
 - `video-ddc` — DDC/CI over HDMI, DisplayPort, or USB-C video links.
+- `internal-panel` — Windows WMI brightness control for active laptop panels.
 
 AZORIA probes the available transports and selects one verified path for the
 entire monitor. It does not mix transport paths between individual controls.
 If the active path fails and another path is confirmed, all controls move to
 the fallback path together.
+
+The desktop app enumerates DDC/CI-capable displays and Windows internal panels,
+then lets you select the active target in the control view or Profile wizard.
+The internal-panel path reads `WmiMonitorBrightness` and writes through
+`WmiSetBrightness`; it supports brightness only, so volume, mute, and input
+controls are disabled for that target.
 
 Common VCP features:
 

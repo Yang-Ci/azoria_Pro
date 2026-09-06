@@ -8,6 +8,19 @@ export interface AppConfig {
   desktopId: string
 }
 
+export function isValidDisplayId(displayId: string): boolean {
+  return typeof displayId === "string" && displayId.length > 0 && displayId.length <= 128
+}
+
+export async function saveDisplayPreference(userData: string, displayId: string): Promise<void> {
+  if (!isValidDisplayId(displayId)) throw new Error("显示器 ID 无效")
+  const configPath = path.join(userData, "config.json")
+  const parsed = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>
+  if (typeof parsed.token !== "string" || parsed.token.length < 20) throw new Error("本机配置无效")
+  parsed.display = displayId
+  await writeFile(configPath, JSON.stringify(parsed, null, 2), { mode: 0o600 })
+}
+
 export async function loadConfig(userData: string): Promise<AppConfig> {
   const configPath = path.join(userData, "config.json")
   try {

@@ -24,6 +24,7 @@ DDC/CI 访问和固件管理。
 
 - Electron 桌面控制中心，提供亮度、音量、静音和信号源控制；
 - 自动探测并确认整台显示器统一使用的 DDC/CI 承载路径；
+- 枚举多台 DDC/CI 显示器，并在桌面端切换当前控制目标；
 - 在桌面端检测 AZORIA Touch 并完成 Wi‑Fi 配置；
 - 设置中提供默认关闭的开发者模式，用于固件刷写和硬件诊断；
 - Desktop 主动发现、Touch 被动响应的 Wi‑Fi 局域网通信，以及 BLE 备用连接；
@@ -126,10 +127,14 @@ AZORIA Desktop 的渲染进程没有 Node.js 权限，硬件操作通过白名�
 
 显示器控制协议统一为 DDC/CI。Desktop 会区分两种承载路径：显示器 USB 控制接口
 提供的“USB HID → DDC/CI”，以及 HDMI、DisplayPort 或 USB-C 视频连接提供的
-“视频链路 → DDC/CI”。程序会实际探测路径，而不是只按型号猜测。
+“视频链路 → DDC/CI”。Windows 笔记本内屏使用 `internal-panel` 路径，通过 WMI
+读取 `WmiMonitorBrightness` 并调用 `WmiSetBrightness`。程序会实际探测路径，
+而不是只按型号猜测。
 
 这里的“USB HID”不是另一套显示器控制协议。它只是某些显示器用来承载 DDC/CI
 报文的厂商 USB 通道；亮度、音量、静音和输入源最终仍以 DDC/CI VCP 功能进行表达。
+Desktop 会枚举支持 DDC/CI 的显示器和 Windows 内屏，并可在控制页或 Profile 向导中
+切换当前目标。内屏 WMI 路径只支持亮度，音量、静音和输入源控件会自动禁用。
 常用 VCP opcode 如下。配置表中的数字使用 JSON 十进制写法：
 
 | 能力 | VCP opcode | JSON 十进制 |
