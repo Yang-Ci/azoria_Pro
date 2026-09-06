@@ -27,11 +27,16 @@ export class TouchManager {
 
   async listUsb(): Promise<UsbDevice[]> {
     const candidates = (await SerialPort.list())
-      .filter((port) =>
-        port.path.includes("usbmodem") &&
-        port.manufacturer?.toLowerCase().includes("espressif") === true &&
-        /^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$/i.test(port.serialNumber || ""),
-      )
+      .filter((port) => {
+        // macOS exposes native USB CDC as /dev/cu.usbmodem*, Linux as
+        // /dev/ttyACM*, and Windows as COM*. Identify the controller from its
+        // USB identity instead of hard-coding the macOS device-path spelling.
+        const manufacturer = port.manufacturer?.toLowerCase() || ""
+        const vendorId = port.vendorId?.replace(/^0x/i, "").toLowerCase() || ""
+        const isEspressif = manufacturer.includes("espressif") || vendorId === "303a"
+        return isEspressif &&
+          /^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$/i.test(port.serialNumber || "")
+      })
     const devices: UsbDevice[] = []
     for (const port of candidates) {
       let verified = false
