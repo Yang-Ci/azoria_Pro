@@ -1,13 +1,12 @@
 /*
- * AZORIA Touch enclosure — first fit prototype
+ * AZORIA Touch enclosure — V2 fit-corrected prototype
  * Target: VIEWE UEDX48480040E-WB-A V1.3, 94 x 94 mm PCBA.
  *
  * Export with OpenSCAD, for example:
- *   openscad -o azoria-touch-front.stl -D 'part="front"' azoria-touch-case.scad
+ *   openscad -o azoria-touch-front-v2.stl -D 'part="front"' azoria-touch-case.scad
  *
- * This first revision intentionally uses broad side openings so USB-C, TF and
- * the edge buttons remain reachable even when connector placement varies a
- * little between board revisions.
+ * V2 keeps the broad side openings, changes the PCB pocket to square internal
+ * corners, and notches the rear lid around the two side-facing USB-C ports.
  */
 
 $fn = 48;
@@ -23,11 +22,13 @@ mount_hole_spacing = 87;
 mount_hole_diameter = 3;
 
 // Printer and fit tuning.
-xy_clearance = 0.35;       // clearance on each side of the PCB
+xy_clearance = 0.60;       // clearance on each side of the PCB
 wall = 2.4;
 front_skin = 2.4;
 case_depth = 15.5;
-outer_corner_radius = 6;
+// A slightly tighter outside radius keeps useful wall thickness around the
+// newly square PCB-pocket corners.
+outer_corner_radius = 4.5;
 window_size = 82;         // 1 mm overlap on each edge of the 84 mm glass
 window_corner_radius = 3;
 
@@ -40,7 +41,14 @@ friction_rib = 0.30;
 
 // Large revision-tolerant openings on the physical left and right edges.
 port_opening_length = 72;
-port_opening_front_offset = 5.0;
+port_opening_front_offset = front_skin;
+
+// Rear-lid cable relief for the two USB-C sockets shown on the PCB's right
+// edge. The continuous notch spans both connectors and leaves the upper-right
+// mounting-hole pad intact. Coordinates are viewed from the PCB/component side.
+usb_lid_notch_length = 42;
+usb_lid_notch_center_y = 16;
+usb_lid_notch_depth = 15;
 
 pocket_size = board_size + 2 * xy_clearance;
 outer_size = pocket_size + 2 * wall;
@@ -58,6 +66,14 @@ module rounded_prism(size, radius, height) {
         rounded_rect_2d(size, radius);
 }
 
+// A square PCB needs square internal clearance. A rounded pocket with the same
+// nominal width becomes much smaller at its corners and prevents insertion even
+// when every mounting hole is correctly located.
+module square_pocket(height) {
+    linear_extrude(height = height)
+        square([pocket_size, pocket_size], center = true);
+}
+
 module capsule_2d(length, width) {
     hull() {
         translate([-(length - width) / 2, 0]) circle(d = width);
@@ -71,11 +87,16 @@ module front_shell() {
 
         // Module pocket, open from the back.
         translate([0, 0, front_skin])
-            rounded_prism(
-                [pocket_size, pocket_size],
-                max(outer_corner_radius - wall, 1),
-                case_depth - front_skin + epsilon
-            );
+            square_pocket(case_depth - front_skin + epsilon);
+
+        // A short lead-in at the rear removes the sharp printed entry edge and
+        // gives another 0.4 mm per side while the PCB is being aligned.
+        translate([0, 0, case_depth - 1.0])
+            linear_extrude(
+                height = 1.0 + 2 * epsilon,
+                scale = (pocket_size + 0.8) / pocket_size
+            )
+                square([pocket_size, pocket_size], center = true);
 
         // Touch/display opening.
         translate([0, 0, -epsilon])
@@ -156,6 +177,21 @@ module rear_lid() {
         }
 
         ventilation_slots();
+
+        // U-shaped edge cutout: the cable plugs can remain inserted while the
+        // lid is fitted or removed. Cut through both the plate and locating lip.
+        translate([
+            lid_size / 2 - usb_lid_notch_depth,
+            usb_lid_notch_center_y - usb_lid_notch_length / 2,
+            -epsilon
+        ])
+            cube([
+                // Extend past the friction rib as well as the nominal lid edge
+                // so no thin printed fin remains across the cable opening.
+                usb_lid_notch_depth + friction_rib + 1 + 2 * epsilon,
+                usb_lid_notch_length,
+                lid_thickness + lid_lip_height + pad_height + 2 * epsilon
+            ], center = false);
     }
 }
 
@@ -173,11 +209,7 @@ module fit_gauge() {
                     gauge_height
                 );
                 translate([0, 0, -epsilon])
-                    rounded_prism(
-                        [pocket_size, pocket_size],
-                        1.5,
-                        gauge_height + 2 * epsilon
-                    );
+                    square_pocket(gauge_height + 2 * epsilon);
             }
 
             // Low connected tabs let the PCB sit inside the ring while
