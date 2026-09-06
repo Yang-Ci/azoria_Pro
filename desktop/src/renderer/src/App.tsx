@@ -3,6 +3,7 @@ import { Activity, Bluetooth, Cable, Check, FileUp, Radio, RefreshCw, Router, Se
 import type { ControlName, DiagnosticsReport, FirmwareImage, InputSource, LanDevice, MonitorConnectionInfo, MonitorStatus, MonitorTransport, UsbDevice } from "../../shared/contracts"
 import { connectBle } from "./ble"
 import { AzoriaDesktopBrand } from "./components/brand"
+import { ProfileWizard } from "./components/profile-wizard"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -174,7 +175,7 @@ export default function App() {
       <div className="no-drag flex items-center gap-3">
         <Badge variant="outline" className="h-8 gap-2 border-white/10 bg-zinc-950 px-3 font-normal text-zinc-300"><span className={`h-1.5 w-1.5 rounded-full ${online ? "bg-white" : "bg-zinc-700"}`} />{message}</Badge>
         <Button variant="outline" size="icon" className="border-white/10 bg-black" onClick={() => void refresh()}><RefreshCw /></Button>
-        <Dialog><DialogTrigger asChild><Button variant="outline" size="icon" className="border-white/10 bg-black"><Settings /></Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>AZORIA Desktop 设置</DialogTitle></DialogHeader><div className="flex items-center justify-between rounded-lg border border-white/10 p-4"><Label htmlFor="developer-mode">开发者模式</Label><Switch id="developer-mode" checked={developerMode} onCheckedChange={setDeveloperMode} /></div><div className="flex items-center justify-between rounded-lg border border-white/10 p-4"><Label>显示器配置表</Label><Button variant="outline" onClick={importProfile}><FileUp />加载</Button></div></DialogContent></Dialog>
+        <Dialog><DialogTrigger asChild><Button variant="outline" size="icon" className="border-white/10 bg-black"><Settings /></Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>AZORIA Desktop 设置</DialogTitle></DialogHeader><div className="flex items-center justify-between rounded-lg border border-white/10 p-4"><Label htmlFor="developer-mode">开发者模式</Label><Switch id="developer-mode" checked={developerMode} onCheckedChange={setDeveloperMode} /></div><div className="flex items-center justify-between gap-3 rounded-lg border border-white/10 p-4"><Label>显示器配置表</Label><div className="flex gap-2"><ProfileWizard onConnectionChange={setConnection} /><Button variant="outline" onClick={importProfile}><FileUp />加载</Button></div></div></DialogContent></Dialog>
       </div>
     </header>
 

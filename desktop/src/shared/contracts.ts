@@ -25,6 +25,28 @@ export interface MonitorConnectionInfo {
   transport: MonitorTransport
 }
 
+export type MonitorProfileSource = "built-in" | "user"
+export type MonitorProfileMatchState = "selected" | "match" | "fallback" | "available"
+
+export interface MonitorProfileSummary {
+  id: string
+  name: string
+  fallback: boolean
+  transports: MonitorTransport[]
+  source: MonitorProfileSource
+  matchState: MonitorProfileMatchState
+}
+
+export interface MonitorProfileWizardInfo {
+  displayName: string
+  activeTransport: MonitorTransport
+  availableTransports: MonitorTransport[]
+  detectedUsbHid?: { vendorId: number; productId: number }
+  selectedProfileId: string | null
+  manualProfileId: string | null
+  profiles: MonitorProfileSummary[]
+}
+
 export interface UsbDevice {
   path: string
   name: string
@@ -114,6 +136,9 @@ export interface DesktopApi {
     relayControl(request: ControlRequest, sourceNonce: string, sourceCommandId: string): Promise<ControlRequest["value"]>
     connection(): Promise<MonitorConnectionInfo>
     importProfile(): Promise<MonitorConnectionInfo | null>
+    profileWizard(force?: boolean): Promise<MonitorProfileWizardInfo>
+    activateProfile(profileId: string): Promise<MonitorConnectionInfo>
+    resetProfile(): Promise<MonitorConnectionInfo>
   }
   device: {
     listUsb(): Promise<UsbDevice[]>

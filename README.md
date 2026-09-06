@@ -185,7 +185,7 @@ commands, executable paths, dynamic libraries, or network addresses.
 | 1 | Read the monitor identity and available DDC/CI transports. | Done |
 | 2 | Match a validated built-in profile automatically. | Done |
 | 3 | Import and validate a custom JSON profile. | Done, basic |
-| 4 | Build the interactive step-by-step profile wizard. | Planned |
+| 4 | Build the interactive step-by-step profile wizard. | Done, first version |
 | 5 | Generate a reusable profile file from wizard results. | Planned |
 | 6 | Verify on real hardware, then promote it to a built-in or shared profile. | Planned |
 

@@ -11,6 +11,9 @@ const api: DesktopApi = {
       ipcRenderer.invoke("monitor:relay-control", request, sourceNonce, sourceCommandId),
     connection: () => ipcRenderer.invoke("monitor:connection"),
     importProfile: () => ipcRenderer.invoke("monitor:import-profile"),
+    profileWizard: (force?: boolean) => ipcRenderer.invoke("monitor:profile-wizard", force),
+    activateProfile: (profileId: string) => ipcRenderer.invoke("monitor:activate-profile", profileId),
+    resetProfile: () => ipcRenderer.invoke("monitor:reset-profile"),
   },
   device: {
     listUsb: () => ipcRenderer.invoke("device:list-usb"),

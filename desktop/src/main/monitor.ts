@@ -3,7 +3,17 @@ import { existsSync } from "node:fs"
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { promisify } from "node:util"
-import type { ControlName, ControlRequest, InputSource, MonitorConnectionInfo, MonitorStatus, MonitorTransport } from "../shared/contracts"
+import type {
+  ControlName,
+  ControlRequest,
+  InputSource,
+  MonitorConnectionInfo,
+  MonitorProfileMatchState,
+  MonitorProfileSource,
+  MonitorProfileWizardInfo,
+  MonitorStatus,
+  MonitorTransport,
+} from "../shared/contracts"
 import type { LocalLogger } from "./logger"
 
 const run = promisify(execFile)
@@ -113,6 +123,9 @@ function collectDisplayNames(value: unknown, result: string[] = []): string[] {
 export class MonitorController {
   private profiles: MonitorProfile[] = []
   private profile?: MonitorProfile
+  private profileSources = new Map<string, MonitorProfileSource>()
+  private manualProfileId?: string
+  private detectedUsbHid?: { vendorId: number; productId: number }
   private displayName = "未检测到显示器"
   private available = new Set<MonitorTransport>()
   private transport: MonitorTransport = "unavailable"
@@ -144,19 +157,27 @@ export class MonitorController {
 
   async initialize(): Promise<void> {
     await mkdir(this.userProfiles, { recursive: true, mode: 0o700 })
-    const loaded = await Promise.all([this.loadDirectory(this.bundledProfiles), this.loadDirectory(this.userProfiles)])
+    const loaded = await Promise.all([
+      this.loadDirectory(this.bundledProfiles, "built-in"),
+      this.loadDirectory(this.userProfiles, "user"),
+    ])
     const unique = new Map<string, MonitorProfile>()
-    for (const profile of loaded.flat()) unique.set(profile.id, profile)
+    this.profileSources.clear()
+    for (const entry of loaded.flat()) {
+      unique.set(entry.profile.id, entry.profile)
+      this.profileSources.set(entry.profile.id, entry.source)
+    }
+    if (this.manualProfileId && !unique.has(this.manualProfileId)) this.manualProfileId = undefined
     this.statusReady = false
     this.profiles = [...unique.values()]
     await this.detect(true)
   }
 
-  private async loadDirectory(directory: string): Promise<MonitorProfile[]> {
+  private async loadDirectory(directory: string, source: MonitorProfileSource): Promise<Array<{ profile: MonitorProfile; source: MonitorProfileSource }>> {
     try {
-      const profiles: MonitorProfile[] = []
+      const profiles: Array<{ profile: MonitorProfile; source: MonitorProfileSource }> = []
       for (const name of (await readdir(directory)).filter((item) => item.endsWith(".json")).sort()) {
-        try { profiles.push(validateProfile(JSON.parse(await readFile(path.join(directory, name), "utf8")))) }
+        try { profiles.push({ profile: validateProfile(JSON.parse(await readFile(path.join(directory, name), "utf8"))), source }) }
         catch { /* An invalid optional profile must not disable built-in profiles. */ }
       }
       return profiles
@@ -169,6 +190,26 @@ export class MonitorController {
     await writeFile(path.join(this.userProfiles, `${profile.id}.json`), JSON.stringify(profile, null, 2), { mode: 0o600 })
     await this.initialize()
     return this.connection(true)
+  }
+
+  async profileWizard(force = false): Promise<MonitorProfileWizardInfo> {
+    if (force || !this.profile) await this.enqueue(() => this.detect(force))
+    return this.wizardInfo()
+  }
+
+  async activateProfile(profileId: string): Promise<MonitorConnectionInfo> {
+    if (typeof profileId !== "string" || !/^[a-z0-9][a-z0-9-]{1,63}$/.test(profileId)) throw new Error("配置档 ID 无效")
+    const profile = this.profiles.find((candidate) => candidate.id === profileId)
+    if (!profile) throw new Error("配置档不存在")
+    this.manualProfileId = profile.id
+    await this.enqueue(() => this.detect(true))
+    return this.connectionSnapshot()
+  }
+
+  async resetProfile(): Promise<MonitorConnectionInfo> {
+    this.manualProfileId = undefined
+    await this.enqueue(() => this.detect(true))
+    return this.connectionSnapshot()
   }
 
   private async command(binary: string, args: string[], timeout = 4000): Promise<string> {
@@ -258,10 +299,10 @@ export class MonitorController {
     this.detectedAt = Date.now()
     const [name, hid, videoDdc] = await Promise.all([this.detectDisplayName(), this.probeHidDdc(), this.probeVideoDdc()])
     this.displayName = name
-    const matchedProfile = this.profiles.find((candidate) => !candidate.fallback && (
-      (hid && candidate.match?.usbHid?.vendorId === hid.vendorId && candidate.match.usbHid.productId === hid.productId) ||
-      (candidate.match?.displayNamePattern && new RegExp(candidate.match.displayNamePattern, "i").test(name))
-    )) || this.profiles.find((candidate) => candidate.fallback) || this.profiles[0]
+    this.detectedUsbHid = hid
+    const manualProfile = this.manualProfileId ? this.profiles.find((candidate) => candidate.id === this.manualProfileId) : undefined
+    const matchedProfile = manualProfile || this.profiles.find((candidate) => !candidate.fallback && this.profileMatches(candidate, name, hid)) ||
+      this.profiles.find((candidate) => candidate.fallback) || this.profiles[0]
     if (!matchedProfile) throw new Error("没有可用的显示器配置档")
     const detectedAvailable = new Set<MonitorTransport>([
       ...(hid && matchedProfile.usbHid?.adapter === "lg-monitor-controls-v1" &&
@@ -280,6 +321,39 @@ export class MonitorController {
       this.selectTransport(this.profile.transports.find((item) => this.available.has(item)) || "unavailable")
     }
     if (!this.available.size) this.displayName = "未检测到显示器"
+  }
+
+  private profileMatches(profile: MonitorProfile, name = this.displayName, hid = this.detectedUsbHid): boolean {
+    return Boolean(
+      (hid && profile.match?.usbHid?.vendorId === hid.vendorId && profile.match.usbHid.productId === hid.productId) ||
+      (profile.match?.displayNamePattern && new RegExp(profile.match.displayNamePattern, "i").test(name)),
+    )
+  }
+
+  private wizardInfo(): MonitorProfileWizardInfo {
+    return {
+      displayName: this.displayName,
+      activeTransport: this.transport,
+      availableTransports: [...this.available],
+      detectedUsbHid: this.detectedUsbHid ? { ...this.detectedUsbHid } : undefined,
+      selectedProfileId: this.profile?.id ?? null,
+      manualProfileId: this.manualProfileId ?? null,
+      profiles: this.profiles.map((profile) => ({
+        id: profile.id,
+        name: profile.name,
+        fallback: profile.fallback === true,
+        transports: profile.transports,
+        source: this.profileSources.get(profile.id) ?? "built-in",
+        matchState: this.profileMatchState(profile),
+      })),
+    }
+  }
+
+  private profileMatchState(profile: MonitorProfile): MonitorProfileMatchState {
+    if (this.profile?.id === profile.id) return "selected"
+    if (this.profileMatches(profile)) return "match"
+    if (profile.fallback) return "fallback"
+    return "available"
   }
 
   private label(transport: MonitorTransport): string {

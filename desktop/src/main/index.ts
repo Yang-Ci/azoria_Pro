@@ -123,6 +123,9 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   ipcMain.handle("monitor:relay-control", (_event, request: ControlRequest, sourceNonce: string, sourceCommandId: string) =>
     lan.relayControl(request, sourceNonce, sourceCommandId))
   ipcMain.handle("monitor:connection", () => monitor.connection())
+  ipcMain.handle("monitor:profile-wizard", (_event, force: boolean | undefined) => monitor.profileWizard(force === true))
+  ipcMain.handle("monitor:activate-profile", (_event, profileId: string) => monitor.activateProfile(profileId))
+  ipcMain.handle("monitor:reset-profile", () => monitor.resetProfile())
   ipcMain.handle("monitor:import-profile", async (event) => {
     const options: OpenDialogOptions = {
       title: "加载显示器配置表",
