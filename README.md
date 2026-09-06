@@ -178,6 +178,17 @@ identification rules, transport priority, VCP mappings, and separate input read
 and write mappings. Profile files are validated data only: they cannot define
 commands, executable paths, dynamic libraries, or network addresses.
 
+### Profile wizard roadmap
+
+| Step | Direction | Status |
+| --- | --- | --- |
+| 1 | Read the monitor identity and available DDC/CI transports. | Done |
+| 2 | Match a validated built-in profile automatically. | Done |
+| 3 | Import and validate a custom JSON profile. | Done, basic |
+| 4 | Build the interactive step-by-step profile wizard. | Planned |
+| 5 | Generate a reusable profile file from wizard results. | Planned |
+| 6 | Verify on real hardware, then promote it to a built-in or shared profile. | Planned |
+
 See the [Chinese reference](README.zh-CN.md#显示器配置表) for the complete profile
 schema and the validated LG 32UQ85R mapping.
 
