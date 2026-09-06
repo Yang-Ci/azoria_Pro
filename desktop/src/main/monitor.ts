@@ -118,10 +118,21 @@ export class MonitorController {
   private transport: MonitorTransport = "unavailable"
   private detectedAt = 0
   private lastStatus: MonitorStatus = { ...initialStatus }
+  private statusReady = false
+  private backgroundTimer?: NodeJS.Timeout
   private readonly trustedControls = new Set<ControlName>()
   private transportFailures = 0
+  private lastKnownTransport?: MonitorTransport
+  private lastTransportSuccessAt = 0
+  private readonly transportGraceMs = 30000
   private operationQueue: Promise<void> = Promise.resolve()
   private controlSequence = 0
+  private pendingControls = 0
+  private lastControlAt = 0
+  private backgroundPending = false
+  private readonly latestControl = new Map<ControlName, number>()
+  private requestSequence = 0
+  private lastPreview?: { control: ControlName; value: ControlRequest["value"]; source: ControlSource; transport: MonitorTransport; at: number }
 
   constructor(
     private readonly display = "1",
@@ -136,6 +147,7 @@ export class MonitorController {
     const loaded = await Promise.all([this.loadDirectory(this.bundledProfiles), this.loadDirectory(this.userProfiles)])
     const unique = new Map<string, MonitorProfile>()
     for (const profile of loaded.flat()) unique.set(profile.id, profile)
+    this.statusReady = false
     this.profiles = [...unique.values()]
     await this.detect(true)
   }
@@ -246,17 +258,24 @@ export class MonitorController {
     this.detectedAt = Date.now()
     const [name, hid, videoDdc] = await Promise.all([this.detectDisplayName(), this.probeHidDdc(), this.probeVideoDdc()])
     this.displayName = name
-    this.profile = this.profiles.find((candidate) => !candidate.fallback && (
+    const matchedProfile = this.profiles.find((candidate) => !candidate.fallback && (
       (hid && candidate.match?.usbHid?.vendorId === hid.vendorId && candidate.match.usbHid.productId === hid.productId) ||
       (candidate.match?.displayNamePattern && new RegExp(candidate.match.displayNamePattern, "i").test(name))
     )) || this.profiles.find((candidate) => candidate.fallback) || this.profiles[0]
-    if (!this.profile) throw new Error("没有可用的显示器配置档")
-    const profileAcceptsHid = Boolean(hid && this.profile.usbHid?.adapter === "lg-monitor-controls-v1" &&
-      this.profile.match?.usbHid?.vendorId === hid.vendorId && this.profile.match.usbHid.productId === hid.productId)
-    this.available = new Set<MonitorTransport>([
-      ...(profileAcceptsHid ? ["usb-hid-ddc" as const] : []),
+    if (!matchedProfile) throw new Error("没有可用的显示器配置档")
+    const detectedAvailable = new Set<MonitorTransport>([
+      ...(hid && matchedProfile.usbHid?.adapter === "lg-monitor-controls-v1" &&
+          matchedProfile.match?.usbHid?.vendorId === hid.vendorId &&
+          matchedProfile.match.usbHid.productId === hid.productId ? ["usb-hid-ddc" as const] : []),
       ...(videoDdc ? ["video-ddc" as const] : []),
     ])
+    // Input switching can make DDC reads disappear briefly. Keep the last
+    // working route during that transient window so a switch-back command can
+    // still attempt its write.
+    const canReusePreviousRoute = detectedAvailable.size === 0 && this.available.size > 0 &&
+      Date.now() - this.lastTransportSuccessAt < this.transportGraceMs
+    this.profile = canReusePreviousRoute && this.profile ? this.profile : matchedProfile
+    this.available = canReusePreviousRoute ? new Set(this.available) : detectedAvailable
     if (this.transport === "unavailable" || !this.available.has(this.transport) || !this.profile.transports.includes(this.transport)) {
       this.selectTransport(this.profile.transports.find((item) => this.available.has(item)) || "unavailable")
     }
@@ -270,7 +289,9 @@ export class MonitorController {
   }
 
   async connection(force = false): Promise<MonitorConnectionInfo> {
-    await this.detect(force)
+    if (force || !this.profile || (!this.controlsActive() && !this.recentlyReachable())) {
+      await this.enqueue(() => this.detect(force))
+    }
     return {
       displayName: this.displayName,
       profileId: this.profile!.id,
@@ -287,9 +308,20 @@ export class MonitorController {
   }
 
   private selectTransport(transport: MonitorTransport): void {
+    if (transport !== "unavailable") {
+      this.lastKnownTransport = transport
+      this.lastTransportSuccessAt = Date.now()
+    }
     if (transport !== this.transport) this.trustedControls.clear()
     this.transport = transport
     this.transportFailures = 0
+  }
+
+  private inputRoutes(): MonitorTransport[] {
+    const current = this.candidates()
+    if (current.length) return current
+    const known = this.lastKnownTransport
+    return known && this.profile?.transports.includes(known) ? [known] : []
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -329,6 +361,7 @@ export class MonitorController {
       try {
         const value = await this.read(control, current)
         this.transportFailures = 0
+        this.lastTransportSuccessAt = Date.now()
         return value
       } catch (error) {
         lastError = error
@@ -350,7 +383,9 @@ export class MonitorController {
     const first = await this.readWithFallback(control)
     const previous = this.lastStatus[control]
     if (this.trustedControls.has(control) && this.valuesMatch(control, first, previous)) return first
+    if (this.pendingControls) return previous
     await new Promise((resolve) => setTimeout(resolve, 80))
+    if (this.pendingControls) return previous
     const second = await this.readWithFallback(control)
     if (!this.valuesMatch(control, first, second)) throw new Error(`${control} 状态读取不稳定`)
     this.trustedControls.add(control)
@@ -358,9 +393,10 @@ export class MonitorController {
   }
 
   private async readStatus(): Promise<MonitorStatus> {
-    await this.detect()
+    if (!this.candidates().length) await this.detect()
     let success = 0
     for (const control of controls) {
+      if (this.pendingControls) return this.snapshot()
       try {
         const value = await this.readStable(control)
         if (control === "brightness" && typeof value === "number") this.lastStatus.brightness = value
@@ -374,6 +410,7 @@ export class MonitorController {
       await this.detect(true)
       throw new Error("未检测到可用的 DDC/CI 连接")
     }
+    this.statusReady = true
     return { ...this.lastStatus }
   }
 
@@ -385,7 +422,61 @@ export class MonitorController {
     return { ...this.lastStatus }
   }
 
+  statusSnapshot(): MonitorStatus {
+    return this.snapshot()
+  }
+
+  startBackgroundStatus(intervalMs = 5000, fullIntervalMs = 30000): void {
+    if (this.backgroundTimer) return
+    void this.enqueue(() => this.readStatus()).catch(() => undefined)
+    let elapsed = 0
+    this.backgroundTimer = setInterval(() => {
+      elapsed += intervalMs
+      if (this.backgroundPending || this.controlsActive()) return
+      const readFull = elapsed >= fullIntervalMs
+      if (readFull) elapsed = 0
+      this.backgroundPending = true
+      void this.enqueue(() => this.controlsActive() ? Promise.resolve(this.snapshot()) :
+        readFull ? this.readStatus() : this.readFastStatus())
+        .catch(() => undefined)
+        .finally(() => { this.backgroundPending = false })
+    }, intervalMs)
+  }
+
+  private async readFastStatus(): Promise<MonitorStatus> {
+    const value = await this.readStable("brightness")
+    if (typeof value === "number") this.lastStatus.brightness = value
+    this.statusReady = true
+    return { ...this.lastStatus }
+  }
+
+  hasStatus(): boolean {
+    return this.statusReady
+  }
+
+  private controlsActive(): boolean {
+    return this.pendingControls > 0 || Date.now() - this.lastControlAt < 2000
+  }
+
+  private recentlyReachable(): boolean {
+    return this.transport !== "unavailable" && this.transportFailures === 0 &&
+      Date.now() - this.lastTransportSuccessAt < 5000
+  }
+
   private async checkReachable(): Promise<boolean> {
+    if (this.recentlyReachable()) return true
+    // Reuse the working route; forced discovery used to add a probe before
+    // another two reads on every heartbeat reachability check.
+    if (this.candidates().length) {
+      try {
+        const value = await this.readWithFallback("brightness")
+        if (typeof value === "number") this.lastStatus.brightness = value
+        return true
+      } catch {
+        if (this.controlsActive()) return false
+        // A reconnect may change the available adapter or profile.
+      }
+    }
     await this.detect(true)
     for (const transport of this.candidates()) {
       try {
@@ -401,6 +492,7 @@ export class MonitorController {
   }
 
   reachable(): Promise<boolean> {
+    if (this.recentlyReachable()) return Promise.resolve(true)
     return this.enqueue(() => this.checkReachable())
   }
 
@@ -438,28 +530,42 @@ export class MonitorController {
       operation, source, control, requested: String(value), final: request.final !== false,
       profile: this.profile?.id,
     })
-    try {
-      await this.detect()
-    } catch (error) {
-      const failure = error instanceof Error ? error : new Error("显示器检测失败")
-      this.logger?.error("control.failed", {
-        operation, source, control, requested: String(value), stage: "detection",
-        durationMs: Date.now() - startedAt, error: failure.message,
+    const knownInputRoute = control === "input" ? this.inputRoutes() : this.candidates()
+    if (knownInputRoute.length) {
+      this.logger?.info("control.route_reused", {
+        operation, control, transport: knownInputRoute[0], display: this.display, profile: this.profile?.id,
       })
-      throw failure
+    } else {
+      try {
+        await this.detect()
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error("显示器检测失败")
+        this.logger?.error("control.failed", {
+          operation, source, control, requested: String(value), stage: "detection",
+          durationMs: Date.now() - startedAt, error: failure.message,
+        })
+        throw failure
+      }
     }
     let lastError: unknown
-    for (const transport of this.candidates()) {
+    const routes = control === "input" ? this.inputRoutes() : this.candidates()
+    for (const transport of routes) {
       const routeStartedAt = Date.now()
       this.logger?.info("control.route_attempt", {
         operation, control, transport, display: this.display, profile: this.profile?.id,
       })
       try {
-        await this.write(control, value, transport)
+        const preview = this.lastPreview
+        const reusePreview = request.final !== false && (control === "brightness" || control === "volume") &&
+          preview?.control === control && preview.value === value && preview.source === source &&
+          preview.transport === transport && Date.now() - preview.at < 2000 && this.lastStatus[control] === value
+        this.lastPreview = undefined
+        if (!reusePreview) await this.write(control, value, transport)
         this.selectTransport(transport)
         let confirmed = value
-        let verification: "skipped" | "matched" | "unavailable" | "mismatch" = request.final === false ? "skipped" : "unavailable"
-        if (request.final !== false) {
+        let verification: "skipped" | "matched" | "unavailable" | "mismatch" =
+          request.final === false || control === "input" ? "skipped" : "unavailable"
+        if (request.final !== false && control !== "input") {
           try {
             const first = await this.read(control, transport)
             if (this.valuesMatch(control, first, value)) {
@@ -494,13 +600,18 @@ export class MonitorController {
         else if (control === "input" && isInput(confirmed)) this.lastStatus.input = confirmed
         this.trustedControls.add(control)
         this.transportFailures = 0
+        if (request.final === false && (control === "brightness" || control === "volume")) {
+          this.lastPreview = { control, value, source, transport, at: Date.now() }
+        }
         this.logger?.info("control.success", {
           operation, source, control, requested: String(value), confirmed: String(confirmed), transport,
-          display: this.display, profile: this.profile?.id, verification,
+          display: this.display, profile: this.profile?.id, verification, reusedPreview: reusePreview,
           routeDurationMs: Date.now() - routeStartedAt, durationMs: Date.now() - startedAt,
         })
         return { ...this.lastStatus }
       } catch (error) {
+        this.lastPreview = undefined
+        this.transportFailures++
         lastError = error
         this.logger?.warn("control.route_failed", {
           operation, control, transport, durationMs: Date.now() - routeStartedAt,
@@ -516,6 +627,22 @@ export class MonitorController {
   }
 
   control(request: ControlRequest, source: ControlSource = "internal"): Promise<MonitorStatus> {
-    return this.enqueue(() => this.applyControl(request, source))
+    const sequence = ++this.requestSequence
+    const queuedAt = Date.now()
+    this.latestControl.set(request.control, sequence)
+    this.pendingControls++
+    this.lastControlAt = queuedAt
+    return this.enqueue(async () => {
+      // A queued preview is obsolete once a newer value (including release)
+      // arrives. Never discard a final command or an in-flight transaction.
+      if (request.final === false && this.latestControl.get(request.control) !== sequence) {
+        return this.snapshot()
+      }
+      this.logger?.info("control.dequeued", { source, control: request.control, queueMs: Date.now() - queuedAt })
+      return this.applyControl(request, source)
+    }).finally(() => {
+      this.pendingControls--
+      this.lastControlAt = Date.now()
+    })
   }
 }

@@ -222,9 +222,56 @@ int readTouches(TouchPoint *points, int max_points) {
     points[active_points].x = static_cast<uint16_t>(constrain(x, 0, 479));
     points[active_points].y = static_cast<uint16_t>(constrain(y, 0, 479));
     points[active_points].strength = -1;
+    points[active_points].event = static_cast<TouchEvent>(event);
     ++active_points;
   }
   return active_points;
+}
+
+bool readTouchSnapshot(TouchSnapshot &snapshot) {
+  snapshot = {};
+  if (!touch_io) return false;
+
+  constexpr uint8_t kTouchStatusRegister = 0x02;
+  constexpr uint8_t kFirstPointRegister = 0x03;
+  constexpr int kControllerMaxPoints = 2;
+
+  snapshot.status = 0xFF;
+  snapshot.status_result = esp_lcd_panel_io_rx_param(
+      touch_io, kTouchStatusRegister, &snapshot.status, 1);
+  if (snapshot.status_result != ESP_OK) return false;
+
+  snapshot.valid = true;
+  snapshot.count = snapshot.status & 0x0F;
+  if (snapshot.count > 0 && snapshot.count <= kControllerMaxPoints) {
+    snapshot.points_result = esp_lcd_panel_io_rx_param(
+        touch_io, kFirstPointRegister, snapshot.raw, snapshot.count * 6);
+  }
+  return true;
+}
+
+void printTouchSnapshot(const TouchSnapshot &snapshot) {
+  if (!snapshot.valid) {
+    Serial.printf("TOUCH_RAW,valid=0,statusErr=%d\n",
+                  snapshot.status_result);
+    return;
+  }
+
+  Serial.printf("TOUCH_RAW,valid=1,status=0x%02X,count=%d,statusErr=%d,"
+                "pointsErr=%d",
+                snapshot.status, snapshot.count, snapshot.status_result,
+                snapshot.points_result);
+  const int points = snapshot.count > 2 ? 2 : snapshot.count;
+  for (int index = 0; index < points; ++index) {
+    const uint8_t *point = snapshot.raw + index * 6;
+    const uint8_t event = (point[0] >> 6) & 0x03;
+    const uint16_t x = ((point[0] & 0x0F) << 8) | point[1];
+    const uint16_t y = ((point[2] & 0x0F) << 8) | point[3];
+    const uint8_t id = point[2] >> 4;
+    Serial.printf(",p%d=(event=%u,x=%u,y=%u,id=%u,weight=%u,area=%u)",
+                  index, event, x, y, id, point[4], point[5]);
+  }
+  Serial.println();
 }
 
 void printTouchDiagnostics() {

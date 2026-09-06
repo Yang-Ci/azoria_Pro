@@ -13,6 +13,8 @@ node_modules/
 out/
 dist/
 release/
+desktop/assets/icon.png
+desktop/assets/icons/
 sidecar/target/
 *.tsbuildinfo
 

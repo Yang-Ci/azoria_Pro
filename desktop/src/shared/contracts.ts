@@ -55,6 +55,7 @@ export interface LanDevice {
 export interface DesktopApi {
   monitor: {
     status(): Promise<MonitorStatus>
+    statusSnapshot(): Promise<MonitorStatus>
     relayStatus(): Promise<MonitorStatus>
     control(request: ControlRequest): Promise<MonitorStatus>
     relayControl(request: ControlRequest, sourceNonce: string, sourceCommandId: string): Promise<ControlRequest["value"]>

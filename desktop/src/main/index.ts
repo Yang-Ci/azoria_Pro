@@ -11,6 +11,17 @@ import { MonitorController } from "./monitor"
 const isDevelopment = !app.isPackaged
 
 app.setName("AZORIA Desktop")
+if (process.platform === "linux") app.setDesktopName("azoria-desktop.desktop")
+const hasInstanceLock = app.requestSingleInstanceLock()
+if (!hasInstanceLock) app.quit()
+app.on("second-instance", () => {
+  const window = BrowserWindow.getAllWindows()[0]
+  if (window) {
+    if (window.isMinimized()) window.restore()
+    window.show()
+    window.focus()
+  }
+})
 for (const option of [
   "disable-component-update",
   "disable-client-side-phishing-detection",
@@ -32,6 +43,7 @@ function createWindow(): BrowserWindow {
   }
 
   const window = new BrowserWindow({
+    icon: path.join(app.getAppPath(), "desktop/assets/icon.png"),
     width: 1180,
     height: 780,
     minWidth: 880,
@@ -82,7 +94,7 @@ function createWindow(): BrowserWindow {
   return window
 }
 
-void app.whenReady().then(async () => {
+if (hasInstanceLock) void app.whenReady().then(async () => {
   const config = await loadConfig(app.getPath("userData"))
   app.setAppLogsPath()
   const logger = new LocalLogger(app.getPath("logs"))
@@ -97,11 +109,13 @@ void app.whenReady().then(async () => {
     logger,
   )
   await monitor.initialize()
+  monitor.startBackgroundStatus()
   const lan = new LanController(config.desktopId, monitor)
   await lan.start()
   const devices = new TouchManager(config.token)
 
   ipcMain.handle("monitor:status", () => monitor.status())
+  ipcMain.handle("monitor:status-snapshot", () => monitor.statusSnapshot())
   ipcMain.handle("monitor:relay-status", () => lan.relayStatus())
   ipcMain.handle("monitor:control", (_event, request: ControlRequest) => monitor.control(request, "desktop-ui"))
   ipcMain.handle("monitor:relay-control", (_event, request: ControlRequest, sourceNonce: string, sourceCommandId: string) =>

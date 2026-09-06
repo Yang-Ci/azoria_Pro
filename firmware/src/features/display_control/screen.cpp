@@ -376,13 +376,13 @@ lv_obj_t *createInputButton(lv_obj_t *parent, int index, int slot) {
                                           kInputIconX, 24,
                                           color(selected ? 0x050505 : 0xEBF4FF));
   } else if (index == 0) {
-    input_icons[index] = createUiImage(button, &icon_link1_36,
+    input_icons[index] = createUiImage(button, &icon_windows_36,
                                           kInputIconX, 23,
-                                          color(0xEBF4FF));
+                                          color(selected ? 0x050505 : 0xEBF4FF));
   } else {
-    input_icons[index] = createUiImage(button, &icon_link2_36,
+    input_icons[index] = createUiImage(button, &icon_linux_36,
                                           kInputIconX, 23,
-                                          color(0xEBF4FF));
+                                          color(selected ? 0x050505 : 0xEBF4FF));
   }
   lv_obj_t *caption =
       label(button, kInputLabels[index], 0, 65, &lv_font_montserrat_14);

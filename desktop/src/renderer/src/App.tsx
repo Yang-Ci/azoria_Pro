@@ -72,6 +72,10 @@ export default function App() {
     catch (error) { setOnline(false); setMessage(error instanceof Error ? error.message : "显示器未连接") }
     try { setConnection(await window.azoria.monitor.connection()) } catch { /* Keep the last detected route visible. */ }
   }, [])
+  const refreshSnapshot = useCallback(async () => {
+    try { setStatus(await window.azoria.monitor.statusSnapshot()); setOnline(true) }
+    catch { /* The background loop will retry the next DDC/CI read. */ }
+  }, [])
   const detectUsb = useCallback(async () => {
     const devices = await window.azoria.device.listUsb(); setUsb(devices)
     setSelectedUsb((current) => devices.some((device) => device.path === current) ? current : devices[0]?.path || "")
@@ -98,12 +102,13 @@ export default function App() {
       void detectUsb()
       void discoverLan()
     }
-    const timer = window.setInterval(() => {
-      if (!editingRef.current && pendingCountRef.current === 0) void refresh()
-    }, 30000)
+    const statusTimer = window.setInterval(() => {
+      if (!editingRef.current && pendingCountRef.current === 0) void refreshSnapshot()
+    }, 2000)
+    const connectionTimer = window.setInterval(() => { void refresh() }, 30000)
     const lanTimer = window.setInterval(() => void refreshLan(), 2000)
-    return () => { window.clearInterval(timer); window.clearInterval(lanTimer) }
-  }, [refresh, detectUsb, discoverLan, refreshLan])
+    return () => { window.clearInterval(statusTimer); window.clearInterval(connectionTimer); window.clearInterval(lanTimer) }
+  }, [refresh, detectUsb, discoverLan, refreshLan, refreshSnapshot])
 
   const setControl = async (control: ControlName, value: number | boolean | InputSource) => {
     pendingCountRef.current++

@@ -185,6 +185,39 @@ void handleLine(String line) {
     scanNetworks();
     return;
   }
+  if (line == "AZORIA_TOUCH_DIAG") {
+    Board::printTouchDiagnostics();
+    Board::TouchSnapshot snapshot;
+    if (!Board::readTouchSnapshot(snapshot)) {
+      Serial.println("AZORIA_TOUCH_ERROR snapshot read failed");
+      return;
+    }
+    Board::printTouchSnapshot(snapshot);
+    Serial.println("AZORIA_TOUCH_DIAG_DONE");
+    return;
+  }
+  if (line == "AZORIA_TOUCH_TEST") {
+    Board::printTouchDiagnostics();
+    Serial.println("AZORIA_TOUCH_TEST_BEGIN 10000");
+    Board::TouchSnapshot previous{};
+    bool have_previous = false;
+    uint32_t started = millis();
+    while (millis() - started < 10000) {
+      Board::TouchSnapshot snapshot;
+      if (!Board::readTouchSnapshot(snapshot)) {
+        Board::printTouchSnapshot(snapshot);
+        have_previous = false;
+      } else if (!have_previous || snapshot.status != previous.status ||
+                 memcmp(snapshot.raw, previous.raw, sizeof(snapshot.raw)) != 0) {
+        Board::printTouchSnapshot(snapshot);
+        previous = snapshot;
+        have_previous = true;
+      }
+      delay(10);
+    }
+    Serial.println("AZORIA_TOUCH_TEST_END");
+    return;
+  }
   constexpr char pair_prefix[] = "AZORIA_PAIR ";
   if (line.startsWith(pair_prefix)) {
     String token = formValue(line.substring(sizeof(pair_prefix) - 1), "token");

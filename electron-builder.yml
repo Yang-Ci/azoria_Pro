@@ -1,0 +1,62 @@
+appId: io.github.yang-ci.azoria-desktop
+productName: AZORIA Desktop
+directories:
+  output: release
+  buildResources: desktop/assets
+files:
+  - out/**/*
+  - desktop/profiles/*.json
+  - desktop/assets/icon.png
+  - package.json
+  - LICENSE
+  - NOTICE
+asar: true
+asarUnpack:
+  - node_modules/@serialport/bindings-cpp/**/*
+extraResources:
+  - from: sidecar/target/release/azoria-ddc-sidecar
+    to: sidecar/azoria-ddc-sidecar
+linux:
+  syncDesktopName: true
+  executableName: azoria-desktop
+  synopsis: Control AZORIA displays and Touch devices
+  icon: desktop/assets/icons
+  category: Utility
+  target:
+    - target: deb
+      arch: [x64]
+  artifactName: AZORIA-Desktop-${version}-linux-${arch}.${ext}
+  desktop:
+    entry:
+      Name: AZORIA Desktop
+      Comment: Control your monitor and AZORIA Touch
+      Comment[zh_CN]: 控制显示器与 AZORIA Touch
+      StartupWMClass: azoria-desktop
+      Keywords: AZORIA;Monitor;Brightness;DDC;显示器;亮度;
+afterPack: scripts/electron-after-pack.cjs
+artifactBuildCompleted: scripts/electron-artifact-completed.cjs
+deb:
+  compression: gz
+  packageCategory: utils
+  afterInstall: desktop/packaging/postinst
+  afterRemove: desktop/packaging/postrm
+  recommends: []
+  maintainer: Yang-Ci <Yang-Ci@users.noreply.github.com>
+  depends:
+    - libc6
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+    - libgbm1
+    - libasound2t64 | libasound2
+    - libudev1
+  fpm:
+    - --before-remove=desktop/packaging/prerm
+    - --deb-changelog=desktop/packaging/changelog
+    - desktop/packaging/copyright=/usr/share/doc/azoria-display-control/copyright

@@ -1,0 +1,43 @@
+#!/bin/sh
+set -e
+
+if command -v update-alternatives >/dev/null 2>&1; then
+  if [ -L /usr/bin/azoria-desktop ] && [ -e /usr/bin/azoria-desktop ] && \
+     [ "$(readlink /usr/bin/azoria-desktop)" != /etc/alternatives/azoria-desktop ]; then
+    rm -f /usr/bin/azoria-desktop
+  fi
+  update-alternatives --install /usr/bin/azoria-desktop azoria-desktop "/opt/AZORIA Desktop/azoria-desktop" 100
+else
+  ln -sf "/opt/AZORIA Desktop/azoria-desktop" /usr/bin/azoria-desktop
+fi
+
+if [ -L /proc/self/ns/user ] && unshare --user true; then
+  chmod 0755 "/opt/AZORIA Desktop/chrome-sandbox"
+else
+  chmod 4755 "/opt/AZORIA Desktop/chrome-sandbox"
+fi
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database /usr/share/applications
+fi
+
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -q /usr/share/icons/hicolor
+fi
+
+if command -v apparmor_status >/dev/null 2>&1 && apparmor_status --enabled; then
+  apparmor_profile="/opt/AZORIA Desktop/resources/apparmor-profile"
+  apparmor_target=/etc/apparmor.d/azoria-desktop
+  if command -v apparmor_parser >/dev/null 2>&1 && \
+     apparmor_parser --skip-kernel-load --debug "$apparmor_profile" >/dev/null 2>&1; then
+    install -m 0644 "$apparmor_profile" "$apparmor_target"
+
+    if command -v ischroot >/dev/null 2>&1 && ischroot; then
+      :
+    else
+      apparmor_parser --replace --write-cache --skip-read-cache "$apparmor_target"
+    fi
+  else
+    echo "Skipping AppArmor profile installation because the bundled profile is not supported"
+  fi
+fi

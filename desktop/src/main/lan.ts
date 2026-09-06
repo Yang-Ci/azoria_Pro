@@ -151,7 +151,15 @@ export class LanController {
     this.refreshMaster()
     const self = this.peers.get(this.desktopId)
     if (self) self.master = this.isMaster
-    const heartbeat = Buffer.from(`AZORIA_DESKTOP_HEARTBEAT_V1|${this.desktopId}|${network.address}|${this.reachable ? 1 : 0}|${this.isMaster ? 1 : 0}|${++this.heartbeatSequence}`)
+    const status = this.reachable && this.isMaster && this.monitor.hasStatus()
+      ? this.monitor.snapshot()
+      : undefined
+    const statusSuffix = status
+      ? `|${status.brightness}|${status.volume}|${status.mute ? 1 : 0}|${status.input}`
+      : ""
+    const heartbeat = Buffer.from(
+      `AZORIA_DESKTOP_HEARTBEAT_V1|${this.desktopId}|${network.address}|${this.reachable ? 1 : 0}|${this.isMaster ? 1 : 0}|${++this.heartbeatSequence}${statusSuffix}`
+    )
     socket.send(heartbeat, coordinationPort, network.broadcast)
     socket.send(heartbeat, discoveryPort, network.broadcast)
     for (const [id, peer] of this.peers) if (Date.now() - peer.seenAt > peerMaxAgeMs) this.peers.delete(id)
@@ -387,11 +395,20 @@ export class LanController {
       if (this.commandResults.has(command.key)) return
       const currentMaster = this.refreshMaster()
       if (currentMaster && currentMaster !== this.desktopId) return
-      this.reachable = await this.probeLocalReachability(2500)
-      this.peers.set(this.desktopId, { id: this.desktopId, address: network.address, reachable: this.reachable, master: this.isMaster, seenAt: Date.now() })
-      if (!this.reachable) {
-        this.releaseMaster(socket, network)
-        return
+      if (command.control === "input" && this.monitor.hasStatus()) {
+        // Switching back to this host is exactly the case where a live DDC
+        // reachability probe can be temporarily circular. Trust the known
+        // monitor state and let the write attempt prove the route.
+        this.reachable = true
+        this.lastProbeAt = Date.now()
+        this.peers.set(this.desktopId, { id: this.desktopId, address: network.address, reachable: true, master: this.isMaster, seenAt: Date.now() })
+      } else {
+        this.reachable = await this.probeLocalReachability(2500)
+        this.peers.set(this.desktopId, { id: this.desktopId, address: network.address, reachable: this.reachable, master: this.isMaster, seenAt: Date.now() })
+        if (!this.reachable) {
+          this.releaseMaster(socket, network)
+          return
+        }
       }
       const establishingMaster = currentMaster !== this.desktopId
       if (establishingMaster) {
@@ -412,9 +429,9 @@ export class LanController {
       this.commandResults.set(command.key, { wire, expiresAt: Date.now() + commandCacheMs })
       socket.send(Buffer.from(wire), discoveryPort, touchAddress)
     } catch {
-      this.reachable = false
-      this.lastProbeAt = Date.now()
-      this.releaseMaster(socket, network)
+      // A DDC/CI write failure does not prove that this Desktop is offline or
+      // unelectable. Keep the current master so the next touch retry can use
+      // the route immediately; the heartbeat probe will update health.
     } finally {
       this.claims.delete(command.key)
       this.inflightCommands.delete(command.key)
@@ -457,13 +474,14 @@ export class LanController {
     if (!this.authorized(request)) return this.json(response, 401, { ok: false, error: "unauthorized" })
     try {
       if (request.method === "GET" && request.url === "/v1/status") {
-        try {
-          return this.json(response, 200, { ...await this.monitor.status(), available: true, ...this.clock() })
-        } catch {
-          // The HTTP response proves that Touch can reach this Desktop. DDC/CI
-          // eligibility is a separate state and must not tear down discovery.
-          return this.json(response, 200, { ...this.monitor.snapshot(), available: false, ...this.clock() })
-        }
+        // Touch needs a fast heartbeat and clock sync. DDC/CI reads are slow
+        // and already run in the monitor's background queue; return its latest
+        // snapshot immediately so this endpoint never times out behind them.
+        return this.json(response, 200, {
+          ...this.monitor.snapshot(),
+          available: this.monitor.hasStatus(),
+          ...this.clock(),
+        })
       }
       if (request.method === "POST" && request.url === "/v1/control") {
         if (this.refreshMaster() !== this.desktopId || !this.reachable) return this.json(response, 409, { ok: false, error: "not active DDC/CI host" })

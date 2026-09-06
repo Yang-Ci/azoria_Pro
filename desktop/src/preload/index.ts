@@ -4,6 +4,7 @@ import type { ControlRequest, DesktopApi } from "../shared/contracts"
 const api: DesktopApi = {
   monitor: {
     status: () => ipcRenderer.invoke("monitor:status"),
+    statusSnapshot: () => ipcRenderer.invoke("monitor:status-snapshot"),
     relayStatus: () => ipcRenderer.invoke("monitor:relay-status"),
     control: (request: ControlRequest) => ipcRenderer.invoke("monitor:control", request),
     relayControl: (request: ControlRequest, sourceNonce: string, sourceCommandId: string) =>

@@ -118,6 +118,22 @@ sidecar/target/release/azoria-ddc-sidecar '{"operation":"get","transport":"nativ
 
 ## 常见失败
 
+### 2026-09-06 Linux 亮度延迟优化
+
+Desktop 复用已工作的 DDC 路径；后台亮度查询改为每 5 秒一次，交互期间暂停，完整状态查询在控制项之间让路。队列中的过期拖动预览会合并；同来源、同路径、两秒内成功写入的相同预览值，松手时只回读确认，避免再次写入。最终值改变时仍执行写入和回读，回读不一致仍报错。心跳检查复用最近成功的 DDC 操作，减少重复探测。
+
+通过 Electron IPC 调用真实 AOC U27P10 的亮度控制，三轮结果：
+
+| 操作 | 耗时 |
+| --- | --- |
+| 相同值松手确认 | 662–665 ms |
+| 最终值改变：写入及回读 | 1207–1273 ms |
+| 预览写入 | 487–617 ms；首轮碰到后台读取为 1157 ms |
+
+测试后恢复原亮度。以上是 Desktop 至显示器的调用耗时，不包含手指操作和 Touch 网络传输。测量后进一步将后台周期从 2 秒降为 5 秒，并在第二次稳定性读取前检查待处理控制；已开始的 DDC 事务无法中途取消。`control.dequeued.queueMs` 单独记录排队时间，`control.success.reusedPreview` 标识是否复用了预览写入。
+
+回归检查：`node --test desktop/tests/monitor-latency.test.cjs`。覆盖预览合并、相同值去重、不同最终值、失败重试、回读不一致和后台查询让路。
+
 | 现象 | 优先排查 |
 | --- | --- |
 | EDID 可见但 DDC 通信失败 | 改为直连 DP/HDMI，移除 hub、KVM、转换器；确认 DDC/CI 开关 |

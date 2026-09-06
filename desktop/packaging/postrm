@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+  apparmor_target=/etc/apparmor.d/azoria-desktop
+  if [ -f "$apparmor_target" ]; then
+    if command -v apparmor_status >/dev/null 2>&1 && apparmor_status --enabled; then
+      if command -v ischroot >/dev/null 2>&1 && ischroot; then
+        :
+      else
+        apparmor_parser --remove "$apparmor_target"
+      fi
+    fi
+    rm -f "$apparmor_target"
+  fi
+fi

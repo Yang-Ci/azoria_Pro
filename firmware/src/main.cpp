@@ -41,12 +41,14 @@ constexpr uint32_t kRuntimeDiagnosticIntervalMs = 60000;
 constexpr uint32_t kWiFiRetryIntervalMs = 30000;
 constexpr TickType_t kFrameBoundaryTimeout = pdMS_TO_TICKS(250);
 // The FT6336U is sampled every 8 ms. A real contact persists across reports,
-// while electrical noise and stale event records are normally isolated.
-// Confirm a new contact twice and a release three times at the input-driver
-// boundary. LVGL still owns all click, drag and gesture state.
-constexpr uint8_t kTouchPressConfirmSamples = 2;
+// while stale coordinates and electrical noise are normally isolated. Require
+// a stable run of valid press/contact reports before LVGL sees a new contact.
+// LVGL still owns all click, drag and gesture state.
+constexpr uint8_t kTouchPressConfirmSamples = 3;
 constexpr uint8_t kTouchReleaseConfirmSamples = 3;
+constexpr uint16_t kTouchConfirmMaxDriftPixels = 20;
 Board::TouchPoint last_touch_point{};
+Board::TouchPoint touch_press_anchor{};
 uint8_t touch_press_samples = 0;
 uint8_t touch_release_samples = 0;
 bool touch_is_pressed = false;
@@ -152,6 +154,16 @@ void touchRead(lv_indev_drv_t *, lv_indev_data_t *data) {
     last_touch_point = point;
     touch_release_samples = 0;
     if (!touch_is_pressed) {
+      if (touch_press_samples == 0) {
+        touch_press_anchor = point;
+      } else if (abs(point.x - touch_press_anchor.x) >
+                     kTouchConfirmMaxDriftPixels ||
+                 abs(point.y - touch_press_anchor.y) >
+                     kTouchConfirmMaxDriftPixels) {
+        touch_press_samples = 0;
+        data->state = LV_INDEV_STATE_REL;
+        return;
+      }
       if (++touch_press_samples < kTouchPressConfirmSamples) {
         data->state = LV_INDEV_STATE_REL;
         return;

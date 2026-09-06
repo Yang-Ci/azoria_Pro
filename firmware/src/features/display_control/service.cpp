@@ -116,6 +116,8 @@ int jsonInt(const String &json, const char *key, int fallback);
 bool jsonBool(const String &json, const char *key, bool fallback);
 String jsonString(const String &json, const char *key, const char *fallback);
 int jsonValueStart(const String &json, const char *key);
+void applyHeartbeatStatus(int brightness, int volume, bool muted,
+                          const String &input);
 
 size_t kindIndex(ControlKind kind) {
   return static_cast<size_t>(kind);
@@ -129,6 +131,11 @@ const char *controlName(ControlKind kind) {
     case ControlKind::Input: return "input";
     default: return "";
   }
+}
+
+bool validInputValue(const String &value) {
+  return value == "dp1" || value == "hdmi1" || value == "hdmi2" ||
+         value == "usbc";
 }
 
 bool &pendingFor(ControlKind kind) {
@@ -454,13 +461,23 @@ void handlePassiveDiscovery() {
   if (read <= 0) return;
   String wire(buffer);
 
+  const int heartbeat_field_count = wireFieldCount(wire);
   if (wireField(wire, 0) == "AZORIA_DESKTOP_HEARTBEAT_V1" &&
-      wireFieldCount(wire) == 6) {
+      (heartbeat_field_count == 6 || heartbeat_field_count == 10)) {
     String advertised_address = wireField(wire, 2);
     if (advertised_address != sender.toString()) return;
     remote_config.host = advertised_address;
     remote_config.port = 8732;
     desktop_address_was_discovered = true;
+    if (heartbeat_field_count == 10 && wireField(wire, 3) == "1") {
+      int brightness = constrain(wireField(wire, 6).toInt(), 0, 100);
+      int volume = constrain(wireField(wire, 7).toInt(), 0, 100);
+      bool muted = wireField(wire, 8) == "1";
+      String input = wireField(wire, 9);
+      if (validInputValue(input)) {
+        applyHeartbeatStatus(brightness, volume, muted, input);
+      }
+    }
     wakeRemoteTask();
     return;
   }
@@ -597,6 +614,48 @@ bool readStatus() {
   }
   xSemaphoreGive(state_mutex);
   return true;
+}
+
+void applyHeartbeatStatus(int brightness, int volume, bool muted,
+                          const String &input) {
+  if (!state_mutex) return;
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  const uint32_t now = millis();
+  const bool brightness_writable =
+      statusCanOverwriteLocked(ControlKind::Brightness, now);
+  const bool volume_writable =
+      statusCanOverwriteLocked(ControlKind::Volume, now);
+  const bool mute_writable =
+      statusCanOverwriteLocked(ControlKind::Mute, now);
+  const bool input_writable =
+      statusCanOverwriteLocked(ControlKind::Input, now);
+  const bool input_known = validInputValue(input);
+  const bool changed =
+      !remote_state.ready || !remote_state.online ||
+      (brightness_writable && remote_state.brightness != brightness) ||
+      (volume_writable && remote_state.volume != volume) ||
+      (mute_writable && remote_state.muted != muted) ||
+      (input_writable && input_known &&
+       strcmp(remote_state.input, input.c_str())) ||
+      strcmp(remote_state.message,
+             anyPendingLocked() ? "Saving changes" : "DDC connected");
+  if (!changed) {
+    xSemaphoreGive(state_mutex);
+    return;
+  }
+  remote_state.ready = true;
+  remote_state.online = true;
+  if (brightness_writable) remote_state.brightness = brightness;
+  if (volume_writable) remote_state.volume = volume;
+  if (mute_writable) remote_state.muted = muted;
+  if (input_writable && input_known) {
+    strlcpy(remote_state.input, input.c_str(), sizeof(remote_state.input));
+  }
+  strlcpy(remote_state.message,
+          anyPendingLocked() ? "Saving changes" : "DDC connected",
+          sizeof(remote_state.message));
+  ++remote_state.revision;
+  xSemaphoreGive(state_mutex);
 }
 
 bool takeNextCommand(Command &command) {
