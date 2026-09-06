@@ -169,8 +169,9 @@ the fallback path together.
 The desktop app enumerates DDC/CI-capable displays and Windows internal panels,
 then lets you select the active target in the control view or Profile wizard.
 The internal-panel path reads `WmiMonitorBrightness` and writes through
-`WmiSetBrightness`; it supports brightness only, so volume, mute, and input
-controls are disabled for that target.
+`WmiSetBrightness` for brightness. Volume and mute use Windows Core Audio
+(WASAPI) to control the current default playback device, following changes to
+headphones or other default outputs. Input switching remains disabled.
 
 Common VCP features:
 

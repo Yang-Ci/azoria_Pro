@@ -7,6 +7,8 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 #[cfg(target_os = "windows")]
 use wmi::WMIConnection;
+#[cfg(target_os = "windows")]
+mod system_audio;
 
 const LG_VENDOR_ID: u16 = 0x043e;
 const LG_PRODUCT_ID: u16 = 0x9a39;
@@ -148,8 +150,14 @@ fn internal_brightness_display(display: usize) -> Result<InternalBrightness, Str
 }
 
 #[cfg(target_os = "windows")]
-fn internal_get(display: usize) -> Result<Value, String> {
+fn internal_get(display: usize, vcp: u8) -> Result<Value, String> {
+    if !matches!(vcp, 0x10 | 0x62 | 0x8d) {
+        return Err("internal-panel does not support this control".into());
+    }
     let panel = internal_brightness_display(display)?;
+    if vcp != 0x10 {
+        return system_audio::access(vcp, None);
+    }
     Ok(json!({
         "driver": "wmi",
         "id": panel.instance_name,
@@ -160,9 +168,19 @@ fn internal_get(display: usize) -> Result<Value, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn internal_set(display: usize, value: u16) -> Result<Value, String> {
-    let brightness = u8::try_from(value)
-        .map_err(|_| "internal-panel brightness must be 0-100".to_string())?;
+fn internal_set(display: usize, vcp: u8, value: u16) -> Result<Value, String> {
+    if !matches!(vcp, 0x10 | 0x62 | 0x8d) {
+        return Err("internal-panel does not support this control".into());
+    }
+    if vcp != 0x10 {
+        internal_brightness_display(display)?;
+        return system_audio::access(vcp, Some(value));
+    }
+    if value > 100 {
+        return Err("internal-panel brightness must be 0-100".into());
+    }
+    let brightness =
+        u8::try_from(value).map_err(|_| "internal-panel brightness must be 0-100".to_string())?;
     let panel = internal_brightness_display(display)?;
     let connection = WMIConnection::with_namespace_path("ROOT\\WMI")
         .map_err(|error| format!("WMI initialization failed: {error}"))?;
@@ -189,12 +207,12 @@ fn internal_set(display: usize, value: u16) -> Result<Value, String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn internal_get(_display: usize) -> Result<Value, String> {
+fn internal_get(_display: usize, _vcp: u8) -> Result<Value, String> {
     Err("internal-panel brightness is only available on Windows".into())
 }
 
 #[cfg(not(target_os = "windows"))]
-fn internal_set(_display: usize, _value: u16) -> Result<Value, String> {
+fn internal_set(_display: usize, _vcp: u8, _value: u16) -> Result<Value, String> {
     Err("internal-panel brightness is only available on Windows".into())
 }
 
@@ -419,12 +437,11 @@ fn execute(request: Request) -> Result<Value, String> {
                     })
                 })
                 .collect();
-            let ddc_count = displays.len();
-            displays.extend(
-                internal_brightness_displays()?
-                    .into_iter()
-                    .enumerate()
-                    .map(|(offset, panel)| {
+            #[cfg(target_os = "windows")]
+            {
+                let ddc_count = displays.len();
+                displays.extend(internal_brightness_displays()?.into_iter().enumerate().map(
+                    |(offset, panel)| {
                         let model = panel
                             .instance_name
                             .split('\\')
@@ -438,8 +455,9 @@ fn execute(request: Request) -> Result<Value, String> {
                             "model": model,
                             "transport": "internal-panel"
                         })
-                    }),
-            );
+                    },
+                ));
+            }
             Ok(Value::Array(displays))
         }
         Request::Get {
@@ -450,8 +468,8 @@ fn execute(request: Request) -> Result<Value, String> {
         Request::Get {
             transport: Transport::InternalPanel,
             display,
-            ..
-        } => internal_get(display),
+            vcp,
+        } => internal_get(display, vcp),
         Request::Get {
             transport: Transport::LgHidDdc,
             vcp,
@@ -467,8 +485,8 @@ fn execute(request: Request) -> Result<Value, String> {
             transport: Transport::InternalPanel,
             display,
             value,
-            ..
-        } => internal_set(display, value),
+            vcp,
+        } => internal_set(display, vcp, value),
         Request::Set {
             transport: Transport::LgHidDdc,
             vcp,
@@ -486,7 +504,7 @@ fn execute(request: Request) -> Result<Value, String> {
         Request::Input {
             transport: Transport::InternalPanel,
             ..
-        } => Err("internal-panel supports brightness only".into()),
+        } => Err("internal-panel does not support input switching".into()),
     }
 }
 

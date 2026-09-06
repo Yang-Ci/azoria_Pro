@@ -106,7 +106,7 @@ function internalPanelFixture() {
   ])
   const internalGet = []
   const internalSet = []
-  let brightness = 86
+  const values = { 16: 86, 98: 35, 141: 2 }
   monitor.sidecar = async (request) => {
     if (request.operation === 'enumerate') {
       return [
@@ -118,12 +118,13 @@ function internalPanelFixture() {
     if (request.operation === 'get') {
       if (request.transport !== 'internal-panel') throw new Error('DDC/CI unavailable')
       internalGet.push(request.display)
-      return { current: brightness, maximum: 100 }
+      if (!(request.vcp in values)) throw new Error('Unsupported control')
+      return { current: values[request.vcp], maximum: request.vcp === 141 ? 2 : 100 }
     }
     if (request.operation === 'set') {
       if (request.transport !== 'internal-panel') throw new Error('DDC/CI unavailable')
-      internalSet.push({ display: request.display, value: request.value })
-      brightness = request.value
+      internalSet.push({ display: request.display, vcp: request.vcp, value: request.value })
+      values[request.vcp] = request.value
       return { value: request.value, acknowledged: true }
     }
     throw new Error(`Unexpected sidecar operation: ${request.operation}`)
@@ -144,20 +145,25 @@ test('Windows internal panels are enumerated and selected when DDC/CI is unavail
   assert.ok(internalGet.includes(2))
 })
 
-test('Windows internal panels support brightness only', async () => {
+test('Windows internal panels route brightness, system volume and mute with readback', async () => {
   const { monitor, internalSet } = internalPanelFixture()
   await monitor.detect(true)
 
   const status = await monitor.control({ control: 'brightness', value: 80, final: true })
   assert.equal(status.brightness, 80)
-  assert.deepEqual(internalSet, [{ display: 2, value: 80 }])
+  assert.deepEqual(internalSet, [{ display: 2, vcp: 16, value: 80 }])
 
-  await assert.rejects(
-    () => monitor.control({ control: 'volume', value: 20, final: true }),
-    /内屏 WMI 通道只支持亮度/,
-  )
+  assert.equal((await monitor.status()).volume, 35)
+  assert.equal((await monitor.control({ control: 'volume', value: 20, final: true })).volume, 20)
+  assert.equal((await monitor.control({ control: 'mute', value: true, final: true })).mute, true)
+  assert.equal((await monitor.control({ control: 'mute', value: false, final: true })).mute, false)
+  assert.deepEqual(internalSet.slice(1), [
+    { display: 2, vcp: 98, value: 20 },
+    { display: 2, vcp: 141, value: 1 },
+    { display: 2, vcp: 141, value: 2 },
+  ])
   await assert.rejects(
     () => monitor.control({ control: 'input', value: 'hdmi1', final: true }),
-    /内屏 WMI 通道只支持亮度/,
+    /内屏不支持切换输入源/,
   )
 })

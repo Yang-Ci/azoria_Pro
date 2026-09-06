@@ -16,6 +16,7 @@ dependencies = [
  "hidapi",
  "serde",
  "serde_json",
+ "windows",
  "wmi",
 ]
 

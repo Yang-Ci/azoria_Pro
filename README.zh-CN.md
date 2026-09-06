@@ -134,7 +134,8 @@ AZORIA Desktop 的渲染进程没有 Node.js 权限，硬件操作通过白名�
 这里的“USB HID”不是另一套显示器控制协议。它只是某些显示器用来承载 DDC/CI
 报文的厂商 USB 通道；亮度、音量、静音和输入源最终仍以 DDC/CI VCP 功能进行表达。
 Desktop 会枚举支持 DDC/CI 的显示器和 Windows 内屏，并可在控制页或 Profile 向导中
-切换当前目标。内屏 WMI 路径只支持亮度，音量、静音和输入源控件会自动禁用。
+切换当前目标。内屏亮度通过 WMI 控制；音量和静音通过 Windows Core Audio（WASAPI）控制当前默认播放设备，
+会跟随系统切换到耳机或其他默认输出。内屏不支持切换输入源，对应控件保持禁用。
 常用 VCP opcode 如下。配置表中的数字使用 JSON 十进制写法：
 
 | 能力 | VCP opcode | JSON 十进制 |

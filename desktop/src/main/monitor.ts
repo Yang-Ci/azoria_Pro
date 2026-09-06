@@ -531,9 +531,9 @@ export class MonitorController {
 
   private async read(control: ControlName, transport: MonitorTransport): Promise<number | boolean | InputSource> {
     if (transport === "internal-panel") {
-      if (control !== "brightness") throw new Error("内屏 WMI 通道只支持亮度")
-      const result = await this.get("internal-panel", 0x10)
-      return percentage(Number(result.current))
+      if (control === "input") throw new Error("内屏不支持切换输入源")
+      const result = await this.get("internal-panel", this.vcp(control))
+      return control === "mute" ? Number(result.current) === 1 : percentage(Number(result.current))
     }
     if (transport === "video-ddc") {
       const result = await this.get("native-ddc", this.vcp(control))
@@ -595,6 +595,7 @@ export class MonitorController {
     if (!this.candidates().length) await this.detect()
     let success = 0
     for (const control of controls) {
+      if (this.activeDisplay()?.transport === "internal-panel" && control === "input") continue
       if (this.pendingControls) return this.snapshot()
       try {
         const value = await this.readStable(control)
@@ -697,8 +698,8 @@ export class MonitorController {
 
   private async write(control: ControlName, value: ControlRequest["value"], transport: MonitorTransport): Promise<void> {
     if (transport === "internal-panel") {
-      if (control !== "brightness" || typeof value !== "number") throw new Error("内屏 WMI 通道只支持亮度")
-      await this.set("internal-panel", 0x10, value)
+      if (control === "input") throw new Error("内屏不支持切换输入源")
+      await this.set("internal-panel", this.vcp(control), control === "mute" ? (value ? 1 : 2) : value as number)
       return
     }
     if (transport === "video-ddc" && this.profile?.ddc) {
