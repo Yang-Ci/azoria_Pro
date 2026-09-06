@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Bluetooth, Cable, Check, FileUp, Radar, RefreshCw, Router, Settings, ShieldCheck, Sun, Volume2, VolumeX, Zap } from "lucide-react"
-import type { ControlName, FirmwareImage, InputSource, LanDevice, MonitorConnectionInfo, MonitorStatus, MonitorTransport, UsbDevice } from "../../shared/contracts"
+import { Activity, Bluetooth, Cable, Check, FileUp, Radio, RefreshCw, Router, Settings, ShieldCheck, Sun, Volume2, VolumeX, Zap } from "lucide-react"
+import type { ControlName, DiagnosticsReport, FirmwareImage, InputSource, LanDevice, MonitorConnectionInfo, MonitorStatus, MonitorTransport, UsbDevice } from "../../shared/contracts"
 import { connectBle } from "./ble"
 import { AzoriaDesktopBrand } from "./components/brand"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog"
@@ -38,6 +38,16 @@ function transportLabel(transport: MonitorTransport) {
   return "不可用"
 }
 
+function metricValue(value: number | null | undefined, suffix = "") {
+  if (value === null || value === undefined) return "--"
+  return `${Math.round(value)}${suffix}`
+}
+
+function durationValue(value: number | null | undefined) {
+  if (value === null || value === undefined) return "--"
+  return `${Math.round(value)} ms`
+}
+
 export default function App() {
   const [tab, setTab] = useState("control")
   const [developerMode, setDeveloperMode] = useState(() => localStorage.getItem("azoria.developerMode") === "1")
@@ -61,6 +71,7 @@ export default function App() {
   const [blePrepared, setBlePrepared] = useState(false)
   const [verifiedChip, setVerifiedChip] = useState("")
   const [firmware, setFirmware] = useState<FirmwareImage | null>(null)
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsReport | null>(null)
 
   useEffect(() => {
     localStorage.setItem("azoria.developerMode", developerMode ? "1" : "0")
@@ -95,6 +106,10 @@ export default function App() {
     try { setLanDevices(await window.azoria.device.listLan()) }
     catch { /* Preserve the last known device until its main-process lease expires. */ }
   }, [])
+  const refreshDiagnostics = useCallback(async () => {
+    try { setDiagnostics(await window.azoria.diagnostics.report()) }
+    catch { setDiagnostics(null) }
+  }, [])
   useEffect(() => {
     if (!initializedRef.current) {
       initializedRef.current = true
@@ -107,8 +122,10 @@ export default function App() {
     }, 2000)
     const connectionTimer = window.setInterval(() => { void refresh() }, 30000)
     const lanTimer = window.setInterval(() => void refreshLan(), 2000)
-    return () => { window.clearInterval(statusTimer); window.clearInterval(connectionTimer); window.clearInterval(lanTimer) }
-  }, [refresh, detectUsb, discoverLan, refreshLan, refreshSnapshot])
+    const diagnosticsTimer = window.setInterval(() => void refreshDiagnostics(), 2000)
+    void refreshDiagnostics()
+    return () => { window.clearInterval(statusTimer); window.clearInterval(connectionTimer); window.clearInterval(lanTimer); window.clearInterval(diagnosticsTimer) }
+  }, [refresh, detectUsb, discoverLan, refreshLan, refreshSnapshot, refreshDiagnostics])
 
   const setControl = async (control: ControlName, value: number | boolean | InputSource) => {
     pendingCountRef.current++
@@ -166,6 +183,7 @@ export default function App() {
         <TabsList className="mb-6 bg-zinc-950">
           <TabsTrigger value="control">显示器</TabsTrigger>
           <TabsTrigger value="touch">AZORIA Touch</TabsTrigger>
+          <TabsTrigger value="diagnostics">诊断</TabsTrigger>
           {developerMode && <TabsTrigger value="developer">开发者</TabsTrigger>}
         </TabsList>
 
@@ -177,6 +195,56 @@ export default function App() {
         <TabsContent value="touch" className="grid gap-5 lg:grid-cols-2">
           <Card><CardHeader><CardTitle>AZORIA Touch</CardTitle></CardHeader><CardContent className="space-y-4">{lanDevices.length ? <div className="space-y-2">{lanDevices.map((device) => <div key={device.id} className="rounded-lg border border-white/10 bg-black p-5"><div className="flex items-center justify-between"><p className="font-medium">{device.name}</p><Badge variant="outline" className="border-white/10"><Check />已连接</Badge></div></div>)}</div> : selectedDevice?.verified ? <div className="rounded-lg border border-white/10 bg-black p-5"><div className="flex items-center justify-between"><div><p className="font-medium">{selectedDevice.name}</p><p className="mt-1 text-sm text-zinc-500">USB 已连接</p></div><Badge variant="outline" className="border-white/10"><Check />已识别</Badge></div></div> : <div className="rounded-lg border border-dashed border-white/10 p-8 text-center text-sm text-zinc-500">未发现 AZORIA Touch</div>}<div className="grid grid-cols-2 gap-2">{selectedDevice?.verified && !blePrepared && <Button variant="outline" disabled={busy} onClick={prepareBluetooth}><Cable />准备蓝牙</Button>}<Button variant="outline" disabled={bleConnecting} onClick={connectBluetooth}><Bluetooth />{bleName ? "蓝牙已连接" : bleConnecting ? "正在连接" : "连接蓝牙"}</Button></div></CardContent></Card>
           <Card><CardHeader><CardTitle className="flex items-center gap-2"><Router />Wi‑Fi 配置</CardTitle></CardHeader><CardContent className="space-y-3"><Button variant="outline" className="w-full" disabled={!selectedDevice?.verified || busy} onClick={scanWifi}>扫描 2.4 GHz 网络</Button><Select value={ssid} onValueChange={setSsid}><SelectTrigger><SelectValue placeholder="选择 Wi‑Fi" /></SelectTrigger><SelectContent>{networks.map((network) => <SelectItem key={network.ssid} value={network.ssid}>{network.secure ? "加密 · " : "开放 · "}{network.ssid} · {network.rssi} dBm</SelectItem>)}</SelectContent></Select><input className="h-10 w-full rounded-md border border-white/10 bg-black px-3 text-sm outline-none focus:border-white/30" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Wi‑Fi 密码" /><Button className="w-full" disabled={!selectedDevice?.verified || !ssid || busy} onClick={saveWifi}>保存并连接</Button></CardContent></Card>
+        </TabsContent>
+
+        <TabsContent value="diagnostics" className="grid gap-5 lg:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2"><Activity />控制健康</CardTitle>
+              <CardDescription>最近 {diagnostics?.summary.recordCount ?? 0} 条事件</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
+                <div className="flex justify-between"><span className="text-zinc-400">成功率</span><span className="font-mono tabular-nums">{metricValue(diagnostics?.summary.control.successRate, "%")}</span></div>
+                <div className="flex justify-between"><span className="text-zinc-400">请求数</span><span className="font-mono tabular-nums">{diagnostics?.summary.control.requests ?? 0}</span></div>
+                <div className="flex justify-between"><span className="text-zinc-400">平均耗时</span><span className="font-mono tabular-nums">{durationValue(diagnostics?.summary.control.averageDurationMs)}</span></div>
+                <div className="flex justify-between"><span className="text-zinc-400">P95 耗时</span><span className="font-mono tabular-nums">{durationValue(diagnostics?.summary.control.p95DurationMs)}</span></div>
+                <div className="flex justify-between"><span className="text-zinc-400">路径耗时</span><span className="font-mono tabular-nums">{durationValue(diagnostics?.summary.control.averageRouteDurationMs)}</span></div>
+                <div className="flex justify-between"><span className="text-zinc-400">预览复用</span><span className="font-mono tabular-nums">{diagnostics?.summary.control.reusedPreviews ?? 0}</span></div>
+                <div className="flex justify-between"><span className="text-zinc-400">路径失败</span><span className="font-mono tabular-nums">{diagnostics?.summary.control.routeFailures ?? 0}</span></div>
+                <div className="flex justify-between"><span className="text-zinc-400">回读不一致</span><span className="font-mono tabular-nums">{diagnostics?.summary.control.readbackMismatches ?? 0}</span></div>
+              </div>
+              <Separator />
+              <div className="space-y-3 text-sm">
+                <div className="flex justify-between"><span className="text-zinc-400">配置档</span><span>{diagnostics?.connection.profileName ?? "--"}</span></div>
+                <div className="flex justify-between"><span className="text-zinc-400">控制路径</span><span>{diagnostics ? transportLabel(diagnostics.connection.transport) : "--"}</span></div>
+                <div className="flex justify-between"><span className="text-zinc-400">平台</span><span>{diagnostics?.system.platform ?? "--"}</span></div>
+                <div className="flex justify-between"><span className="text-zinc-400">Electron</span><span>{diagnostics?.system.electronVersion ?? "--"}</span></div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2"><Radio />最近事件</CardTitle>
+              <CardDescription>自动刷新</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {(diagnostics?.records ?? []).slice(-8).reverse().map((record) => (
+                <div key={`${record.timestamp}-${record.event}`} className="space-y-1 border-b border-white/5 pb-2 text-sm last:border-0">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-mono text-xs text-zinc-500">{new Date(record.timestamp).toLocaleTimeString()}</span>
+                    <Badge variant={record.level === "error" ? "destructive" : "outline"} className={record.level === "error" ? "" : "border-white/10"}>{record.level}</Badge>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-medium">{record.event}</span>
+                    <span className="font-mono text-xs text-zinc-500">{record.control ?? "--"}</span>
+                  </div>
+                  {record.error && <p className="text-xs text-zinc-500">{record.error}</p>}
+                </div>
+              ))}
+              {!diagnostics?.records.length && <p className="text-sm text-zinc-500">暂无事件</p>}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {developerMode && <TabsContent value="developer" className="grid gap-5 lg:grid-cols-2">

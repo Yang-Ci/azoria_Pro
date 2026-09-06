@@ -28,6 +28,9 @@ const api: DesktopApi = {
   security: {
     sign: (message: string) => ipcRenderer.invoke("security:sign", message),
   },
+  diagnostics: {
+    report: () => ipcRenderer.invoke("diagnostics:report"),
+  },
 }
 
 contextBridge.exposeInMainWorld("azoria", api)

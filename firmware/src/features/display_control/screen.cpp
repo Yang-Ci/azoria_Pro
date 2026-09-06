@@ -1,11 +1,13 @@
 #include "features/display_control/screen.h"
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <lvgl.h>
 #include <time.h>
 
 #include "features/display_control/service.h"
+#include "platform/board.h"
 #include "ui/display_badge.h"
 #include "ui/assets/app_fonts.h"
 #include "ui/assets/icons.h"
@@ -35,6 +37,9 @@ constexpr int kInputOrder[kInputCount] = {3, 1, 2, 0};
 lv_obj_t *input_buttons[kInputCount]{};
 lv_obj_t *input_icons[kInputCount]{};
 lv_obj_t *footer_text = nullptr;
+lv_obj_t *backlight_panel = nullptr;
+lv_obj_t *backlight_slider = nullptr;
+lv_obj_t *backlight_value = nullptr;
 uint32_t shown_revision = UINT32_MAX;
 bool local_muted = false;
 bool brightness_dragging = false;
@@ -46,6 +51,12 @@ uint32_t next_clock_update = 0;
 uint16_t active_input = 3;
 int16_t pending_input = -1;
 bool controls_enabled = false;
+int current_backlight_percent = 86;
+
+constexpr char kBacklightNamespace[] = "azoria.ui";
+constexpr char kBacklightKey[] = "screen";
+constexpr int kDefaultBacklightPercent = 86;
+constexpr int kMinBacklightPercent = 5;
 
 // LG USB VCP needs roughly 300 ms per preview on this monitor. Producing updates
 // faster only keeps Wi-Fi/HTTP continuously busy; the local slider remains
@@ -59,6 +70,27 @@ constexpr const char *kInputValues[] = {
 constexpr const char *kInputLabels[] = {
     "DP", "HDMI 1", "HDMI 2", "USB-C",
 };
+
+int loadBacklightSetting() {
+  Preferences preferences;
+  if (!preferences.begin(kBacklightNamespace, true)) return kDefaultBacklightPercent;
+  const int value = preferences.getInt(kBacklightKey, kDefaultBacklightPercent);
+  preferences.end();
+  return constrain(value, kMinBacklightPercent, 100);
+}
+
+void saveBacklightSetting(int value) {
+  Preferences preferences;
+  preferences.begin(kBacklightNamespace, false);
+  preferences.putInt(kBacklightKey, constrain(value, kMinBacklightPercent, 100));
+  preferences.end();
+}
+
+void applyBacklight(int value) {
+  current_backlight_percent = constrain(value, kMinBacklightPercent, 100);
+  const int scaled = (current_backlight_percent * 255 + 50) / 100;
+  Board::setBacklight(static_cast<uint8_t>(scaled));
+}
 
 void disableScrolling(lv_obj_t *object) {
   lv_obj_clear_flag(
@@ -345,6 +377,90 @@ void inputClicked(lv_event_t *event) {
   scheduleFullRedraw();
 }
 
+void showBacklightPanel() {
+  if (!backlight_panel) return;
+  lv_obj_clear_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(backlight_panel);
+  scheduleFullRedraw();
+}
+
+void hideBacklightPanel() {
+  if (!backlight_panel) return;
+  lv_obj_add_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN);
+  scheduleFullRedraw();
+}
+
+void backlightChanged(lv_event_t *) {
+  if (!backlight_slider || !backlight_value) return;
+  const int value = lv_slider_get_value(backlight_slider);
+  applyBacklight(value);
+  lv_label_set_text_fmt(backlight_value, "%d%%", current_backlight_percent);
+}
+
+void backlightReleased(lv_event_t *) {
+  if (!backlight_slider) return;
+  saveBacklightSetting(lv_slider_get_value(backlight_slider));
+  scheduleFullRedraw();
+}
+
+void closeBacklightPanel(lv_event_t *) {
+  hideBacklightPanel();
+}
+
+void screenGesture(lv_event_t *) {
+  lv_indev_t *input = lv_indev_get_act();
+  if (!input) return;
+  if (lv_indev_get_gesture_dir(input) != LV_DIR_TOP) return;
+  if (backlight_panel && !lv_obj_has_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN)) return;
+  showBacklightPanel();
+}
+
+void createBacklightPanel(lv_obj_t *parent) {
+  backlight_panel = card(parent, 13, 300, 454, 154);
+  lv_obj_set_style_bg_color(backlight_panel, color(0x111827), 0);
+  lv_obj_set_style_border_width(backlight_panel, 1, 0);
+  lv_obj_set_style_border_color(backlight_panel, color(0x334155), 0);
+  lv_obj_add_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN);
+
+  lv_obj_t *title = staticLabel(
+      backlight_panel, "SCREEN LIGHT", 20, 18,
+      &lv_font_montserrat_16, 0xF8FAFC);
+  lv_obj_set_style_text_opa(title, LV_OPA_70, 0);
+  backlight_value = label(backlight_panel, "86%", 372, 14,
+                           &lv_font_montserrat_28);
+  lv_obj_set_width(backlight_value, 70);
+  lv_obj_set_style_text_align(backlight_value, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_obj_set_style_text_color(backlight_value, color(0xF8FAFC), 0);
+  lv_obj_set_style_text_opa(backlight_value, LV_OPA_COVER, 0);
+
+  backlight_slider = lv_slider_create(backlight_panel);
+  lv_obj_set_pos(backlight_slider, 20, 66);
+  lv_obj_set_size(backlight_slider, 410, 22);
+  lv_slider_set_range(backlight_slider, kMinBacklightPercent, 100);
+  lv_slider_set_value(backlight_slider, current_backlight_percent, LV_ANIM_OFF);
+  styleSlider(backlight_slider, 410, 0xA9D2FF);
+  lv_obj_add_event_cb(
+      backlight_slider, backlightChanged, LV_EVENT_VALUE_CHANGED, nullptr);
+  lv_obj_add_event_cb(
+      backlight_slider, backlightReleased, LV_EVENT_RELEASED, nullptr);
+  lv_obj_add_event_cb(
+      backlight_slider, backlightReleased, LV_EVENT_PRESS_LOST, nullptr);
+
+  lv_obj_t *close_button = lv_btn_create(backlight_panel);
+  lv_obj_set_pos(close_button, 398, 12);
+  lv_obj_set_size(close_button, 38, 38);
+  lv_obj_set_style_bg_color(close_button, color(0x1D1D1D), 0);
+  lv_obj_set_style_shadow_width(close_button, 0, 0);
+  lv_obj_set_style_radius(close_button, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_pad_all(close_button, 0, 0);
+  disableScrolling(close_button);
+  lv_obj_add_event_cb(close_button, closeBacklightPanel, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *close_label = label(close_button, "X", 0, 0,
+                                 &lv_font_montserrat_16);
+  lv_obj_set_style_text_color(close_label, color(0xF8FAFC), 0);
+  lv_obj_center(close_label);
+}
+
 lv_obj_t *createInputButton(lv_obj_t *parent, int index, int slot) {
   lv_obj_t *button = lv_btn_create(parent);
   static const int kInputX[] = {13, 129, 244, 360};
@@ -423,6 +539,10 @@ void showScreen() {
   controls = lv_scr_act();
   disableScrolling(controls);
   lv_obj_set_scroll_dir(controls, LV_DIR_NONE);
+  current_backlight_percent = loadBacklightSetting();
+  applyBacklight(current_backlight_percent);
+  lv_obj_add_event_cb(
+      controls, screenGesture, LV_EVENT_GESTURE, nullptr);
 
   createUiImage(controls, &icon_azoria_logo_80, 28, 24,
                    color(0xF8FAFC));
@@ -447,6 +567,7 @@ void showScreen() {
 
   lv_obj_t *brightness_card = card(controls, 13, 166, 458, 102);
   lv_obj_set_style_bg_color(brightness_card, color(0x1D1D1D), 0);
+  lv_obj_add_flag(brightness_card, LV_OBJ_FLAG_GESTURE_BUBBLE);
   createUiImage(brightness_card, &icon_sun_16, 18, 27,
                    color(0xEBF4FF));
   lv_obj_t *brightness_title =
@@ -471,6 +592,7 @@ void showScreen() {
     lv_obj_clear_flag(segment, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
   }
   brightness_slider = lv_slider_create(brightness_card);
+  lv_obj_add_flag(brightness_slider, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_set_pos(brightness_slider, 15, 48);
   lv_obj_set_size(brightness_slider, 340, 38);
   lv_slider_set_range(brightness_slider, 0, 100);
@@ -490,6 +612,7 @@ void showScreen() {
 
   lv_obj_t *volume_card = card(controls, 13, 274, 374, 77);
   lv_obj_set_style_bg_color(volume_card, color(0x1D1D1D), 0);
+  lv_obj_add_flag(volume_card, LV_OBJ_FLAG_GESTURE_BUBBLE);
   createUiImage(volume_card, &icon_sound_16, 15, 20,
                    color(0xEBF4FF));
   lv_obj_t *volume_title =
@@ -497,6 +620,7 @@ void showScreen() {
                   0xF8FAFC);
   lv_obj_set_style_text_opa(volume_title, LV_OPA_50, 0);
   volume_slider = lv_slider_create(volume_card);
+  lv_obj_add_flag(volume_slider, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_set_pos(volume_slider, 15, 53);
   lv_slider_set_range(volume_slider, 0, 100);
   lv_slider_set_value(volume_slider, 20, LV_ANIM_OFF);
@@ -518,6 +642,7 @@ void showScreen() {
   lv_obj_set_style_radius(mute_button, 12, 0);
   lv_obj_set_style_pad_all(mute_button, 0, 0);
   disableScrolling(mute_button);
+  lv_obj_add_flag(mute_button, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_add_event_cb(mute_button, muteClicked, LV_EVENT_CLICKED, nullptr);
   mute_icon = createUiImage(mute_button, &icon_mute_24, 27, 26,
                                color(0xF04438));
@@ -530,8 +655,10 @@ void showScreen() {
   for (int slot = 0; slot < kInputCount; ++slot) {
     int index = kInputOrder[slot];
     input_buttons[index] = createInputButton(controls, index, slot);
+    lv_obj_add_flag(input_buttons[index], LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_state(input_buttons[index], LV_STATE_DISABLED);
   }
+  createBacklightPanel(controls);
   updateInputButtons();
   updateMuteVisual();
   updateBrightnessSegments(50);

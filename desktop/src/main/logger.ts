@@ -1,6 +1,7 @@
-import { appendFile, mkdir, rename, stat, unlink } from "node:fs/promises"
+import { appendFile, mkdir, readFile, rename, stat, unlink } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
+import type { DiagnosticRecord } from "../shared/contracts"
 
 const maxFileBytes = 2 * 1024 * 1024
 const retainedFiles = 3
@@ -14,6 +15,10 @@ export class LocalLogger {
 
   constructor(private readonly directory: string) {
     this.file = path.join(directory, "azoria-desktop.jsonl")
+  }
+
+  get path(): string {
+    return this.file
   }
 
   async initialize(): Promise<void> {
@@ -31,6 +36,36 @@ export class LocalLogger {
 
   error(event: string, fields: LogFields = {}): void {
     this.write("error", event, fields)
+  }
+
+  async readRecent(limit = 200): Promise<DiagnosticRecord[]> {
+    await this.queue
+    let content = ""
+    try { content = await readFile(this.file, { encoding: "utf8" }) }
+    catch { return [] }
+    const lines = content.split("\n").filter(Boolean).slice(-limit)
+    return lines.flatMap((line): DiagnosticRecord[] => {
+      let parsed: Record<string, unknown>
+      try { parsed = JSON.parse(line) as Record<string, unknown> }
+      catch { return [] }
+      const level = parsed.level
+      const record: DiagnosticRecord = {
+        timestamp: typeof parsed.timestamp === "string" ? parsed.timestamp : "",
+        level: level === "warn" || level === "error" ? level : "info",
+        event: typeof parsed.event === "string" ? parsed.event : "",
+        message: typeof parsed.error === "string" ? parsed.error : "",
+        control: typeof parsed.control === "string" ? parsed.control : undefined,
+        source: typeof parsed.source === "string" ? parsed.source : undefined,
+        transport: typeof parsed.transport === "string" ? parsed.transport : undefined,
+        profile: typeof parsed.profile === "string" ? parsed.profile : undefined,
+        durationMs: typeof parsed.durationMs === "number" ? parsed.durationMs : undefined,
+        routeDurationMs: typeof parsed.routeDurationMs === "number" ? parsed.routeDurationMs : undefined,
+        verification: typeof parsed.verification === "string" ? parsed.verification : undefined,
+        reusedPreview: typeof parsed.reusedPreview === "boolean" ? parsed.reusedPreview : undefined,
+        error: typeof parsed.error === "string" ? parsed.error : undefined,
+      }
+      return [record]
+    })
   }
 
   private write(level: LogLevel, event: string, fields: LogFields): void {

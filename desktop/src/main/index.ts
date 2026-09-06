@@ -3,6 +3,7 @@ import path from "node:path"
 import { app, BrowserWindow, dialog, ipcMain, type OpenDialogOptions } from "electron"
 import type { ControlRequest } from "../shared/contracts"
 import { loadConfig } from "./config"
+import { DiagnosticsController } from "./diagnostics"
 import { TouchManager } from "./touch"
 import { LanController } from "./lan"
 import { LocalLogger } from "./logger"
@@ -113,6 +114,7 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   const lan = new LanController(config.desktopId, monitor)
   await lan.start()
   const devices = new TouchManager(config.token)
+  const diagnostics = new DiagnosticsController(logger, monitor, lan)
 
   ipcMain.handle("monitor:status", () => monitor.status())
   ipcMain.handle("monitor:status-snapshot", () => monitor.statusSnapshot())
@@ -157,6 +159,7 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
     if (typeof message !== "string" || message.length > 512) throw new Error("签名消息无效")
     return createHmac("sha256", config.token).update(message).digest("hex").slice(0, 16)
   })
+  ipcMain.handle("diagnostics:report", () => diagnostics.report())
 
   createWindow()
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })

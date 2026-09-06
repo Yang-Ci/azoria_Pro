@@ -302,6 +302,17 @@ export class MonitorController {
     }
   }
 
+  connectionSnapshot(): MonitorConnectionInfo {
+    return {
+      displayName: this.displayName,
+      profileId: this.profile?.id || "generic-ddc",
+      profileName: this.profile?.name || "通用 DDC/CI 显示器",
+      summary: this.transport !== "unavailable" ? this.label(this.transport) : "未连接",
+      availableTransports: [...this.available],
+      transport: this.transport,
+    }
+  }
+
   private candidates(): MonitorTransport[] {
     const ordered = [this.transport, ...(this.profile?.transports || [])]
     return ordered.filter((item, index) => item !== "unavailable" && this.available.has(item) && ordered.indexOf(item) === index)

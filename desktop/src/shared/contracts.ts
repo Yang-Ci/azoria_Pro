@@ -52,6 +52,59 @@ export interface LanDevice {
   paired: boolean
 }
 
+export type DiagnosticLevel = "info" | "warn" | "error"
+
+export interface DiagnosticRecord {
+  timestamp: string
+  level: DiagnosticLevel
+  event: string
+  message: string
+  control?: string
+  source?: string
+  transport?: string
+  profile?: string
+  durationMs?: number
+  routeDurationMs?: number
+  verification?: string
+  reusedPreview?: boolean
+  error?: string
+}
+
+export interface DiagnosticsControlMetrics {
+  requests: number
+  successes: number
+  failures: number
+  successRate: number | null
+  averageDurationMs: number | null
+  p95DurationMs: number | null
+  averageRouteDurationMs: number | null
+  reusedPreviews: number
+  routeFailures: number
+  readbackMismatches: number
+}
+
+export interface DiagnosticsSummary {
+  generatedAt: string
+  recordCount: number
+  control: DiagnosticsControlMetrics
+}
+
+export interface DiagnosticsSystem {
+  appVersion: string
+  platform: string
+  electronVersion: string
+}
+
+export interface DiagnosticsReport {
+  summary: DiagnosticsSummary
+  records: DiagnosticRecord[]
+  connection: MonitorConnectionInfo
+  status: MonitorStatus
+  lanDevices: LanDevice[]
+  system: DiagnosticsSystem
+  logPath: string
+}
+
 export interface DesktopApi {
   monitor: {
     status(): Promise<MonitorStatus>
@@ -75,5 +128,8 @@ export interface DesktopApi {
   }
   security: {
     sign(message: string): Promise<string>
+  }
+  diagnostics: {
+    report(): Promise<DiagnosticsReport>
   }
 }
