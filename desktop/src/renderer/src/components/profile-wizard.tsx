@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import { ArrowRight, Check, RefreshCw, RotateCcw, Wand2 } from "lucide-react"
-import type { InputSource, MonitorConnectionInfo, MonitorProfileMatchState, MonitorProfileSource, MonitorProfileWizardInfo, MonitorStatus, MonitorTransport } from "../../../shared/contracts"
+import type { InputSource, MonitorConnectionInfo, MonitorProfileMatchState, MonitorProfileSource, MonitorProfileWizardInfo, MonitorStatus, MonitorSystem, MonitorTransport } from "../../../shared/contracts"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
@@ -30,10 +30,14 @@ const inputOptions: Array<{ value: InputSource; label: string }> = [
   { value: "usbc", label: "USB-C" },
 ]
 
-function transportLabel(transport: MonitorTransport) {
+function transportLabel(transport: MonitorTransport, system?: MonitorSystem) {
   if (transport === "usb-hid-ddc") return "USB HID → DDC/CI"
   if (transport === "video-ddc") return "视频链路 → DDC/CI"
-  if (transport === "internal-panel") return "Windows 内屏 WMI"
+  if (transport === "internal-panel") {
+    if (system === "linux") return "Linux 笔记本内屏"
+    if (system === "windows") return "Windows 笔记本内屏"
+    return "笔记本内屏"
+  }
   return "不可用"
 }
 
@@ -225,7 +229,7 @@ export function ProfileWizard({ onConnectionChange }: { onConnectionChange(conne
               </Select>
             </div>
             <InfoRow label="显示器" value={info?.displayName ?? "--"} />
-            <InfoRow label="可用路径" value={info?.availableTransports.map(transportLabel).join(" / ") || "--"} />
+            <InfoRow label="可用路径" value={info?.availableTransports.map((transport) => transportLabel(transport)).join(" / ") || "--"} />
             <InfoRow label="USB HID" value={info?.detectedUsbHid ? `${info.detectedUsbHid.vendorId} / ${info.detectedUsbHid.productId}` : "--"} />
             <InfoRow label="当前 Profile" value={activeProfile?.name ?? "--"} />
           </div>
@@ -250,7 +254,7 @@ export function ProfileWizard({ onConnectionChange }: { onConnectionChange(conne
                   <div className="mt-1 flex items-center gap-2 text-xs text-zinc-500">
                     <span>{sourceLabels[profile.source]}</span>
                     <span>·</span>
-                    <span>{profile.transports.map(transportLabel).join(" / ")}</span>
+                    <span>{profile.transports.map((transport) => transportLabel(transport)).join(" / ")}</span>
                   </div>
                 </button>
               ))}
@@ -266,7 +270,7 @@ export function ProfileWizard({ onConnectionChange }: { onConnectionChange(conne
         {step === 2 && (
           <div className="space-y-4">
             <InfoRow label="Profile" value={activeProfile?.name ?? "--"} />
-            <InfoRow label="路径" value={info ? transportLabel(info.activeTransport) : "--"} />
+            <InfoRow label="路径" value={info ? transportLabel(info.activeTransport, info.displays.find((display) => display.id === info.activeDisplayId)?.system) : "--"} />
             <div className="flex items-center gap-4">
               <Button variant="outline" disabled={busy} onClick={() => void readStatus()}><RefreshCw />读取状态</Button>
               <span className="font-mono text-sm tabular-nums text-zinc-400">
@@ -308,7 +312,7 @@ export function ProfileWizard({ onConnectionChange }: { onConnectionChange(conne
             <InfoRow label="Profile" value={activeProfile?.name ?? "--"} />
             <InfoRow label="来源" value={activeProfile ? sourceLabels[activeProfile.source] : "--"} />
             <InfoRow label="匹配方式" value={info?.manualProfileId ? "手动选择" : "自动匹配"} />
-            <InfoRow label="路径" value={info ? transportLabel(info.activeTransport) : "--"} />
+            <InfoRow label="路径" value={info ? transportLabel(info.activeTransport, info.displays.find((display) => display.id === info.activeDisplayId)?.system) : "--"} />
           </div>
         )}
 

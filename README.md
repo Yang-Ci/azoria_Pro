@@ -159,19 +159,22 @@ features. A monitor can expose those features over either:
 
 - `usb-hid-ddc` — vendor USB HID transport carrying DDC/CI messages;
 - `video-ddc` — DDC/CI over HDMI, DisplayPort, or USB-C video links.
-- `internal-panel` — Windows WMI brightness control for active laptop panels.
+- `internal-panel` — native laptop panel controls.
 
 AZORIA probes the available transports and selects one verified path for the
 entire monitor. It does not mix transport paths between individual controls.
 If the active path fails and another path is confirmed, all controls move to
 the fallback path together.
 
-The desktop app enumerates DDC/CI-capable displays and Windows internal panels,
+The desktop app enumerates DDC/CI-capable displays and native internal panels,
 then lets you select the active target in the control view or Profile wizard.
-The internal-panel path reads `WmiMonitorBrightness` and writes through
-`WmiSetBrightness` for brightness. Volume and mute use Windows Core Audio
-(WASAPI) to control the current default playback device, following changes to
-headphones or other default outputs. Input switching remains disabled.
+On Windows, brightness reads `WmiMonitorBrightness` and writes through
+`WmiSetBrightness`; volume and mute use Core Audio (WASAPI). On Linux, panels are
+identified from connected eDP/LVDS/DSI connectors and their system backlight
+device, not from monitor model names. Brightness writes try the system backlight
+interface and then the desktop's brightness service, while volume and mute use
+PipeWire/PulseAudio. Both platforms control the current default playback device
+and keep input switching disabled.
 
 Common VCP features:
 

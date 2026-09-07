@@ -13,6 +13,7 @@ import type {
   MonitorProfileSource,
   MonitorProfileWizardInfo,
   MonitorStatus,
+  MonitorSystem,
   MonitorTransport,
 } from "../shared/contracts"
 import type { LocalLogger } from "./logger"
@@ -205,9 +206,10 @@ export class MonitorController {
     if (displayId !== this.display) this.displayGeneration++
     this.displays = await this.enumerateDisplays()
     const numeric = Number.parseInt(displayId, 10)
-    const selected = Number.isSafeInteger(numeric) && numeric > 0 && String(numeric) === displayId
-      ? this.displays.find((display) => display.index === numeric)
-      : this.displays.find((display) => display.id === displayId)
+    const selected = this.displays.find((display) => display.id === displayId) ||
+      (Number.isSafeInteger(numeric) && numeric > 0 && String(numeric) === displayId
+        ? this.displays.find((display) => display.index === numeric)
+        : undefined)
     if (!selected) throw new Error("显示器不存在")
     if (this.display !== selected.id) {
       this.display = selected.id
@@ -239,9 +241,15 @@ export class MonitorController {
   }
 
   private async command(binary: string, args: string[], timeout = 4000): Promise<string> {
+    const env: NodeJS.ProcessEnv = {
+      PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+    }
+    for (const name of ["DBUS_SESSION_BUS_ADDRESS", "DBUS_SYSTEM_BUS_ADDRESS", "XDG_RUNTIME_DIR"]) {
+      if (process.env[name]) env[name] = process.env[name]
+    }
     const { stdout } = await run(binary, args, {
       timeout, maxBuffer: 128 * 1024,
-      env: { PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" },
+      env,
     })
     return stdout.trim()
   }
@@ -263,10 +271,10 @@ export class MonitorController {
   }
 
   private displayIndex(): number {
-    const value = Number.parseInt(this.display, 10)
-    if (Number.isSafeInteger(value) && value > 0) return value
     const matched = this.displays.find((display) => display.id === this.display)
-    return matched?.index || 1
+    if (matched) return matched.index
+    const value = Number.parseInt(this.display, 10)
+    return Number.isSafeInteger(value) && value > 0 ? value : 1
   }
 
   private vcp(control: ControlName): number {
@@ -287,13 +295,15 @@ export class MonitorController {
     if (!Array.isArray(result)) return []
     return result.flatMap((item, position) => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return []
-      const display = item as { display?: unknown; id?: unknown; manufacturer?: unknown; model?: unknown; driver?: unknown; transport?: unknown }
+      const display = item as { display?: unknown; id?: unknown; manufacturer?: unknown; model?: unknown; driver?: unknown; system?: unknown; transport?: unknown }
       const index = Number(display.display)
       if (!Number.isSafeInteger(index) || index < 1 || index !== position + 1) return []
       const stableId = typeof display.id === "string" && display.id.trim() ? display.id.trim() : String(index)
       const manufacturer = typeof display.manufacturer === "string" ? display.manufacturer.trim() : ""
       const model = typeof display.model === "string" ? display.model.trim() : ""
       const driver = typeof display.driver === "string" ? display.driver.trim() : ""
+      const system: MonitorSystem | undefined =
+        display.system === "windows" || display.system === "linux" ? display.system : undefined
       const transport = display.transport === "internal-panel" ? "internal-panel" as const : undefined
       const name = transport === "internal-panel"
         ? `笔记本内屏${model ? ` ${model}` : ""}`
@@ -305,6 +315,7 @@ export class MonitorController {
         ...(manufacturer ? { manufacturer } : {}),
         ...(model ? { model } : {}),
         ...(driver ? { driver } : {}),
+        ...(system ? { system } : {}),
         ...(transport ? { transport } : {}),
       }]
     })
@@ -465,7 +476,12 @@ export class MonitorController {
   private label(transport: MonitorTransport): string {
     if (transport === "usb-hid-ddc") return "USB HID → DDC/CI"
     if (transport === "video-ddc") return "视频链路 → DDC/CI"
-    if (transport === "internal-panel") return "Windows 内屏 WMI"
+    if (transport === "internal-panel") {
+      const system = this.activeDisplay()?.system
+      if (system === "linux") return "Linux 笔记本内屏"
+      if (system === "windows") return "Windows 笔记本内屏"
+      return "笔记本内屏"
+    }
     return "不可用"
   }
 

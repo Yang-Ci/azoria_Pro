@@ -127,15 +127,18 @@ AZORIA Desktop 的渲染进程没有 Node.js 权限，硬件操作通过白名�
 
 显示器控制协议统一为 DDC/CI。Desktop 会区分两种承载路径：显示器 USB 控制接口
 提供的“USB HID → DDC/CI”，以及 HDMI、DisplayPort 或 USB-C 视频连接提供的
-“视频链路 → DDC/CI”。Windows 笔记本内屏使用 `internal-panel` 路径，通过 WMI
-读取 `WmiMonitorBrightness` 并调用 `WmiSetBrightness`。程序会实际探测路径，
+“视频链路 → DDC/CI”。笔记本内屏使用 `internal-panel` 路径。Windows 通过 WMI
+读取 `WmiMonitorBrightness` 并调用 `WmiSetBrightness`；Linux 从已连接的
+eDP/LVDS/DSI 连接器和系统背光设备识别内屏，不依赖显示器型号。亮度优先写入
+系统背光接口，失败时使用桌面亮度服务。程序会实际探测路径，
 而不是只按型号猜测。
 
 这里的“USB HID”不是另一套显示器控制协议。它只是某些显示器用来承载 DDC/CI
 报文的厂商 USB 通道；亮度、音量、静音和输入源最终仍以 DDC/CI VCP 功能进行表达。
-Desktop 会枚举支持 DDC/CI 的显示器和 Windows 内屏，并可在控制页或 Profile 向导中
-切换当前目标。内屏亮度通过 WMI 控制；音量和静音通过 Windows Core Audio（WASAPI）控制当前默认播放设备，
-会跟随系统切换到耳机或其他默认输出。内屏不支持切换输入源，对应控件保持禁用。
+Desktop 会枚举支持 DDC/CI 的显示器和内屏，并可在控制页或 Profile 向导中
+切换当前目标。Windows 的音量和静音通过 Core Audio（WASAPI）控制，Linux 通过
+PipeWire/PulseAudio 控制；两者都会跟随系统切换到耳机或其他默认输出。内屏不支持
+切换输入源，对应控件保持禁用。
 常用 VCP opcode 如下。配置表中的数字使用 JSON 十进制写法：
 
 | 能力 | VCP opcode | JSON 十进制 |

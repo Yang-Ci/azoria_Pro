@@ -1,6 +1,7 @@
 export type InputSource = "dp1" | "hdmi1" | "hdmi2" | "usbc"
 export type ControlName = "brightness" | "volume" | "mute" | "input"
 export type MonitorTransport = "usb-hid-ddc" | "video-ddc" | "internal-panel" | "unavailable"
+export type MonitorSystem = "windows" | "linux"
 
 export interface MonitorStatus {
   brightness: number
@@ -33,6 +34,7 @@ export interface MonitorDisplaySummary {
   manufacturer?: string
   model?: string
   driver?: string
+  system?: MonitorSystem
   transport?: MonitorTransport
 }
 

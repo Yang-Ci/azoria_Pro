@@ -7,6 +7,8 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 #[cfg(target_os = "windows")]
 use wmi::WMIConnection;
+#[cfg(target_os = "linux")]
+mod linux_internal;
 #[cfg(target_os = "windows")]
 mod system_audio;
 
@@ -126,9 +128,25 @@ fn internal_brightness_displays() -> Result<Vec<InternalBrightness>, String> {
         .map_err(|error| format!("WMI brightness enumeration failed: {error}"))
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn internal_brightness_displays() -> Result<Vec<()>, String> {
-    Err("internal-panel brightness is only available on Windows".into())
+    Err("internal-panel brightness is only available on Windows and Linux".into())
+}
+
+fn internal_probe() -> Result<Value, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let displays = internal_brightness_displays()?;
+        Ok(json!({ "transport": "internal-panel", "count": displays.len() }))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux_internal::probe()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        Err("internal-panel brightness is only available on Windows and Linux".into())
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -206,14 +224,24 @@ fn internal_set(display: usize, vcp: u8, value: u16) -> Result<Value, String> {
     Ok(json!({ "vcp": 0x10, "value": value, "acknowledged": true }))
 }
 
-#[cfg(not(target_os = "windows"))]
-fn internal_get(_display: usize, _vcp: u8) -> Result<Value, String> {
-    Err("internal-panel brightness is only available on Windows".into())
+#[cfg(target_os = "linux")]
+fn internal_get(display: usize, vcp: u8) -> Result<Value, String> {
+    linux_internal::get(display, vcp)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+fn internal_get(_display: usize, _vcp: u8) -> Result<Value, String> {
+    Err("internal-panel brightness is only available on Windows and Linux".into())
+}
+
+#[cfg(target_os = "linux")]
+fn internal_set(display: usize, vcp: u8, value: u16) -> Result<Value, String> {
+    linux_internal::set(display, vcp, value)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn internal_set(_display: usize, _vcp: u8, _value: u16) -> Result<Value, String> {
-    Err("internal-panel brightness is only available on Windows".into())
+    Err("internal-panel brightness is only available on Windows and Linux".into())
 }
 
 fn native_display(display: usize) -> Result<Display, String> {
@@ -419,12 +447,10 @@ fn execute(request: Request) -> Result<Value, String> {
         }
         Request::Probe {
             transport: Transport::InternalPanel,
-        } => {
-            let displays = internal_brightness_displays()?;
-            Ok(json!({ "transport": "internal-panel", "count": displays.len() }))
-        }
+        } => internal_probe(),
         Request::Enumerate => {
-            let mut displays: Vec<Value> = native_displays()
+            let native = native_displays();
+            let mut displays: Vec<Value> = native
                 .into_iter()
                 .enumerate()
                 .map(|(index, display)| {
@@ -453,10 +479,36 @@ fn execute(request: Request) -> Result<Value, String> {
                             "driver": "wmi",
                             "id": format!("internal-panel:{}", panel.instance_name),
                             "model": model,
+                            "system": "windows",
                             "transport": "internal-panel"
                         })
                     },
                 ));
+            }
+            #[cfg(target_os = "linux")]
+            {
+                let next_display = displays.len() + 1;
+                let mut appended_count = 0;
+                for panel in linux_internal::panels() {
+                    if let Some(index) = panel.native_display {
+                        if let Some(display) = displays.get_mut(index - 1) {
+                            if let Some(display) = display.as_object_mut() {
+                                display.insert("driver".into(), "sysfs-backlight".into());
+                                display.insert("system".into(), "linux".into());
+                                display.insert("transport".into(), "internal-panel".into());
+                            }
+                        }
+                        continue;
+                    }
+                    appended_count += 1;
+                    displays.push(json!({
+                        "display": next_display + appended_count - 1,
+                        "driver": "sysfs-backlight",
+                        "id": panel.id,
+                        "system": "linux",
+                        "transport": "internal-panel"
+                    }));
+                }
             }
             Ok(Value::Array(displays))
         }

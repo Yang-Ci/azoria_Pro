@@ -97,7 +97,7 @@ test('a queued command from the previous display is discarded after switching', 
   assert.equal(monitor.connectionSnapshot().displayId, 'stable-2')
 })
 
-function internalPanelFixture() {
+function internalPanelFixture(system = 'windows') {
   const monitor = new MonitorController('stable-1')
   monitor.profiles = [internalPanelProfile, fallbackProfile]
   monitor.profileSources = new Map([
@@ -111,7 +111,7 @@ function internalPanelFixture() {
     if (request.operation === 'enumerate') {
       return [
         { display: 1, id: 'stable-1', driver: 'win-ddc', manufacturer: null, model: null },
-        { display: 2, id: 'internal-panel:AUO26A9', driver: 'wmi', model: 'AUO26A9', transport: 'internal-panel' },
+        { display: 2, id: 'internal-panel:AUO26A9', driver: 'wmi', model: 'AUO26A9', system, transport: 'internal-panel' },
       ]
     }
     if (request.operation === 'probe') throw new Error('No USB HID display')
@@ -132,6 +132,41 @@ function internalPanelFixture() {
   return { monitor, internalGet, internalSet }
 }
 
+function numericIdFixture() {
+  const monitor = new MonitorController('22799')
+  monitor.profiles = [fallbackProfile]
+  monitor.profileSources = new Map([['generic-ddc', 'built-in']])
+  const getDisplays = []
+  monitor.sidecar = async (request) => {
+    if (request.operation === 'enumerate') {
+      return [
+        { display: 1, id: '22799', driver: 'i2c-dev', manufacturer: 'AOC', model: 'U27P10' },
+        { display: 2, id: '22797', driver: 'i2c-dev', manufacturer: 'AUO', model: 'B160QAN04.U' },
+      ]
+    }
+    if (request.operation === 'probe') throw new Error('No USB HID display')
+    if (request.operation === 'get') {
+      getDisplays.push(request.display)
+      return { current: 50, maximum: 100 }
+    }
+    throw new Error(`Unexpected sidecar operation: ${request.operation}`)
+  }
+  return { monitor, getDisplays }
+}
+
+test('numeric stable display IDs are selected as IDs rather than list indexes', async () => {
+  const { monitor, getDisplays } = numericIdFixture()
+  await monitor.detect(true)
+  getDisplays.length = 0
+
+  const connection = await monitor.selectDisplay('22797')
+
+  assert.equal(connection.displayId, '22797')
+  assert.equal(connection.displayName, 'AUO B160QAN04.U')
+  assert.ok(getDisplays.includes(2))
+  assert.ok(!getDisplays.includes(22797))
+})
+
 test('Windows internal panels are enumerated and selected when DDC/CI is unavailable', async () => {
   const { monitor, internalGet } = internalPanelFixture()
   await monitor.detect(true)
@@ -142,7 +177,19 @@ test('Windows internal panels are enumerated and selected when DDC/CI is unavail
   assert.deepEqual(info.availableTransports, ['internal-panel'])
   assert.equal(info.activeTransport, 'internal-panel')
   assert.equal(info.displays[1].transport, 'internal-panel')
+  assert.equal(info.displays[1].system, 'windows')
+  assert.equal(monitor.connectionSnapshot().summary, 'Windows 笔记本内屏')
   assert.ok(internalGet.includes(2))
+})
+
+test('Linux internal panels report the system-backed route', async () => {
+  const { monitor } = internalPanelFixture('linux')
+  await monitor.detect(true)
+
+  const list = await monitor.listDisplays()
+
+  assert.equal(list.displays[1].system, 'linux')
+  assert.equal(monitor.connectionSnapshot().summary, 'Linux 笔记本内屏')
 })
 
 test('Windows internal panels route brightness, system volume and mute with readback', async () => {

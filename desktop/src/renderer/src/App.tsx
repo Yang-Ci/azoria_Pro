@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Activity, Bluetooth, Cable, Check, FileUp, Radio, RefreshCw, Router, Settings, ShieldCheck, Sun, Volume2, VolumeX, Zap } from "lucide-react"
-import type { ControlName, DiagnosticsReport, FirmwareImage, InputSource, LanDevice, MonitorConnectionInfo, MonitorDisplaySummary, MonitorStatus, MonitorTransport, UsbDevice } from "../../shared/contracts"
+import type { ControlName, DiagnosticsReport, FirmwareImage, InputSource, LanDevice, MonitorConnectionInfo, MonitorDisplaySummary, MonitorStatus, MonitorSystem, MonitorTransport, UsbDevice } from "../../shared/contracts"
 import { connectBle } from "./ble"
 import { AzoriaDesktopBrand } from "./components/brand"
 import { ProfileWizard } from "./components/profile-wizard"
@@ -33,10 +33,14 @@ function MetricSlider({ icon, label, value, disabled, onCommit, onEditingChange 
   </div>
 }
 
-function transportLabel(transport: MonitorTransport) {
+function transportLabel(transport: MonitorTransport, system?: MonitorSystem) {
   if (transport === "usb-hid-ddc") return "USB HID → DDC/CI"
   if (transport === "video-ddc") return "视频链路 → DDC/CI"
-  if (transport === "internal-panel") return "Windows 内屏 WMI"
+  if (transport === "internal-panel") {
+    if (system === "linux") return "Linux 笔记本内屏"
+    if (system === "windows") return "Windows 笔记本内屏"
+    return "笔记本内屏"
+  }
   return "不可用"
 }
 
@@ -242,7 +246,7 @@ export default function App() {
                 </SelectContent>
               </Select>
             </CardHeader>
-            <CardContent><MetricSlider icon={<Sun />} label="亮度" value={status.brightness} disabled={pendingControls.has("brightness") || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("brightness", value)} /><Separator />{internalPanel && <p className="text-sm text-muted-foreground">音量和静音控制 Windows 当前默认播放设备（包括耳机）。</p>}<MetricSlider icon={<Volume2 />} label={internalPanel ? "系统音量" : "音量"} value={status.volume} disabled={pendingControls.has("volume") || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("volume", value)} /></CardContent>
+            <CardContent><MetricSlider icon={<Sun />} label="亮度" value={status.brightness} disabled={pendingControls.has("brightness") || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("brightness", value)} /><Separator />{internalPanel && <p className="text-sm text-muted-foreground">音量和静音控制当前默认播放设备（包括耳机）。</p>}<MetricSlider icon={<Volume2 />} label={internalPanel ? "系统音量" : "音量"} value={status.volume} disabled={pendingControls.has("volume") || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("volume", value)} /></CardContent>
           </Card>
           <div className="grid gap-5"><Card><CardHeader><CardTitle>输入源</CardTitle></CardHeader><CardContent className="grid grid-cols-2 gap-2">{inputs.map((input) => <Button key={input.value} variant={status.input === input.value ? "default" : "outline"} className="h-12" disabled={internalPanel || pendingControls.has("input") || !online} onClick={() => void setControl("input", input.value)}>{status.input === input.value && <Check />}{input.label}</Button>)}</CardContent></Card><Card><CardContent className="pt-6"><Button variant={status.mute ? "default" : "outline"} className="h-12 w-full" disabled={pendingControls.has("mute") || !online} onClick={() => void setControl("mute", !status.mute)}>{status.mute ? <VolumeX /> : <Volume2 />}{status.mute ? "取消静音" : "静音"}</Button></CardContent></Card></div>
         </TabsContent>
@@ -272,7 +276,7 @@ export default function App() {
               <Separator />
               <div className="space-y-3 text-sm">
                 <div className="flex justify-between"><span className="text-zinc-400">配置档</span><span>{diagnostics?.connection.profileName ?? "--"}</span></div>
-                <div className="flex justify-between"><span className="text-zinc-400">控制路径</span><span>{diagnostics ? transportLabel(diagnostics.connection.transport) : "--"}</span></div>
+                <div className="flex justify-between"><span className="text-zinc-400">控制路径</span><span>{diagnostics ? transportLabel(diagnostics.connection.transport, displays.find((display) => display.id === diagnostics.connection.displayId)?.system) : "--"}</span></div>
                 <div className="flex justify-between"><span className="text-zinc-400">平台</span><span>{diagnostics?.system.platform ?? "--"}</span></div>
                 <div className="flex justify-between"><span className="text-zinc-400">Electron</span><span>{diagnostics?.system.electronVersion ?? "--"}</span></div>
               </div>
@@ -304,7 +308,7 @@ export default function App() {
 
         {developerMode && <TabsContent value="developer" className="grid gap-5 lg:grid-cols-2">
           <Card><CardHeader><CardTitle className="flex items-center gap-2"><Cable />固件刷写</CardTitle></CardHeader><CardContent className="space-y-4">{usb.length > 1 && <Select value={selectedUsb} onValueChange={(value) => { setSelectedUsb(value); setVerifiedChip("") }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{usb.map((device) => <SelectItem key={device.path} value={device.path}>{device.name}</SelectItem>)}</SelectContent></Select>}{selectedDevice ? <div className="rounded-lg border border-white/10 bg-black p-4 text-sm text-zinc-400"><div className="flex items-center justify-between gap-3"><p className="text-white">{selectedDevice.name}</p><Badge variant="outline" className="border-white/10">{verifiedChip || (selectedDevice.verified ? "USB 身份已验证" : "ESP32-S3 候选设备")}</Badge></div><p className="mt-2 font-mono text-xs">{selectedDevice.path}</p></div> : <div className="rounded-lg border border-dashed border-white/10 p-8 text-center text-sm text-zinc-500">没有可刷写的 AZORIA Touch</div>}<Button variant="outline" className="w-full" onClick={selectFirmware}><FileUp />{firmware ? `${firmware.name} · ${firmware.version}` : "选择固件"}</Button><AlertDialog><AlertDialogTrigger asChild><Button className="w-full" disabled={!selectedUsb || !firmware || busy}><Zap />刷写固件</Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>刷写 AZORIA Touch {firmware?.version}？</AlertDialogTitle><AlertDialogDescription>目标 {verifiedChip || "ESP32-S3"}，固件校验通过后写入。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction onClick={() => { if (!firmware) return; setBusy(true); void window.azoria.device.verifyUsb(selectedUsb).then((identity) => { setVerifiedChip(identity.chip); return window.azoria.device.flash(selectedUsb, firmware.path, firmware.sha256) }).then(() => { setMessage("固件刷写完成"); void detectUsb(); void discoverLan() }).catch((error) => setMessage(error instanceof Error ? error.message : "身份校验或刷写失败")).finally(() => setBusy(false)) }}>校验并开始刷写</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog></CardContent></Card>
-          <Card><CardHeader><CardTitle className="flex items-center gap-2"><ShieldCheck />开发诊断</CardTitle></CardHeader><CardContent className="space-y-3 text-sm"><div className="flex justify-between rounded-lg border border-white/10 p-4"><span className="text-zinc-400">显示器配置表</span><span>{connection.profileName}</span></div><div className="flex justify-between rounded-lg border border-white/10 p-4"><span className="text-zinc-400">控制路径</span><span>{transportLabel(connection.transport)}</span></div><div className="flex justify-between rounded-lg border border-white/10 p-4"><span className="text-zinc-400">USB 候选过滤</span><span>Espressif + MAC</span></div><div className="flex justify-between rounded-lg border border-white/10 p-4"><span className="text-zinc-400">刷写前校验</span><span>ESP32-S3 + MAC 一致</span></div></CardContent></Card>
+          <Card><CardHeader><CardTitle className="flex items-center gap-2"><ShieldCheck />开发诊断</CardTitle></CardHeader><CardContent className="space-y-3 text-sm"><div className="flex justify-between rounded-lg border border-white/10 p-4"><span className="text-zinc-400">显示器配置表</span><span>{connection.profileName}</span></div><div className="flex justify-between rounded-lg border border-white/10 p-4"><span className="text-zinc-400">控制路径</span><span>{transportLabel(connection.transport, displays.find((display) => display.id === connection.displayId)?.system)}</span></div><div className="flex justify-between rounded-lg border border-white/10 p-4"><span className="text-zinc-400">USB 候选过滤</span><span>Espressif + MAC</span></div><div className="flex justify-between rounded-lg border border-white/10 p-4"><span className="text-zinc-400">刷写前校验</span><span>ESP32-S3 + MAC 一致</span></div></CardContent></Card>
         </TabsContent>}
       </Tabs>
     </main>
