@@ -50,7 +50,10 @@ constexpr uint32_t kConfirmedSettleMs = 2000;
 constexpr uint32_t kRegistrationIntervalMs = 30000;
 constexpr uint32_t kBleHealthIntervalMs = 5000;
 constexpr uint32_t kIdleStatusIntervalMs = 30000;
-constexpr char kFirmwareVersion[] = "0.4.17";
+#ifndef AZORIA_FIRMWARE_VERSION
+#define AZORIA_FIRMWARE_VERSION "0.4.18"
+#endif
+constexpr char kFirmwareVersion[] = AZORIA_FIRMWARE_VERSION;
 Command latest_commands[static_cast<size_t>(ControlKind::Count)]{};
 bool command_available[static_cast<size_t>(ControlKind::Count)]{};
 uint32_t next_sequence = 1;

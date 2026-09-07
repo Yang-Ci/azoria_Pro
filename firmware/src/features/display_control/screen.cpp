@@ -410,13 +410,13 @@ void closeBacklightPanel(lv_event_t *) {
 void screenGesture(lv_event_t *) {
   lv_indev_t *input = lv_indev_get_act();
   if (!input) return;
-  if (lv_indev_get_gesture_dir(input) != LV_DIR_TOP) return;
+  if (lv_indev_get_gesture_dir(input) != LV_DIR_BOTTOM) return;
   if (backlight_panel && !lv_obj_has_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN)) return;
   showBacklightPanel();
 }
 
 void createBacklightPanel(lv_obj_t *parent) {
-  backlight_panel = card(parent, 13, 300, 454, 154);
+  backlight_panel = card(parent, 13, 13, 454, 154);
   lv_obj_set_style_bg_color(backlight_panel, color(0x111827), 0);
   lv_obj_set_style_border_width(backlight_panel, 1, 0);
   lv_obj_set_style_border_color(backlight_panel, color(0x334155), 0);
@@ -447,7 +447,7 @@ void createBacklightPanel(lv_obj_t *parent) {
       backlight_slider, backlightReleased, LV_EVENT_PRESS_LOST, nullptr);
 
   lv_obj_t *close_button = lv_btn_create(backlight_panel);
-  lv_obj_set_pos(close_button, 398, 12);
+  lv_obj_set_pos(close_button, 398, 104);
   lv_obj_set_size(close_button, 38, 38);
   lv_obj_set_style_bg_color(close_button, color(0x1D1D1D), 0);
   lv_obj_set_style_shadow_width(close_button, 0, 0);

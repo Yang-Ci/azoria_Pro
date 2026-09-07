@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 修复 Touch 背光面板中百分比与关闭按钮重叠的问题；
+- Touch 背光面板改为下滑打开，并显示在屏幕上方，减少底部区域误触；
 - 提供亮度、音量、静音、输入源、Touch 配网和 BLE OTA 固件服务；
 - 使用 Electron 控制端与 Rust Sidecar 统一原生 DDC/CI 和 LG USB HID/DDC 路径；
 - 支持 Desktop 主动发现 Touch，以及基于 DDC/CI 可达性的粘性 Master 协调；
