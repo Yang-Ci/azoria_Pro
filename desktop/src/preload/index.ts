@@ -30,6 +30,11 @@ const api: DesktopApi = {
     flash: (path: string, firmwarePath: string, expectedSha256: string) =>
       ipcRenderer.invoke("device:flash", { path, firmwarePath, expectedSha256 }),
   },
+  wallpaper: {
+    info: () => ipcRenderer.invoke("wallpaper:info"),
+    upload: (input) => ipcRenderer.invoke("wallpaper:upload", input),
+    remove: () => ipcRenderer.invoke("wallpaper:remove"),
+  },
   security: {
     sign: (message: string) => ipcRenderer.invoke("security:sign", message),
   },

@@ -138,7 +138,7 @@ async function handleRequest(
     if (fields[3] === "S" && fields.length === 5) {
       const current = await status()
       const now = new Date()
-      payload = `S|${current.brightness}|${current.volume}|${current.mute ? 1 : 0}|${current.input}|${current.available === false ? 0 : 1}|${Math.floor(now.getTime() / 1000)}|${-now.getTimezoneOffset()}`
+      payload = `S|${current.brightness}|${current.volume}|${current.mute ? 1 : 0}|${current.input}|${current.available === false ? 0 : 1}|${Math.floor(now.getTime() / 1000)}|${-now.getTimezoneOffset()}|${current.wallpaperHash || ""}|${current.wallpaperSize || 0}`
     } else if (fields[3] === "C" && fields.length === 8) {
       const rawName = fields[4] || ""
       const raw = fields[5] || "0"

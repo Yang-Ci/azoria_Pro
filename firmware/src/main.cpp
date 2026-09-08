@@ -9,6 +9,7 @@
 
 #include "features/display_control/screen.h"
 #include "features/display_control/service.h"
+#include "features/wallpaper/wallpaper.h"
 #include "platform/board.h"
 #include "services/device_config.h"
 #include "services/ble_transport.h"
@@ -171,6 +172,7 @@ void touchRead(lv_indev_drv_t *, lv_indev_data_t *data) {
       touch_is_pressed = true;
       touch_press_samples = 0;
     }
+    DisplayControl::noteInteraction();
     data->state = LV_INDEV_STATE_PR;
     data->point.x = last_touch_point.x;
     data->point.y = last_touch_point.y;
@@ -295,6 +297,7 @@ void setup() {
 
   saved_config = config;
   have_saved_config = !saved_config.ssid.isEmpty();
+  Wallpaper::begin();
   DisplayControl::showScreen();
   // Let the Wi-Fi driver reserve its latency-sensitive internal DMA buffers
   // before NimBLE starts. The BLE host is configured to use PSRAM for dynamic

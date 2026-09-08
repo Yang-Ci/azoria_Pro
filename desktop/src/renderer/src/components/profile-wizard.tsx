@@ -70,7 +70,7 @@ export function ProfileWizard({ onConnectionChange }: { onConnectionChange(conne
       const snapshot = await window.azoria.monitor.statusSnapshot()
       setStatus(snapshot)
       setBrightness(snapshot.brightness)
-      setInput(snapshot.input)
+      if (snapshot.input !== "internal") setInput(snapshot.input)
       setError("")
     }
     catch (cause) {

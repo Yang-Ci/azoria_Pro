@@ -1,4 +1,5 @@
 export type InputSource = "dp1" | "hdmi1" | "hdmi2" | "usbc"
+export type ControlTarget = InputSource | "internal"
 export type ControlName = "brightness" | "volume" | "mute" | "input"
 export type MonitorTransport = "usb-hid-ddc" | "video-ddc" | "internal-panel" | "unavailable"
 export type MonitorSystem = "windows" | "linux"
@@ -7,13 +8,15 @@ export interface MonitorStatus {
   brightness: number
   volume: number
   mute: boolean
-  input: InputSource
+  input: ControlTarget
   available?: boolean
+  wallpaperHash?: string
+  wallpaperSize?: number
 }
 
 export interface ControlRequest {
   control: ControlName
-  value: number | boolean | InputSource
+  value: number | boolean | ControlTarget
   final?: boolean
 }
 
@@ -92,6 +95,25 @@ export interface LanDevice {
   address: string
   firmware: string
   paired: boolean
+  wallpaperHash?: string
+}
+
+export type WallpaperKind = "image" | "video"
+
+export interface WallpaperInfo {
+  name: string
+  kind: WallpaperKind
+  size: number
+  sha256: string
+  frameCount: number
+  durationMs: number
+  updatedAt: string
+}
+
+export interface WallpaperUpload {
+  name: string
+  kind: WallpaperKind
+  data: Uint8Array
 }
 
 export type DiagnosticLevel = "info" | "warn" | "error"
@@ -172,6 +194,11 @@ export interface DesktopApi {
     prepareBle(path: string): Promise<void>
     selectFirmware(): Promise<FirmwareImage | null>
     flash(path: string, firmwarePath: string, expectedSha256: string): Promise<void>
+  }
+  wallpaper: {
+    info(): Promise<WallpaperInfo | null>
+    upload(input: WallpaperUpload): Promise<WallpaperInfo>
+    remove(): Promise<void>
   }
   security: {
     sign(message: string): Promise<string>

@@ -1,6 +1,6 @@
 {
   "name": "azoria-display-control",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Local Electron control center for Azoria display controllers",
   "author": "Yang-Ci <Yang-Ci@users.noreply.github.com>",

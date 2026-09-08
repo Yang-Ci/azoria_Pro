@@ -8,6 +8,7 @@ import { TouchManager } from "./touch"
 import { LanController } from "./lan"
 import { LocalLogger } from "./logger"
 import { MonitorController } from "./monitor"
+import { WallpaperManager } from "./wallpaper"
 
 const isDevelopment = !app.isPackaged
 
@@ -115,7 +116,9 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
     await saveDisplayPreference(app.getPath("userData"), initialConnection.displayId)
   }
   monitor.startBackgroundStatus()
-  const lan = new LanController(config.desktopId, monitor)
+  const wallpaper = new WallpaperManager(app.getPath("userData"))
+  await wallpaper.initialize()
+  const lan = new LanController(config.desktopId, monitor, wallpaper)
   await lan.start()
   const devices = new TouchManager(config.token)
   const diagnostics = new DiagnosticsController(logger, monitor, lan)
@@ -168,6 +171,9 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   })
   ipcMain.handle("device:flash", (_event, input: { path: string; firmwarePath: string; expectedSha256: string }) =>
     devices.flash(input.path, input.firmwarePath, input.expectedSha256))
+  ipcMain.handle("wallpaper:info", () => wallpaper.info())
+  ipcMain.handle("wallpaper:upload", (_event, input) => wallpaper.upload(input))
+  ipcMain.handle("wallpaper:remove", () => wallpaper.remove())
   ipcMain.handle("security:sign", (_event, message: string) => {
     if (typeof message !== "string" || message.length > 512) throw new Error("签名消息无效")
     return createHmac("sha256", config.token).update(message).digest("hex").slice(0, 16)

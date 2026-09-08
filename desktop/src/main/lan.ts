@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net"
 import { networkInterfaces } from "node:os"
 import type { ControlRequest, LanDevice, MonitorStatus } from "../shared/contracts"
 import type { MonitorController } from "./monitor"
+import type { WallpaperManager } from "./wallpaper"
 
 const controlPort = 8732
 const discoveryPort = 8733
@@ -81,7 +82,11 @@ export class LanController {
   private masterId = ""
   private isMaster = false
 
-  constructor(private readonly desktopId: string, private readonly monitor: MonitorController) {
+  constructor(
+    private readonly desktopId: string,
+    private readonly monitor: MonitorController,
+    private readonly wallpaper?: WallpaperManager,
+  ) {
     activeControllers.add(this)
   }
 
@@ -198,13 +203,13 @@ export class LanController {
   }
 
   private parseControl(control: string, encoded: string): ControlRequest["value"] | undefined {
-    if (control === "input") return ["dp1", "hdmi1", "hdmi2", "usbc"].includes(encoded) ? encoded as ControlRequest["value"] : undefined
+    if (control === "input") return ["dp1", "hdmi1", "hdmi2", "usbc", "internal"].includes(encoded) ? encoded as ControlRequest["value"] : undefined
     if (control === "mute") return encoded === "1" ? true : encoded === "0" ? false : undefined
     const value = Number(encoded)
     return Number.isInteger(value) && value >= 0 && value <= 100 ? value : undefined
   }
 
-  private rememberTouch(id: string, address: string, details?: { name?: string; firmware?: string }): void {
+  private rememberTouch(id: string, address: string, details?: { name?: string; firmware?: string; wallpaperHash?: string }): void {
     if (!/^[0-9A-F]{12}$/i.test(id) || !isPrivateIpv4(address)) return
     const existing = this.touchDevices.get(id)?.device
     const name = details?.name && /^azoria-touch-[a-z0-9-]{1,32}$/i.test(details.name)
@@ -213,8 +218,11 @@ export class LanController {
     const firmware = details?.firmware && details.firmware.length <= 32
       ? details.firmware
       : existing?.firmware || ""
+    const wallpaperHash = details?.wallpaperHash && /^[0-9a-f]{64}$/.test(details.wallpaperHash)
+      ? details.wallpaperHash
+      : existing?.wallpaperHash || ""
     this.touchDevices.set(id, {
-      device: { id, name, address, firmware, paired: true },
+      device: { id, name, address, firmware, paired: true, wallpaperHash },
       seenAt: Date.now(),
     })
   }
@@ -355,7 +363,13 @@ export class LanController {
       // BLE heartbeat must not wait for a full multi-VCP DDC/CI read. The
       // regular Desktop probe keeps this snapshot current; control writes still
       // perform their own targeted readback before acknowledgement.
-      return { ...this.monitor.snapshot(), available: this.reachable }
+      const wallpaper = this.wallpaper?.info()
+      return {
+        ...this.monitor.snapshot(),
+        available: this.reachable,
+        wallpaperHash: wallpaper?.sha256 || "",
+        wallpaperSize: wallpaper?.size || 0,
+      }
     }
     const now = Date.now()
     const peer = (master ? this.peers.get(master) : undefined) || [...this.peers.values()]
@@ -477,11 +491,20 @@ export class LanController {
         // Touch needs a fast heartbeat and clock sync. DDC/CI reads are slow
         // and already run in the monitor's background queue; return its latest
         // snapshot immediately so this endpoint never times out behind them.
+        const wallpaper = this.wallpaper?.info()
         return this.json(response, 200, {
           ...this.monitor.snapshot(),
           available: this.monitor.hasStatus(),
           ...this.clock(),
+          wallpaperHash: wallpaper?.sha256 || "",
+          wallpaperSize: wallpaper?.size || 0,
+          wallpaperKind: wallpaper?.kind || "",
         })
+      }
+      if (request.method === "GET" && request.url === "/v1/wallpaper") {
+        if (!this.wallpaper) return this.json(response, 404, { ok: false, error: "wallpaper unavailable" })
+        this.wallpaper.stream(response)
+        return
       }
       if (request.method === "POST" && request.url === "/v1/control") {
         if (this.refreshMaster() !== this.desktopId || !this.reachable) return this.json(response, 409, { ok: false, error: "not active DDC/CI host" })
@@ -497,12 +520,14 @@ export class LanController {
         const id = typeof payload.device_id === "string" ? payload.device_id : ""
         const name = typeof payload.hostname === "string" ? payload.hostname : ""
         const firmware = typeof payload.firmware === "string" ? payload.firmware : ""
+        const wallpaperHash = typeof payload.wallpaper_hash === "string" ? payload.wallpaper_hash : ""
         const address = typeof payload.address === "string" ? payload.address : ""
         if (!/^[0-9A-F]{12}$/i.test(id) || !/^azoria-touch-[a-z0-9-]{1,32}$/i.test(name) ||
-            !firmware || firmware.length > 32 || address !== remote) {
+            !firmware || firmware.length > 32 || address !== remote ||
+            (wallpaperHash !== "" && !/^[0-9a-f]{64}$/.test(wallpaperHash))) {
           return this.json(response, 400, { ok: false, error: "invalid device registration" })
         }
-        this.rememberTouch(id, remote, { name, firmware })
+        this.rememberTouch(id, remote, { name, firmware, wallpaperHash })
         return this.json(response, 200, { ok: true })
       }
       return this.json(response, 404, { ok: false, error: "not found" })

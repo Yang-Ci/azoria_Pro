@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Activity, Bluetooth, Cable, Check, FileUp, Radio, RefreshCw, Router, Settings, ShieldCheck, Sun, Volume2, VolumeX, Zap } from "lucide-react"
-import type { ControlName, DiagnosticsReport, FirmwareImage, InputSource, LanDevice, MonitorConnectionInfo, MonitorDisplaySummary, MonitorStatus, MonitorSystem, MonitorTransport, UsbDevice } from "../../shared/contracts"
+import type { ControlName, ControlTarget, DiagnosticsReport, FirmwareImage, LanDevice, MonitorConnectionInfo, MonitorDisplaySummary, MonitorStatus, MonitorSystem, MonitorTransport, UsbDevice } from "../../shared/contracts"
 import { connectBle } from "./ble"
 import { AzoriaDesktopBrand } from "./components/brand"
 import { ProfileWizard } from "./components/profile-wizard"
+import { WallpaperCard } from "./components/wallpaper-card"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -18,9 +19,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 const emptyStatus: MonitorStatus = { brightness: 50, volume: 20, mute: false, input: "usbc" }
 const emptyConnection: MonitorConnectionInfo = { displayId: "1", displayName: "未检测到显示器", profileId: "generic-ddc", profileName: "通用 DDC/CI 显示器", summary: "未连接", availableTransports: [], transport: "unavailable" }
-const inputs: Array<{ value: InputSource; label: string }> = [
+const inputs: Array<{ value: ControlTarget; label: string }> = [
   { value: "dp1", label: "DisplayPort" }, { value: "hdmi1", label: "HDMI 1" },
   { value: "hdmi2", label: "HDMI 2" }, { value: "usbc", label: "USB-C" },
+  { value: "internal", label: "笔记本内屏" },
 ]
 
 function MetricSlider({ icon, label, value, disabled, onCommit, onEditingChange }: { icon: React.ReactNode; label: string; value: number; disabled: boolean; onCommit(value: number): void; onEditingChange(editing: boolean): void }) {
@@ -171,12 +173,20 @@ export default function App() {
     return () => { window.clearInterval(statusTimer); window.clearInterval(connectionTimer); window.clearInterval(lanTimer); window.clearInterval(diagnosticsTimer) }
   }, [refresh, refreshDisplays, detectUsb, discoverLan, refreshLan, refreshSnapshot, refreshDiagnostics])
 
-  const setControl = async (control: ControlName, value: number | boolean | InputSource) => {
+  const setControl = async (control: ControlName, value: number | boolean | ControlTarget) => {
     pendingCountRef.current++
     setPendingControls((current) => new Set(current).add(control))
     try {
       const next = await window.azoria.monitor.control({ control, value, final: true })
       setStatus((current) => ({ ...current, [control]: next[control] }))
+      if (control === "input") {
+        const [nextConnection, nextDisplays] = await Promise.all([
+          window.azoria.monitor.connection(), window.azoria.monitor.listDisplays(),
+        ])
+        setConnection(nextConnection)
+        setDisplays(nextDisplays.displays)
+        setActiveDisplayId(nextDisplays.activeDisplayId)
+      }
       setOnline(true)
       setMessage("已保存到显示器")
     }
@@ -187,7 +197,7 @@ export default function App() {
     }
   }
   const selectedDevice = useMemo(() => usb.find((device) => device.path === selectedUsb), [usb, selectedUsb])
-  const internalPanel = connection.transport === "internal-panel"
+  const internalPanel = status.input === "internal" || connection.transport === "internal-panel"
   const scanWifi = () => { setBusy(true); void window.azoria.device.scanWifi(selectedUsb).then(setNetworks).catch((error) => setMessage(String(error))).finally(() => setBusy(false)) }
   const saveWifi = () => { setBusy(true); void window.azoria.device.configureWifi(selectedUsb, ssid, password).then(() => { setPassword(""); setMessage("AZORIA Touch Wi‑Fi 配置完成") }).catch((error) => setMessage(String(error))).finally(() => setBusy(false)) }
   const prepareBluetooth = () => { setBusy(true); void window.azoria.device.prepareBle(selectedUsb).then(() => { setBlePrepared(true); setMessage("AZORIA Touch 蓝牙已就绪") }).catch((error) => setMessage(error instanceof Error ? error.message : "蓝牙配对准备失败")).finally(() => setBusy(false)) }
@@ -248,12 +258,13 @@ export default function App() {
             </CardHeader>
             <CardContent><MetricSlider icon={<Sun />} label="亮度" value={status.brightness} disabled={pendingControls.has("brightness") || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("brightness", value)} /><Separator />{internalPanel && <p className="text-sm text-muted-foreground">音量和静音控制当前默认播放设备（包括耳机）。</p>}<MetricSlider icon={<Volume2 />} label={internalPanel ? "系统音量" : "音量"} value={status.volume} disabled={pendingControls.has("volume") || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("volume", value)} /></CardContent>
           </Card>
-          <div className="grid gap-5"><Card><CardHeader><CardTitle>输入源</CardTitle></CardHeader><CardContent className="grid grid-cols-2 gap-2">{inputs.map((input) => <Button key={input.value} variant={status.input === input.value ? "default" : "outline"} className="h-12" disabled={internalPanel || pendingControls.has("input") || !online} onClick={() => void setControl("input", input.value)}>{status.input === input.value && <Check />}{input.label}</Button>)}</CardContent></Card><Card><CardContent className="pt-6"><Button variant={status.mute ? "default" : "outline"} className="h-12 w-full" disabled={pendingControls.has("mute") || !online} onClick={() => void setControl("mute", !status.mute)}>{status.mute ? <VolumeX /> : <Volume2 />}{status.mute ? "取消静音" : "静音"}</Button></CardContent></Card></div>
+          <div className="grid gap-5"><Card><CardHeader><CardTitle>控制源</CardTitle></CardHeader><CardContent className="grid grid-cols-2 gap-2">{inputs.map((input) => <Button key={input.value} variant={status.input === input.value ? "default" : "outline"} className="h-12" disabled={pendingControls.has("input") || !online} onClick={() => void setControl("input", input.value)}>{status.input === input.value && <Check />}{input.label}</Button>)}</CardContent></Card><Card><CardContent className="pt-6"><Button variant={status.mute ? "default" : "outline"} className="h-12 w-full" disabled={pendingControls.has("mute") || !online} onClick={() => void setControl("mute", !status.mute)}>{status.mute ? <VolumeX /> : <Volume2 />}{status.mute ? "取消静音" : "静音"}</Button></CardContent></Card></div>
         </TabsContent>
 
         <TabsContent value="touch" className="grid gap-5 lg:grid-cols-2">
           <Card><CardHeader><CardTitle>AZORIA Touch</CardTitle></CardHeader><CardContent className="space-y-4">{lanDevices.length ? <div className="space-y-2">{lanDevices.map((device) => <div key={device.id} className="rounded-lg border border-white/10 bg-black p-5"><div className="flex items-center justify-between"><p className="font-medium">{device.name}</p><Badge variant="outline" className="border-white/10"><Check />已连接</Badge></div></div>)}</div> : selectedDevice?.verified ? <div className="rounded-lg border border-white/10 bg-black p-5"><div className="flex items-center justify-between"><div><p className="font-medium">{selectedDevice.name}</p><p className="mt-1 text-sm text-zinc-500">USB 已连接</p></div><Badge variant="outline" className="border-white/10"><Check />已识别</Badge></div></div> : <div className="rounded-lg border border-dashed border-white/10 p-8 text-center text-sm text-zinc-500">未发现 AZORIA Touch</div>}<div className="grid grid-cols-2 gap-2">{selectedDevice?.verified && !blePrepared && <Button variant="outline" disabled={busy} onClick={prepareBluetooth}><Cable />准备蓝牙</Button>}<Button variant="outline" disabled={bleConnecting} onClick={connectBluetooth}><Bluetooth />{bleName ? "蓝牙已连接" : bleConnecting ? "正在连接" : "连接蓝牙"}</Button></div></CardContent></Card>
           <Card><CardHeader><CardTitle className="flex items-center gap-2"><Router />Wi‑Fi 配置</CardTitle></CardHeader><CardContent className="space-y-3"><Button variant="outline" className="w-full" disabled={!selectedDevice?.verified || busy} onClick={scanWifi}>扫描 2.4 GHz 网络</Button><Select value={ssid} onValueChange={setSsid}><SelectTrigger><SelectValue placeholder="选择 Wi‑Fi" /></SelectTrigger><SelectContent>{networks.map((network) => <SelectItem key={network.ssid} value={network.ssid}>{network.secure ? "加密 · " : "开放 · "}{network.ssid} · {network.rssi} dBm</SelectItem>)}</SelectContent></Select><input className="h-10 w-full rounded-md border border-white/10 bg-black px-3 text-sm outline-none focus:border-white/30" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Wi‑Fi 密码" /><Button className="w-full" disabled={!selectedDevice?.verified || !ssid || busy} onClick={saveWifi}>保存并连接</Button></CardContent></Card>
+          <div className="lg:col-span-2"><WallpaperCard devices={lanDevices} onMessage={setMessage} /></div>
         </TabsContent>
 
         <TabsContent value="diagnostics" className="grid gap-5 lg:grid-cols-2">

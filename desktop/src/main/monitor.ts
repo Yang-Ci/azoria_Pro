@@ -6,6 +6,7 @@ import { promisify } from "node:util"
 import type {
   ControlName,
   ControlRequest,
+  ControlTarget,
   InputSource,
   MonitorDisplaySummary,
   MonitorConnectionInfo,
@@ -54,6 +55,10 @@ const initialStatus: MonitorStatus = { brightness: 50, volume: 20, mute: false, 
 
 function isInput(value: unknown): value is InputSource {
   return typeof value === "string" && inputSources.includes(value as InputSource)
+}
+
+function isControlTarget(value: unknown): value is ControlTarget {
+  return value === "internal" || isInput(value)
 }
 
 function isUnsigned16(value: unknown): boolean {
@@ -149,6 +154,8 @@ export class MonitorController {
   private readonly latestControl = new Map<ControlName, number>()
   private requestSequence = 0
   private displayGeneration = 0
+  private externalDisplayId?: string
+  private lastExternalInput: InputSource = "usbc"
   private lastPreview?: { control: ControlName; value: ControlRequest["value"]; source: ControlSource; transport: MonitorTransport; at: number }
 
   constructor(
@@ -212,8 +219,7 @@ export class MonitorController {
         : undefined)
     if (!selected) throw new Error("显示器不存在")
     if (this.display !== selected.id) {
-      this.display = selected.id
-      this.resetActiveDisplayState()
+      this.activateDisplay(selected, false)
       await this.enqueue(() => this.detect(true))
     }
     return this.connectionSnapshot()
@@ -370,11 +376,17 @@ export class MonitorController {
     const [name, hid] = await Promise.all([this.detectDisplayName(), this.probeHidDdc()])
     const selected = this.displays.find((display) => display.id === this.display || display.index === Number.parseInt(this.display, 10))
     const selectedInternalPanel = selected?.transport === "internal-panel"
+    if (selected && !selectedInternalPanel) this.externalDisplayId = selected.id
+    if (selectedInternalPanel) this.lastStatus.input = "internal"
     const videoDdc = selectedInternalPanel ? false : await this.probeVideoDdc()
     this.displayName = name
     this.detectedUsbHid = hid
     const manualProfile = this.manualProfileId ? this.profiles.find((candidate) => candidate.id === this.manualProfileId) : undefined
-    const matchedProfile = manualProfile || this.profiles.find((candidate) => !candidate.fallback && this.profileMatches(candidate, name, hid)) ||
+    const matchedProfile = manualProfile || this.profiles.find((candidate) =>
+      !candidate.fallback && (selectedInternalPanel
+        ? candidate.transports.includes("internal-panel") && Boolean(candidate.match?.displayNamePattern) &&
+          new RegExp(candidate.match!.displayNamePattern!, "i").test(name)
+        : this.profileMatches(candidate, name, hid))) ||
       this.profiles.find((candidate) => candidate.fallback) || this.profiles[0]
     if (!matchedProfile) throw new Error("没有可用的显示器配置档")
     let detectedAvailable = new Set<MonitorTransport>([
@@ -383,20 +395,7 @@ export class MonitorController {
           matchedProfile.match.usbHid.productId === hid.productId ? ["usb-hid-ddc" as const] : []),
       ...(videoDdc ? ["video-ddc" as const] : []),
     ])
-    let profile = matchedProfile
-    if (!detectedAvailable.size && !selectedInternalPanel) {
-      const internalPanel = this.displays.find((display) => display.transport === "internal-panel")
-      if (internalPanel) {
-        this.display = internalPanel.id
-        this.resetActiveDisplayState()
-        this.detectedAt = Date.now()
-        this.displayName = internalPanel.name
-        const internalProfile = this.profiles.find((candidate) => !candidate.fallback && this.profileMatches(candidate, this.displayName)) ||
-          this.profiles.find((candidate) => candidate.fallback) || this.profiles[0]
-        if (!internalProfile) throw new Error("没有可用的显示器配置档")
-        profile = internalProfile
-      }
-    }
+    const profile = matchedProfile
     if (this.activeDisplay()?.transport === "internal-panel" && await this.probeInternalPanel()) {
       detectedAvailable = new Set<MonitorTransport>(["internal-panel"])
     }
@@ -456,6 +455,17 @@ export class MonitorController {
     return this.activeDisplay()?.id || this.display
   }
 
+  private activateDisplay(display: MonitorDisplaySummary, incrementGeneration = true): void {
+    const current = this.activeDisplay()
+    if (current?.transport !== "internal-panel" && isInput(this.lastStatus.input)) {
+      this.lastExternalInput = this.lastStatus.input
+    }
+    if (display.transport !== "internal-panel") this.externalDisplayId = display.id
+    if (incrementGeneration && this.display !== display.id) this.displayGeneration++
+    this.display = display.id
+    this.resetActiveDisplayState()
+  }
+
   private resetActiveDisplayState(): void {
     this.profile = undefined
     this.manualProfileId = undefined
@@ -464,7 +474,12 @@ export class MonitorController {
     this.available.clear()
     this.transport = "unavailable"
     this.detectedAt = 0
-    this.lastStatus = { ...initialStatus }
+    this.lastStatus = {
+      ...initialStatus,
+      input: this.activeDisplay()?.transport === "internal-panel"
+        ? "internal"
+        : this.lastExternalInput,
+    }
     this.statusReady = false
     this.trustedControls.clear()
     this.transportFailures = 0
@@ -540,7 +555,7 @@ export class MonitorController {
     return result
   }
 
-  private valuesMatch(control: ControlName, left: number | boolean | InputSource, right: number | boolean | InputSource): boolean {
+  private valuesMatch(control: ControlName, left: number | boolean | ControlTarget, right: number | boolean | ControlTarget): boolean {
     if ((control === "brightness" || control === "volume") && typeof left === "number" && typeof right === "number") return Math.abs(left - right) <= 1
     return left === right
   }
@@ -557,14 +572,16 @@ export class MonitorController {
       if (control === "brightness" || control === "volume") return percentage(current)
       if (control === "mute") return current === 1
       const raw = String(current)
-      return this.profile?.ddc?.inputReadValues[raw] || this.lastStatus.input
+      return this.profile?.ddc?.inputReadValues[raw] ||
+        (isInput(this.lastStatus.input) ? this.lastStatus.input : this.lastExternalInput)
     }
     if (transport === "usb-hid-ddc" && this.profile?.usbHid) {
       const result = await this.get("lg-hid-ddc", this.profile.usbHid.vcp[control])
       const current = Number(result.current)
       if (control === "brightness" || control === "volume") return percentage(current)
       if (control === "mute") return current === 1
-      return this.profile.usbHid.inputReadValues[String(current)] || this.lastStatus.input
+      return this.profile.usbHid.inputReadValues[String(current)] ||
+        (isInput(this.lastStatus.input) ? this.lastStatus.input : this.lastExternalInput)
     }
     throw new Error("显示器承载路径不可用")
   }
@@ -594,7 +611,7 @@ export class MonitorController {
     throw lastError instanceof Error ? lastError : new Error(`${control} 没有可用的 DDC/CI 路径`)
   }
 
-  private async readStable(control: ControlName): Promise<number | boolean | InputSource> {
+  private async readStable(control: ControlName): Promise<number | boolean | ControlTarget> {
     const first = await this.readWithFallback(control)
     const previous = this.lastStatus[control]
     if (this.trustedControls.has(control) && this.valuesMatch(control, first, previous)) return first
@@ -618,7 +635,10 @@ export class MonitorController {
         if (control === "brightness" && typeof value === "number") this.lastStatus.brightness = value
         else if (control === "volume" && typeof value === "number") this.lastStatus.volume = value
         else if (control === "mute" && typeof value === "boolean") this.lastStatus.mute = value
-        else if (control === "input" && isInput(value)) this.lastStatus.input = value
+        else if (control === "input" && isInput(value)) {
+          this.lastStatus.input = value
+          this.lastExternalInput = value
+        }
         success++
       } catch { /* A display can expose only a subset of DDC/CI VCP features. */ }
     }
@@ -740,17 +760,52 @@ export class MonitorController {
     throw new Error("DDC/CI 承载路径不可用")
   }
 
+  private async activateControlTarget(target: ControlTarget): Promise<void> {
+    this.displays = await this.enumerateDisplays()
+    const selected = target === "internal"
+      ? this.displays.find((display) => display.transport === "internal-panel")
+      : this.displays.find((display) => display.id === this.externalDisplayId && display.transport !== "internal-panel") ||
+        this.displays.find((display) => display.transport !== "internal-panel")
+    if (!selected) {
+      throw new Error(target === "internal" ? "未检测到笔记本内屏" : "未检测到外接显示器")
+    }
+    if (this.activeDisplayId() !== selected.id) {
+      this.activateDisplay(selected)
+      await this.detect(true)
+    } else if (!this.profile || !this.candidates().length) {
+      await this.detect(true)
+    }
+    if (!this.candidates().length) {
+      throw new Error(target === "internal" ? "笔记本内屏控制不可用" : "外接显示器控制不可用")
+    }
+    if (target === "internal") this.lastStatus.input = "internal"
+  }
+
   private async applyControl(request: ControlRequest, source: ControlSource): Promise<MonitorStatus> {
     const { control, value } = request
     if ((control === "brightness" || control === "volume") && (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 100)) throw new Error("数值控制必须是 0–100 的整数")
     if (control === "mute" && typeof value !== "boolean") throw new Error("静音值无效")
-    if (control === "input" && !isInput(value)) throw new Error("输入源无效")
+    if (control === "input" && !isControlTarget(value)) throw new Error("控制源无效")
     const operation = ++this.controlSequence
     const startedAt = Date.now()
     this.logger?.info("control.request", {
       operation, source, control, requested: String(value), final: request.final !== false,
       profile: this.profile?.id,
     })
+    if (control === "input" && value === "internal") {
+      await this.activateControlTarget(value)
+      const status = await this.readStatus()
+      this.lastStatus.input = "internal"
+      this.logger?.info("control.success", {
+        operation, source, control, requested: value, confirmed: value,
+        transport: this.transport, display: this.display, profile: this.profile?.id,
+        verification: "matched", durationMs: Date.now() - startedAt,
+      })
+      return { ...status, input: "internal" }
+    }
+    if (control === "input" && isInput(value) && this.activeDisplay()?.transport === "internal-panel") {
+      await this.activateControlTarget(value)
+    }
     const knownInputRoute = control === "input" ? this.inputRoutes() : this.candidates()
     if (knownInputRoute.length) {
       this.logger?.info("control.route_reused", {
@@ -818,7 +873,10 @@ export class MonitorController {
         if (control === "brightness" && typeof confirmed === "number") this.lastStatus.brightness = confirmed
         else if (control === "volume" && typeof confirmed === "number") this.lastStatus.volume = confirmed
         else if (control === "mute" && typeof confirmed === "boolean") this.lastStatus.mute = confirmed
-        else if (control === "input" && isInput(confirmed)) this.lastStatus.input = confirmed
+        else if (control === "input" && isInput(confirmed)) {
+          this.lastStatus.input = confirmed
+          this.lastExternalInput = confirmed
+        }
         this.trustedControls.add(control)
         this.transportFailures = 0
         if (request.final === false && (control === "brightness" || control === "volume")) {

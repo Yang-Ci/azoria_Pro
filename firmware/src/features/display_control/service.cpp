@@ -8,6 +8,7 @@
 #include <freertos/semphr.h>
 
 #include "services/ble_transport.h"
+#include "features/wallpaper/wallpaper.h"
 
 namespace DisplayControl {
 namespace {
@@ -23,7 +24,7 @@ enum class ControlKind : uint8_t {
 struct Command {
   ControlKind kind = ControlKind::Brightness;
   int value = 0;
-  char text[8]{};
+  char text[12]{};
   uint32_t sequence = 0;
   uint32_t queued_at_ms = 0;
   bool final_value = true;
@@ -49,7 +50,7 @@ constexpr uint32_t kStatusRequestTimeoutMs = 8000;
 constexpr uint32_t kConfirmedSettleMs = 2000;
 constexpr uint32_t kRegistrationIntervalMs = 30000;
 constexpr uint32_t kBleHealthIntervalMs = 5000;
-constexpr uint32_t kIdleStatusIntervalMs = 30000;
+constexpr uint32_t kIdleStatusIntervalMs = 5000;
 #ifndef AZORIA_FIRMWARE_VERSION
 #define AZORIA_FIRMWARE_VERSION "0.4.18"
 #endif
@@ -138,7 +139,7 @@ const char *controlName(ControlKind kind) {
 
 bool validInputValue(const String &value) {
   return value == "dp1" || value == "hdmi1" || value == "hdmi2" ||
-         value == "usbc";
+         value == "usbc" || value == "internal";
 }
 
 bool &pendingFor(ControlKind kind) {
@@ -557,14 +558,14 @@ void invalidateDiscoveredDesktop() {
 }
 
 void registerDevice() {
-  char body[320];
+  char body[448];
   String address = WiFi.localIP().toString();
   snprintf(body, sizeof(body),
            "{\"device_id\":\"%s\",\"hostname\":\"%s\",\"board\":"
            "\"VIEWE UEDX48480040E-WB-A V1.3\",\"firmware\":\"%s\","
-           "\"address\":\"%s\"}",
+           "\"address\":\"%s\",\"wallpaper_hash\":\"%s\"}",
            device_id.c_str(), device_hostname.c_str(), kFirmwareVersion,
-           address.c_str());
+           address.c_str(), Wallpaper::currentHash().c_str());
   String response;
   if (request("POST", "/v1/device/register", body, response)) {
     Serial.printf("Registered with Desktop as %s\n", device_id.c_str());
@@ -578,6 +579,11 @@ bool readStatus() {
     updateReady(false, false, "Desktop offline");
     return false;
   }
+  const bool wallpaper_metadata_present =
+      jsonValueStart(response, "wallpaperHash") >= 0 &&
+      jsonValueStart(response, "wallpaperSize") >= 0;
+  const String wallpaper_hash = jsonString(response, "wallpaperHash", "");
+  const int wallpaper_size = jsonInt(response, "wallpaperSize", 0);
   xSemaphoreTake(state_mutex, portMAX_DELAY);
   int brightness = constrain(jsonInt(response, "brightness", remote_state.brightness), 0, 100);
   int volume = constrain(jsonInt(response, "volume", remote_state.volume), 0, 100);
@@ -616,6 +622,15 @@ bool readStatus() {
     ++remote_state.revision;
   }
   xSemaphoreGive(state_mutex);
+  if (wallpaper_metadata_present && WiFi.status() == WL_CONNECTED &&
+      !remote_config.host.isEmpty()) {
+    const String previous_wallpaper_hash = Wallpaper::currentHash();
+    Wallpaper::sync(remote_config.host, remote_config.port,
+                    wallpaper_hash,
+                    wallpaper_size > 0 ? static_cast<size_t>(wallpaper_size)
+                                       : 0);
+    if (Wallpaper::currentHash() != previous_wallpaper_hash) registerDevice();
+  }
   return true;
 }
 

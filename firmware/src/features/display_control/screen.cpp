@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "features/display_control/service.h"
+#include "features/wallpaper/wallpaper.h"
 #include "platform/board.h"
 #include "ui/display_badge.h"
 #include "ui/assets/app_fonts.h"
@@ -32,8 +33,9 @@ lv_obj_t *clock_label = nullptr;
 lv_obj_t *weekday_label = nullptr;
 lv_obj_t *date_label = nullptr;
 lv_obj_t *brightness_segments[40]{};
-constexpr int kInputCount = 4;
-constexpr int kInputOrder[kInputCount] = {3, 1, 2, 0};
+constexpr int kInputCount = 5;
+constexpr int kInputOrder[kInputCount] = {3, 1, 2, 0, 4};
+lv_obj_t *input_strip = nullptr;
 lv_obj_t *input_buttons[kInputCount]{};
 lv_obj_t *input_icons[kInputCount]{};
 lv_obj_t *footer_text = nullptr;
@@ -50,13 +52,19 @@ uint32_t post_interaction_redraw_due = 0;
 uint32_t next_clock_update = 0;
 uint16_t active_input = 3;
 int16_t pending_input = -1;
+int16_t pressed_input = -1;
+lv_point_t input_press_point{};
+uint32_t input_click_block_until = 0;
 bool controls_enabled = false;
 int current_backlight_percent = 86;
+uint32_t last_interaction_at = 0;
+bool wallpaper_exit_requested = false;
 
 constexpr char kBacklightNamespace[] = "azoria.ui";
 constexpr char kBacklightKey[] = "screen";
 constexpr int kDefaultBacklightPercent = 86;
 constexpr int kMinBacklightPercent = 5;
+constexpr uint32_t kWallpaperIdleTimeoutMs = 5UL * 60UL * 1000UL;
 
 // LG USB VCP needs roughly 300 ms per preview on this monitor. Producing updates
 // faster only keeps Wi-Fi/HTTP continuously busy; the local slider remains
@@ -65,11 +73,20 @@ constexpr uint32_t kDragSendIntervalMs = 400;
 constexpr uint32_t kPostInteractionRedrawDelayMs = 2000;
 constexpr int kBrightnessSegmentCount = 40;
 constexpr const char *kInputValues[] = {
-    "dp1", "hdmi1", "hdmi2", "usbc",
+    "dp1", "hdmi1", "hdmi2", "usbc", "internal",
 };
 constexpr const char *kInputLabels[] = {
-    "DP", "HDMI 1", "HDMI 2", "USB-C",
+    "DP", "HDMI 1", "HDMI 2", "USB-C", "PANEL",
 };
+constexpr int kInputButtonWidth = 108;
+constexpr int kInputButtonHeight = 98;
+constexpr int kInputStride = 116;
+constexpr int kInputStripWidth = 458;
+constexpr int kInputStripHeight = 109;
+constexpr int kInputTapSlop = 10;
+constexpr uint32_t kInputClickBlockMs = 250;
+constexpr int kPanelPageScrollX =
+    kInputStride * (kInputCount - 1) + kInputButtonWidth - kInputStripWidth;
 
 int loadBacklightSetting() {
   Preferences preferences;
@@ -360,9 +377,28 @@ void muteClicked(lv_event_t *) {
   scheduleFullRedraw();
 }
 
+void inputPressed(lv_event_t *event) {
+  pressed_input = static_cast<int16_t>(
+      reinterpret_cast<intptr_t>(lv_event_get_user_data(event)));
+  lv_indev_t *input = lv_indev_get_act();
+  if (input) lv_indev_get_point(input, &input_press_point);
+}
+
 void inputClicked(lv_event_t *event) {
   int index = static_cast<int>(
       reinterpret_cast<intptr_t>(lv_event_get_user_data(event)));
+  lv_indev_t *input = lv_indev_get_act();
+  lv_point_t release_point = input_press_point;
+  if (input) lv_indev_get_point(input, &release_point);
+  const bool dragged = abs(release_point.x - input_press_point.x) > kInputTapSlop ||
+                       abs(release_point.y - input_press_point.y) > kInputTapSlop;
+  const bool click_blocked =
+      static_cast<int32_t>(input_click_block_until - millis()) > 0;
+  if (index != pressed_input || dragged || click_blocked) {
+    pressed_input = -1;
+    return;
+  }
+  pressed_input = -1;
   if (index < 0 || index >= kInputCount || index == active_input) return;
   if (brightness_dragging || volume_dragging) return;
   if (!queueStringControl("input", kInputValues[index])) {
@@ -375,6 +411,28 @@ void inputClicked(lv_event_t *event) {
   Serial.printf("INPUT_COMMIT,INDEX=%d,VALUE=%s\n",
                 index, kInputValues[index]);
   scheduleFullRedraw();
+}
+
+void inputGesture(lv_event_t *) {
+  lv_indev_t *input = lv_indev_get_act();
+  if (!input || !input_strip) return;
+  const lv_dir_t direction = lv_indev_get_gesture_dir(input);
+  if (direction == LV_DIR_LEFT) {
+    lv_obj_scroll_to_x(input_strip, kPanelPageScrollX, LV_ANIM_ON);
+  } else if (direction == LV_DIR_RIGHT) {
+    lv_obj_scroll_to_x(input_strip, 0, LV_ANIM_ON);
+  } else {
+    return;
+  }
+  input_click_block_until = millis() + kInputClickBlockMs;
+  pressed_input = -1;
+  lv_indev_wait_release(input);
+  scheduleFullRedraw();
+}
+
+void inputStripScrolled(lv_event_t *) {
+  input_click_block_until = millis() + kInputClickBlockMs;
+  pressed_input = -1;
 }
 
 void showBacklightPanel() {
@@ -413,6 +471,20 @@ void screenGesture(lv_event_t *) {
   if (lv_indev_get_gesture_dir(input) != LV_DIR_BOTTOM) return;
   if (backlight_panel && !lv_obj_has_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN)) return;
   showBacklightPanel();
+}
+
+void wallpaperButtonClicked(lv_event_t *) {
+  hideBacklightPanel();
+  Wallpaper::show();
+  last_interaction_at = millis();
+  scheduleFullRedraw();
+}
+
+void wallpaperClicked(lv_event_t *) {
+  wallpaper_exit_requested = false;
+  Wallpaper::hide();
+  last_interaction_at = millis();
+  scheduleFullRedraw();
 }
 
 void createBacklightPanel(lv_obj_t *parent) {
@@ -463,13 +535,12 @@ void createBacklightPanel(lv_obj_t *parent) {
 
 lv_obj_t *createInputButton(lv_obj_t *parent, int index, int slot) {
   lv_obj_t *button = lv_btn_create(parent);
-  static const int kInputX[] = {13, 129, 244, 360};
   // The exported 36x36 assets contain different transparent side bearings.
   // Position their visible glyphs on the same optical center, rather than
   // aligning the image frame's top-left corner.
   constexpr int kInputIconX = 39;
-  lv_obj_set_pos(button, kInputX[slot], 360);
-  lv_obj_set_size(button, 108, 98);
+  lv_obj_set_pos(button, slot * kInputStride, 0);
+  lv_obj_set_size(button, kInputButtonWidth, kInputButtonHeight);
   bool selected = index == active_input;
   lv_obj_set_style_bg_color(
       button, color(selected ? 0xE1F4FF : 0x1D1D1D),
@@ -480,10 +551,20 @@ lv_obj_t *createInputButton(lv_obj_t *parent, int index, int slot) {
   disableScrolling(button);
   lv_obj_set_ext_click_area(button, 3);
   lv_obj_add_event_cb(
+      button, inputPressed, LV_EVENT_PRESSED,
+      reinterpret_cast<void *>(static_cast<intptr_t>(index)));
+  lv_obj_add_event_cb(
       button, inputClicked, LV_EVENT_CLICKED,
       reinterpret_cast<void *>(static_cast<intptr_t>(index)));
+  lv_obj_clear_flag(button, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(button, inputGesture, LV_EVENT_GESTURE, nullptr);
+  lv_obj_add_event_cb(button, screenGesture, LV_EVENT_GESTURE, nullptr);
 
-  if (index == 3) {
+  if (index == 4) {
+    input_icons[index] = createUiImage(button, &icon_tv_active_48,
+                                          30, 12,
+                                          color(selected ? 0x050505 : 0xEBF4FF));
+  } else if (index == 3) {
     input_icons[index] = createUiImage(button, &icon_apple_36,
                                           kInputIconX, 22,
                                           color(selected ? 0x050505 : 0xEBF4FF));
@@ -505,7 +586,7 @@ lv_obj_t *createInputButton(lv_obj_t *parent, int index, int slot) {
   lv_obj_set_style_text_color(caption, color(selected ? 0x000000 : 0xEBF4FF),
                               0);
   lv_obj_set_style_text_opa(caption, LV_OPA_50, 0);
-  lv_obj_set_width(caption, 108);
+  lv_obj_set_width(caption, kInputButtonWidth);
   lv_obj_set_style_text_align(caption, LV_TEXT_ALIGN_CENTER, 0);
   return button;
 }
@@ -546,7 +627,10 @@ void showScreen() {
 
   createUiImage(controls, &icon_azoria_logo_80, 28, 24,
                    color(0xF8FAFC));
-  DisplayBadge::create(controls);
+  lv_obj_t *wallpaper_button = DisplayBadge::create(controls);
+  lv_obj_add_flag(wallpaper_button, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(
+      wallpaper_button, wallpaperButtonClicked, LV_EVENT_CLICKED, nullptr);
 
   status_dot = lv_obj_create(controls);
   lv_obj_set_pos(status_dot, 446, 20);
@@ -652,23 +736,56 @@ void showScreen() {
   lv_obj_set_style_text_align(footer_text, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_align(footer_text, LV_ALIGN_TOP_RIGHT, -16, 132);
   next_clock_update = 0;
+  input_strip = lv_obj_create(controls);
+  lv_obj_set_pos(input_strip, 13, 360);
+  lv_obj_set_size(input_strip, kInputStripWidth, kInputStripHeight);
+  lv_obj_set_style_bg_opa(input_strip, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(input_strip, 0, 0);
+  lv_obj_set_style_radius(input_strip, 0, 0);
+  lv_obj_set_style_pad_all(input_strip, 0, 0);
+  lv_obj_set_scroll_dir(input_strip, LV_DIR_HOR);
+  lv_obj_set_scrollbar_mode(input_strip, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_clear_flag(input_strip, LV_OBJ_FLAG_SCROLL_CHAIN);
+  lv_obj_add_flag(input_strip, LV_OBJ_FLAG_SCROLLABLE |
+                               LV_OBJ_FLAG_SCROLL_MOMENTUM |
+                               LV_OBJ_FLAG_SCROLL_ELASTIC);
+  lv_obj_add_event_cb(
+      input_strip, inputStripScrolled, LV_EVENT_SCROLL_BEGIN, nullptr);
+  lv_obj_add_event_cb(
+      input_strip, inputStripScrolled, LV_EVENT_SCROLL_END, nullptr);
   for (int slot = 0; slot < kInputCount; ++slot) {
     int index = kInputOrder[slot];
-    input_buttons[index] = createInputButton(controls, index, slot);
-    lv_obj_add_flag(input_buttons[index], LV_OBJ_FLAG_GESTURE_BUBBLE);
+    input_buttons[index] = createInputButton(input_strip, index, slot);
     lv_obj_add_state(input_buttons[index], LV_STATE_DISABLED);
   }
   createBacklightPanel(controls);
+  Wallpaper::createView(controls, wallpaperClicked);
   updateInputButtons();
   updateMuteVisual();
   updateBrightnessSegments(50);
 
   controls_enabled = true;
   setControlsEnabled(false);
+  last_interaction_at = millis();
+  wallpaper_exit_requested = false;
 }
 
 void refresh() {
   if (!controls || !brightness_slider) return;
+  if (wallpaper_exit_requested) {
+    wallpaper_exit_requested = false;
+    Wallpaper::hide();
+    scheduleFullRedraw();
+  }
+  if (!Wallpaper::active() &&
+      millis() - last_interaction_at >= kWallpaperIdleTimeoutMs) {
+    Wallpaper::show();
+    scheduleFullRedraw();
+  }
+  if (Wallpaper::active()) {
+    Wallpaper::refresh();
+    return;
+  }
   if (static_cast<int32_t>(millis() - next_clock_update) >= 0) {
     updateClock();
     next_clock_update = millis() + 1000;
@@ -740,6 +857,11 @@ bool takeFullRedrawRequest() {
   }
   post_interaction_redraw_due = 0;
   return true;
+}
+
+void noteInteraction() {
+  last_interaction_at = millis();
+  if (Wallpaper::active()) wallpaper_exit_requested = true;
 }
 
 }  // namespace DisplayControl

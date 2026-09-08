@@ -12,7 +12,7 @@ struct RemoteState {
   int brightness = 50;
   int volume = 20;
   bool muted = false;
-  char input[8] = "usbc";
+  char input[12] = "usbc";
   char message[48] = "Connecting";
   bool brightness_pending = false;
   bool volume_pending = false;

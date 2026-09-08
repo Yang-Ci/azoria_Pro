@@ -167,10 +167,17 @@ test('numeric stable display IDs are selected as IDs rather than list indexes', 
   assert.ok(!getDisplays.includes(22797))
 })
 
-test('Windows internal panels are enumerated and selected when DDC/CI is unavailable', async () => {
+test('Windows internal panels stay independent until the internal target is selected', async () => {
   const { monitor, internalGet } = internalPanelFixture()
   await monitor.detect(true)
-  const info = monitor.wizardInfo()
+  let info = monitor.wizardInfo()
+
+  assert.equal(info.activeDisplayId, 'stable-1')
+  assert.equal(info.activeTransport, 'unavailable')
+  assert.equal(info.displays[1].transport, 'internal-panel')
+
+  const status = await monitor.control({ control: 'input', value: 'internal', final: true })
+  info = monitor.wizardInfo()
 
   assert.equal(info.activeDisplayId, 'internal-panel:AUO26A9')
   assert.equal(info.displayName, '笔记本内屏 AUO26A9')
@@ -179,12 +186,14 @@ test('Windows internal panels are enumerated and selected when DDC/CI is unavail
   assert.equal(info.displays[1].transport, 'internal-panel')
   assert.equal(info.displays[1].system, 'windows')
   assert.equal(monitor.connectionSnapshot().summary, 'Windows 笔记本内屏')
+  assert.equal(status.input, 'internal')
   assert.ok(internalGet.includes(2))
 })
 
 test('Linux internal panels report the system-backed route', async () => {
   const { monitor } = internalPanelFixture('linux')
   await monitor.detect(true)
+  await monitor.control({ control: 'input', value: 'internal', final: true })
 
   const list = await monitor.listDisplays()
 
@@ -195,6 +204,7 @@ test('Linux internal panels report the system-backed route', async () => {
 test('Windows internal panels route brightness, system volume and mute with readback', async () => {
   const { monitor, internalSet } = internalPanelFixture()
   await monitor.detect(true)
+  assert.equal((await monitor.control({ control: 'input', value: 'internal', final: true })).input, 'internal')
 
   const status = await monitor.control({ control: 'brightness', value: 80, final: true })
   assert.equal(status.brightness, 80)
@@ -211,6 +221,6 @@ test('Windows internal panels route brightness, system volume and mute with read
   ])
   await assert.rejects(
     () => monitor.control({ control: 'input', value: 'hdmi1', final: true }),
-    /内屏不支持切换输入源/,
+    /外接显示器控制不可用/,
   )
 })
