@@ -24,6 +24,11 @@ struct RemoteState {
   char music_artist[64] = "";
   char music_mode[12] = "unknown";
   char music_source[12] = "other";
+  uint32_t music_position_ms = 0;
+  uint32_t music_duration_ms = 0;
+  char music_lyric_previous[128] = "";
+  char music_lyric_current[128] = "";
+  char music_lyric_next[128] = "";
   uint32_t revision = 0;
 };
 

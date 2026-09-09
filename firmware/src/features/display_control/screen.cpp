@@ -65,6 +65,12 @@ lv_obj_t *music_artist = nullptr;
 lv_obj_t *music_status = nullptr;
 lv_obj_t *music_play_label = nullptr;
 lv_obj_t *music_mode_label = nullptr;
+lv_obj_t *music_lyric_previous = nullptr;
+lv_obj_t *music_lyric_current = nullptr;
+lv_obj_t *music_lyric_next = nullptr;
+lv_obj_t *music_progress_bar = nullptr;
+lv_obj_t *music_elapsed_label = nullptr;
+lv_obj_t *music_duration_label = nullptr;
 lv_obj_t *music_buttons[4]{};
 bool music_view_active = false;
 uint16_t wallpaper_idle_minutes = 5;
@@ -521,12 +527,26 @@ void wallpaperClicked(lv_event_t *) {
   scheduleFullRedraw();
 }
 
-const char *musicModeLabel(const char *mode) {
-  if (!strcmp(mode, "order")) return "顺序播放";
-  if (!strcmp(mode, "list")) return "列表循环";
-  if (!strcmp(mode, "track")) return "单曲循环";
-  if (!strcmp(mode, "shuffle")) return "随机播放";
-  return "模式未同步";
+const char *musicModeButtonText(const char *mode) {
+  if (!strcmp(mode, "order")) return LV_SYMBOL_LOOP "\n顺序";
+  if (!strcmp(mode, "list")) return LV_SYMBOL_LOOP "\n列表";
+  if (!strcmp(mode, "track")) return LV_SYMBOL_LOOP "\n单曲";
+  if (!strcmp(mode, "shuffle")) return LV_SYMBOL_SHUFFLE "\n随机";
+  return LV_SYMBOL_LOOP "\n模式";
+}
+
+void formatMusicTime(uint32_t milliseconds, char *output,
+                     size_t output_size) {
+  const uint32_t total_seconds = milliseconds / 1000;
+  snprintf(output, output_size, "%lu:%02lu",
+           static_cast<unsigned long>(total_seconds / 60),
+           static_cast<unsigned long>(total_seconds % 60));
+}
+
+void setMusicLabel(lv_obj_t *object, const char *text) {
+  if (object && strcmp(lv_label_get_text(object), text)) {
+    lv_label_set_text(object, text);
+  }
 }
 
 void musicControlClicked(lv_event_t *event) {
@@ -556,21 +576,28 @@ void showMusicView(lv_event_t *) {
   scheduleFullRedraw();
 }
 
-lv_obj_t *musicButton(lv_obj_t *parent, int x, int width, const char *text,
-                      const char *action, lv_obj_t **button_label = nullptr) {
+lv_obj_t *musicButton(lv_obj_t *parent, int x, const char *text,
+                      const char *action, lv_obj_t **button_label = nullptr,
+                      bool accent = false) {
   lv_obj_t *button = lv_btn_create(parent);
-  lv_obj_set_pos(button, x, 300);
-  lv_obj_set_size(button, width, 72);
-  lv_obj_set_style_bg_color(button, color(0x1D1D1D), 0);
+  lv_obj_set_pos(button, x, 370);
+  lv_obj_set_size(button, 92, 92);
+  lv_obj_set_style_bg_color(button, color(accent ? 0x0A1A2E : 0x111113), 0);
   lv_obj_set_style_shadow_width(button, 0, 0);
-  lv_obj_set_style_radius(button, 18, 0);
+  lv_obj_set_style_radius(button, 16, 0);
+  lv_obj_set_style_border_width(button, 1, 0);
+  lv_obj_set_style_border_color(button,
+                                color(accent ? 0x168BFF : 0x2A2A2E), 0);
   lv_obj_set_style_pad_all(button, 0, 0);
   disableScrolling(button);
   lv_obj_add_event_cb(button, musicControlClicked, LV_EVENT_CLICKED,
                       const_cast<char *>(action));
   lv_obj_t *caption = label(button, text, 0, 0, &azoria_font_zh_16);
-  lv_obj_set_width(caption, width);
+  lv_obj_set_width(caption, 92);
   lv_obj_set_style_text_align(caption, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_line_space(caption, 8, 0);
+  lv_obj_set_style_text_color(caption,
+                              color(accent ? 0x168BFF : 0xF8FAFC), 0);
   lv_obj_center(caption);
   if (button_label) *button_label = caption;
   return button;
@@ -587,44 +614,111 @@ void createMusicView(lv_obj_t *parent) {
   disableScrolling(music_view);
 
   lv_obj_t *back = lv_btn_create(music_view);
-  lv_obj_set_pos(back, 20, 20);
-  lv_obj_set_size(back, 52, 52);
-  lv_obj_set_style_bg_color(back, color(0x1D1D1D), 0);
+  lv_obj_set_pos(back, 16, 16);
+  lv_obj_set_size(back, 48, 48);
+  lv_obj_set_style_bg_color(back, color(0x111113), 0);
   lv_obj_set_style_shadow_width(back, 0, 0);
-  lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_radius(back, 14, 0);
+  lv_obj_set_style_border_width(back, 1, 0);
+  lv_obj_set_style_border_color(back, color(0x2A2A2E), 0);
   lv_obj_set_style_pad_all(back, 0, 0);
   lv_obj_add_event_cb(back, hideMusicView, LV_EVENT_CLICKED, nullptr);
   lv_obj_t *back_label = label(back, "<", 0, 0, &lv_font_montserrat_28);
   lv_obj_center(back_label);
 
-  lv_obj_t *heading = staticLabel(music_view, "NOW PLAYING", 92, 34,
-                                  &lv_font_montserrat_16, 0xF8FAFC);
-  lv_obj_set_style_text_opa(heading, LV_OPA_50, 0);
-  music_status = label(music_view, "等待 Desktop", 92, 58,
-                       &azoria_font_zh_16);
-  lv_obj_set_style_text_color(music_status, color(0x70FF00), 0);
-
-  music_title = label(music_view, "暂无音乐", 32, 122,
+  music_title = label(music_view, "暂无音乐", 80, 17,
                       &azoria_font_zh_16);
-  lv_obj_set_width(music_title, 416);
+  lv_obj_set_width(music_title, 252);
   lv_label_set_long_mode(music_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  music_artist = label(music_view, "", 32, 174, &azoria_font_zh_16);
-  lv_obj_set_width(music_artist, 416);
+  music_artist = label(music_view, "", 80, 45, &azoria_font_zh_16);
+  lv_obj_set_width(music_artist, 252);
   lv_label_set_long_mode(music_artist, LV_LABEL_LONG_SCROLL_CIRCULAR);
   lv_obj_set_style_text_color(music_artist, color(0x94A3B8), 0);
-  music_mode_label = label(music_view, "模式未同步", 32, 228,
-                           &azoria_font_zh_16);
-  lv_obj_set_style_text_color(music_mode_label, color(0xA9D2FF), 0);
+  music_status = label(music_view, "等待 YangCi", 344, 28,
+                       &azoria_font_zh_16);
+  lv_obj_set_width(music_status, 116);
+  lv_obj_set_style_text_align(music_status, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_obj_set_style_text_color(music_status, color(0x168BFF), 0);
 
-  music_buttons[0] = musicButton(music_view, 28, 88, "上一首", "previous");
-  music_buttons[1] = musicButton(music_view, 126, 112, "播放", "toggle-play",
-                                 &music_play_label);
-  music_buttons[2] = musicButton(music_view, 248, 88, "下一首", "next");
-  music_buttons[3] = musicButton(music_view, 346, 106, "模式", "cycle-mode");
-  lv_obj_t *hint = staticLabel(music_view, "由 AZORIA Desktop 控制当前播放器",
-                               0, 420, &azoria_font_zh_16, 0x94A3B8);
-  lv_obj_set_width(hint, 480);
-  lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_t *divider = lv_obj_create(music_view);
+  lv_obj_set_pos(divider, 20, 82);
+  lv_obj_set_size(divider, 440, 1);
+  lv_obj_set_style_bg_color(divider, color(0x202024), 0);
+  lv_obj_set_style_bg_opa(divider, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(divider, 0, 0);
+  lv_obj_clear_flag(divider, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+  music_lyric_previous = label(music_view, "", 48, 112,
+                               &azoria_font_zh_16);
+  lv_obj_set_size(music_lyric_previous, 384, 42);
+  lv_label_set_long_mode(music_lyric_previous, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_text_align(music_lyric_previous, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_color(music_lyric_previous, color(0x66666F), 0);
+
+  lv_obj_t *current_panel = lv_obj_create(music_view);
+  lv_obj_set_pos(current_panel, 24, 164);
+  lv_obj_set_size(current_panel, 432, 86);
+  lv_obj_set_style_bg_color(current_panel, color(0x0A0A0C), 0);
+  lv_obj_set_style_bg_opa(current_panel, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(current_panel, 1, 0);
+  lv_obj_set_style_border_color(current_panel, color(0x202024), 0);
+  lv_obj_set_style_radius(current_panel, 16, 0);
+  lv_obj_set_style_pad_all(current_panel, 0, 0);
+  disableScrolling(current_panel);
+
+  lv_obj_t *lyric_indicator = lv_obj_create(current_panel);
+  lv_obj_set_pos(lyric_indicator, 0, 16);
+  lv_obj_set_size(lyric_indicator, 4, 54);
+  lv_obj_set_style_bg_color(lyric_indicator, color(0x168BFF), 0);
+  lv_obj_set_style_bg_opa(lyric_indicator, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(lyric_indicator, 0, 0);
+  lv_obj_set_style_radius(lyric_indicator, 2, 0);
+  lv_obj_clear_flag(lyric_indicator,
+                    LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+  music_lyric_current = label(current_panel, "等待歌词", 22, 12,
+                              &azoria_font_zh_16);
+  lv_obj_set_size(music_lyric_current, 388, 62);
+  lv_label_set_long_mode(music_lyric_current, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(music_lyric_current, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_color(music_lyric_current, color(0xF8FAFC), 0);
+  lv_obj_set_style_text_letter_space(music_lyric_current, 1, 0);
+
+  music_lyric_next = label(music_view, "", 48, 266,
+                           &azoria_font_zh_16);
+  lv_obj_set_size(music_lyric_next, 384, 42);
+  lv_label_set_long_mode(music_lyric_next, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_text_align(music_lyric_next, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_color(music_lyric_next, color(0x66666F), 0);
+
+  music_elapsed_label = staticLabel(music_view, "0:00", 20, 324,
+                                    &lv_font_montserrat_14, 0x94A3B8);
+  music_duration_label = staticLabel(music_view, "0:00", 422, 324,
+                                     &lv_font_montserrat_14, 0x94A3B8);
+  lv_obj_set_width(music_duration_label, 38);
+  lv_obj_set_style_text_align(music_duration_label, LV_TEXT_ALIGN_RIGHT, 0);
+  music_progress_bar = lv_bar_create(music_view);
+  lv_obj_set_pos(music_progress_bar, 72, 331);
+  lv_obj_set_size(music_progress_bar, 336, 5);
+  lv_bar_set_range(music_progress_bar, 0, 1000);
+  lv_bar_set_value(music_progress_bar, 0, LV_ANIM_OFF);
+  lv_obj_set_style_bg_color(music_progress_bar, color(0x27272A), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(music_progress_bar, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_radius(music_progress_bar, 3, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(music_progress_bar, color(0x168BFF),
+                            LV_PART_INDICATOR);
+  lv_obj_set_style_radius(music_progress_bar, 3, LV_PART_INDICATOR);
+
+  music_buttons[0] = musicButton(music_view, 38,
+                                 LV_SYMBOL_PREV "\n上一首", "previous");
+  music_buttons[1] = musicButton(music_view, 142,
+                                 LV_SYMBOL_PLAY "\n播放", "toggle-play",
+                                 &music_play_label, true);
+  music_buttons[2] = musicButton(music_view, 246,
+                                 LV_SYMBOL_NEXT "\n下一首", "next");
+  music_buttons[3] = musicButton(music_view, 350,
+                                 LV_SYMBOL_LOOP "\n模式", "cycle-mode",
+                                 &music_mode_label);
   lv_obj_add_flag(music_view, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -996,11 +1090,45 @@ void refresh() {
   }
   updateInputButtons(state.input_pending);
 
-  if (music_title) lv_label_set_text(music_title, state.music_available ? state.music_title : "暂无音乐");
-  if (music_artist) lv_label_set_text(music_artist, state.music_available ? state.music_artist : "打开播放器后自动同步");
-  if (music_status) lv_label_set_text(music_status, state.music_available ? (state.music_playing ? "正在播放" : "已暂停") : "未检测到播放器");
-  if (music_play_label) lv_label_set_text(music_play_label, state.music_playing ? "暂停" : "播放");
-  if (music_mode_label) lv_label_set_text(music_mode_label, musicModeLabel(state.music_mode));
+  setMusicLabel(music_title,
+                state.music_available ? state.music_title : "暂无音乐");
+  setMusicLabel(music_artist,
+                state.music_available ? state.music_artist
+                                      : "打开播放器后自动同步");
+  setMusicLabel(music_status,
+                state.music_available
+                    ? (state.music_playing ? "正在播放" : "已暂停")
+                    : "未检测到播放器");
+  setMusicLabel(music_lyric_previous,
+                state.music_available ? state.music_lyric_previous : "");
+  setMusicLabel(music_lyric_current,
+                state.music_available && state.music_lyric_current[0]
+                    ? state.music_lyric_current
+                    : (state.music_available ? "暂无同步歌词" : "等待歌词"));
+  setMusicLabel(music_lyric_next,
+                state.music_available ? state.music_lyric_next : "");
+  setMusicLabel(music_play_label,
+                state.music_playing ? LV_SYMBOL_PAUSE "\n暂停"
+                                    : LV_SYMBOL_PLAY "\n播放");
+  setMusicLabel(music_mode_label, musicModeButtonText(state.music_mode));
+  char elapsed_text[16];
+  char duration_text[16];
+  formatMusicTime(state.music_position_ms, elapsed_text,
+                  sizeof(elapsed_text));
+  formatMusicTime(state.music_duration_ms, duration_text,
+                  sizeof(duration_text));
+  setMusicLabel(music_elapsed_label, elapsed_text);
+  setMusicLabel(music_duration_label, duration_text);
+  if (music_progress_bar) {
+    const uint64_t scaled_progress = state.music_duration_ms > 0
+        ? static_cast<uint64_t>(state.music_position_ms) * 1000 /
+              state.music_duration_ms
+        : 0;
+    const uint32_t progress = static_cast<uint32_t>(
+        scaled_progress > 1000 ? 1000 : scaled_progress);
+    lv_bar_set_value(music_progress_bar, static_cast<int32_t>(progress),
+                     LV_ANIM_OFF);
+  }
   for (lv_obj_t *button : music_buttons) {
     if (!button) continue;
     if (state.music_available) lv_obj_clear_state(button, LV_STATE_DISABLED);

@@ -243,6 +243,22 @@ export class MusicManager {
       : track?.repeatMode === "track" ? "track"
         : track?.repeatMode === "list" ? "list"
           : track?.repeatMode === "none" ? "order" : "unknown"
+    const now = Date.now()
+    const elapsed = track?.status === "playing" && track.sampledAt > 0
+      ? Math.max(0, now - track.sampledAt) * track.playbackRate
+      : 0
+    const projectedPosition = track ? track.positionMs + elapsed : 0
+    const positionMs = track?.durationMs
+      ? Math.min(projectedPosition, track.durationMs)
+      : projectedPosition
+    let lyricIndex = -1
+    for (let index = this.latestSnapshot.lines.length - 1; index >= 0; index--) {
+      if ((this.latestSnapshot.lines[index]?.timeMs ?? Number.MAX_SAFE_INTEGER) <= positionMs) {
+        lyricIndex = index
+        break
+      }
+    }
+    const lyrics = this.latestSnapshot.lines
     return {
       musicAvailable: Boolean(track),
       musicTitle: clean(track?.title ?? "", 72),
@@ -250,6 +266,11 @@ export class MusicManager {
       musicPlaying: track?.status === "playing",
       musicMode: mode,
       musicSource: track?.source ?? "other",
+      musicPositionMs: Math.max(0, Math.round(positionMs)),
+      musicDurationMs: Math.max(0, Math.round(track?.durationMs ?? 0)),
+      musicLyricPrevious: clean(lyricIndex > 0 ? lyrics[lyricIndex - 1]?.text ?? "" : "", 108),
+      musicLyricCurrent: clean(lyricIndex >= 0 ? lyrics[lyricIndex]?.text ?? "" : "", 108),
+      musicLyricNext: clean(lyrics[lyricIndex + 1]?.text ?? "", 108),
     }
   }
 

@@ -128,3 +128,25 @@ test('keeps the actual playback source selected after it is paused', () => {
   sessions[0].status = 'playing'
   assert.equal(selectMediaSession(sessions, previous), sessions[0])
 })
+
+test('publishes the surrounding lyric lines for Touch', () => {
+  const manager = new MusicManager(filename)
+  manager.latestSnapshot = {
+    track: {
+      title: '测试歌曲', artist: '测试歌手', source: 'netease', status: 'paused',
+      positionMs: 1500, durationMs: 3000, sampledAt: Date.now(), playbackRate: 1,
+      shuffleActive: false, repeatMode: 'list',
+    },
+    lines: [
+      { timeMs: 0, text: '上一句' },
+      { timeMs: 1000, text: '当前歌词' },
+      { timeMs: 2000, text: '下一句' },
+    ],
+  }
+  const status = manager.touchStatus()
+  assert.equal(status.musicLyricPrevious, '上一句')
+  assert.equal(status.musicLyricCurrent, '当前歌词')
+  assert.equal(status.musicLyricNext, '下一句')
+  assert.equal(status.musicPositionMs, 1500)
+  assert.equal(status.musicDurationMs, 3000)
+})

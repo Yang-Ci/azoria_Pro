@@ -51,9 +51,9 @@ constexpr uint32_t kStatusRequestTimeoutMs = 8000;
 constexpr uint32_t kConfirmedSettleMs = 2000;
 constexpr uint32_t kRegistrationIntervalMs = 30000;
 constexpr uint32_t kBleHealthIntervalMs = 5000;
-constexpr uint32_t kIdleStatusIntervalMs = 2000;
+constexpr uint32_t kIdleStatusIntervalMs = 750;
 #ifndef AZORIA_FIRMWARE_VERSION
-#define AZORIA_FIRMWARE_VERSION "0.6.0"
+#define AZORIA_FIRMWARE_VERSION "0.7.0"
 #endif
 constexpr char kFirmwareVersion[] = AZORIA_FIRMWARE_VERSION;
 Command latest_commands[static_cast<size_t>(ControlKind::Count)]{};
@@ -602,6 +602,15 @@ bool readStatus() {
   String music_artist = jsonString(response, "musicArtist", "");
   String music_mode = jsonString(response, "musicMode", "unknown");
   String music_source = jsonString(response, "musicSource", "other");
+  uint32_t music_position_ms = static_cast<uint32_t>(
+      max(0, jsonInt(response, "musicPositionMs", 0)));
+  uint32_t music_duration_ms = static_cast<uint32_t>(
+      max(0, jsonInt(response, "musicDurationMs", 0)));
+  String music_lyric_previous =
+      jsonString(response, "musicLyricPrevious", "");
+  String music_lyric_current =
+      jsonString(response, "musicLyricCurrent", "");
+  String music_lyric_next = jsonString(response, "musicLyricNext", "");
   syncDesktopClock(response);
   uint32_t now = millis();
   bool brightness_writable =
@@ -623,6 +632,14 @@ bool readStatus() {
                  strcmp(remote_state.music_artist, music_artist.c_str()) ||
                  strcmp(remote_state.music_mode, music_mode.c_str()) ||
                  strcmp(remote_state.music_source, music_source.c_str()) ||
+                 remote_state.music_position_ms != music_position_ms ||
+                 remote_state.music_duration_ms != music_duration_ms ||
+                 strcmp(remote_state.music_lyric_previous,
+                        music_lyric_previous.c_str()) ||
+                 strcmp(remote_state.music_lyric_current,
+                        music_lyric_current.c_str()) ||
+                 strcmp(remote_state.music_lyric_next,
+                        music_lyric_next.c_str()) ||
                  strcmp(remote_state.message,
                         anyPendingLocked() ? "Saving changes" : status_message);
   if (changed) {
@@ -640,6 +657,16 @@ bool readStatus() {
     strlcpy(remote_state.music_artist, music_artist.c_str(), sizeof(remote_state.music_artist));
     strlcpy(remote_state.music_mode, music_mode.c_str(), sizeof(remote_state.music_mode));
     strlcpy(remote_state.music_source, music_source.c_str(), sizeof(remote_state.music_source));
+    remote_state.music_position_ms = music_position_ms;
+    remote_state.music_duration_ms = music_duration_ms;
+    strlcpy(remote_state.music_lyric_previous,
+            music_lyric_previous.c_str(),
+            sizeof(remote_state.music_lyric_previous));
+    strlcpy(remote_state.music_lyric_current,
+            music_lyric_current.c_str(),
+            sizeof(remote_state.music_lyric_current));
+    strlcpy(remote_state.music_lyric_next, music_lyric_next.c_str(),
+            sizeof(remote_state.music_lyric_next));
     strlcpy(remote_state.message,
             anyPendingLocked() ? "Saving changes" : status_message,
             sizeof(remote_state.message));
