@@ -5,7 +5,7 @@ import type { LyricLine, LyricsProvider, MusicControlRequest, MusicControls, Mus
 
 const run = promisify(execFile)
 const requestHeaders = {
-  "User-Agent": "AZORIA-Desktop/0.1.1 (https://github.com/Yang-Ci/azoria_Pro)",
+  "User-Agent": "Yc/0.2.0 (https://github.com/Yang-Ci/azoria_Pro)",
   Referer: "https://music.163.com/",
 }
 

@@ -2,5 +2,5 @@
 set -e
 
 if [ "$1" = remove ] && command -v update-alternatives >/dev/null 2>&1; then
-  update-alternatives --remove azoria-desktop "/opt/AZORIA Desktop/azoria-desktop"
+  update-alternatives --remove azoria-desktop "/opt/Yc/azoria-desktop"
 fi

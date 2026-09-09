@@ -2,7 +2,7 @@
   "name": "azoria-display-control",
   "version": "0.2.0",
   "private": true,
-  "description": "Local Electron control center for Azoria display controllers",
+  "description": "Yc local monitor and Touch control center",
   "author": "Yang-Ci <Yang-Ci@users.noreply.github.com>",
   "homepage": "https://github.com/Yang-Ci/azoria_Pro",
   "license": "GPL-3.0-or-later",

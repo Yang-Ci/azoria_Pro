@@ -6,15 +6,15 @@ if command -v update-alternatives >/dev/null 2>&1; then
      [ "$(readlink /usr/bin/azoria-desktop)" != /etc/alternatives/azoria-desktop ]; then
     rm -f /usr/bin/azoria-desktop
   fi
-  update-alternatives --install /usr/bin/azoria-desktop azoria-desktop "/opt/AZORIA Desktop/azoria-desktop" 100
+  update-alternatives --install /usr/bin/azoria-desktop azoria-desktop "/opt/Yc/azoria-desktop" 100
 else
-  ln -sf "/opt/AZORIA Desktop/azoria-desktop" /usr/bin/azoria-desktop
+  ln -sf "/opt/Yc/azoria-desktop" /usr/bin/azoria-desktop
 fi
 
 if [ -L /proc/self/ns/user ] && unshare --user true; then
-  chmod 0755 "/opt/AZORIA Desktop/chrome-sandbox"
+  chmod 0755 "/opt/Yc/chrome-sandbox"
 else
-  chmod 4755 "/opt/AZORIA Desktop/chrome-sandbox"
+  chmod 4755 "/opt/Yc/chrome-sandbox"
 fi
 
 if command -v update-desktop-database >/dev/null 2>&1; then
@@ -26,7 +26,7 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
 fi
 
 if command -v apparmor_status >/dev/null 2>&1 && apparmor_status --enabled; then
-  apparmor_profile="/opt/AZORIA Desktop/resources/apparmor-profile"
+  apparmor_profile="/opt/Yc/resources/apparmor-profile"
   apparmor_target=/etc/apparmor.d/azoria-desktop
   if command -v apparmor_parser >/dev/null 2>&1 && \
      apparmor_parser --skip-kernel-load --debug "$apparmor_profile" >/dev/null 2>&1; then

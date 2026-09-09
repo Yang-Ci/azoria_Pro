@@ -1,4 +1,4 @@
-# AZORIA Display Control
+# Yc
 
 <div align="center">
 
@@ -6,7 +6,7 @@
 
 </div>
 
-一个本地运行的桌面显示器控制项目。AZORIA Desktop 是主控制端，AZORIA Touch
+一个本地运行的桌面显示器控制项目。Yc 是主控制端，AZORIA Touch
 是可选的 480×480 ESP32-S3 实体输入终端。
 
 ## AZORIA Touch 实机
@@ -98,7 +98,7 @@ Touch 通过 Wi‑Fi 或 BLE 建立连接后，由 Desktop 状态响应同步当
 分区恢复后若出现多个 Master，则按稳定的 Desktop ID 消除冲突。同一命令 ID 的重发使用
 缓存结果，不会重复写入显示器。
 
-固件开发、恢复或测试时，在 AZORIA Desktop 设置中开启“开发者模式”，再进入
+固件开发、恢复或测试时，在 Yc 设置中开启“开发者模式”，再进入
 出现的“开发者”页。选择本地 AZORIA Touch `.bin` 固件后，程序会校验镜像类型、
 版本、校验和与设备身份，并在实际写入前再次核验文件哈希。
 
@@ -129,7 +129,7 @@ cd firmware
 pio run -e viewe_uedx48480040e_wb_a -t upload --upload-port /dev/cu.usbmodemXXXX
 ```
 
-AZORIA Desktop 的渲染进程没有 Node.js 权限，硬件操作通过白名单 IPC 完成。Desktop
+Yc 的渲染进程没有 Node.js 权限，硬件操作通过白名单 IPC 完成。Desktop
 可以主动发起公网 HTTP/HTTPS 请求，但显示器控制、Touch 发现和协调服务只监听私有 IPv4
 地址或 UDP 通配接收地址，并按来源所属的私有子网过滤数据包；公网来源的入站请求会被
 拒绝。局域网协议不做身份认证，应仅在可信局域网中使用。

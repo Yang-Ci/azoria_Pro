@@ -1,4 +1,4 @@
-# AZORIA Display Control
+# Yc
 
 <div align="center">
 
@@ -13,7 +13,7 @@
 
 </div>
 
-AZORIA brings display controls into one desktop experience. It combines an
+Yc brings display controls into one desktop experience. It combines an
 Electron control center, a native Rust DDC/CI sidecar, and an optional 480×480
 ESP32-S3 touch controller called **AZORIA Touch**.
 
@@ -33,7 +33,7 @@ The optional Touch controller puts everyday display actions within reach while
 the Desktop app handles discovery, coordination, native DDC/CI access, and
 firmware management in the background.
 
-## Why AZORIA
+## Why Yc
 
 - **One control surface** for brightness, volume, mute, and input switching.
 - **Real transport probing** across video-link DDC/CI and vendor USB HID paths.
@@ -48,7 +48,7 @@ firmware management in the background.
 
 ```text
 ┌─────────────────────────┐       BLE / trusted LAN       ┌──────────────────────┐
-│     AZORIA Desktop      │ ◀───────────────────────────▶ │     AZORIA Touch     │
+│           Yc            │ ◀───────────────────────────▶ │     AZORIA Touch     │
 │  Electron + React UI    │                               │ ESP32-S3 + LVGL UI   │
 └────────────┬────────────┘                               └──────────────────────┘
              │ allowlisted IPC
@@ -103,7 +103,7 @@ npm run sidecar:build
 npm run dev
 ```
 
-On first launch, AZORIA Desktop creates its local key material and device
+On first launch, Yc creates its local key material and device
 configuration inside the application data directory. Wi-Fi credentials, local
 keys, and device-specific runtime state are not stored in this repository.
 
@@ -127,7 +127,7 @@ The application image is written to:
 firmware/.pio/build/viewe_uedx48480040e_wb_a/firmware.bin
 ```
 
-Select this `firmware.bin` from the **Developer** page in AZORIA Desktop. Do not
+Select this `firmware.bin` from the **Developer** page in Yc. Do not
 select `bootloader.bin` or `partitions.bin`; those files are not accepted by the
 Desktop flashing workflow.
 
@@ -154,14 +154,14 @@ built-in profile.
 
 ## Display transport model
 
-AZORIA expresses brightness, volume, mute, and input selection as DDC/CI VCP
+Yc expresses brightness, volume, mute, and input selection as DDC/CI VCP
 features. A monitor can expose those features over either:
 
 - `usb-hid-ddc` — vendor USB HID transport carrying DDC/CI messages;
 - `video-ddc` — DDC/CI over HDMI, DisplayPort, or USB-C video links.
 - `internal-panel` — native laptop panel controls.
 
-AZORIA probes the available transports and selects one verified path for the
+Yc probes the available transports and selects one verified path for the
 entire monitor. It does not mix transport paths between individual controls.
 If the active path fails and another path is confirmed, all controls move to
 the fallback path together.
@@ -206,7 +206,7 @@ schema and the validated LG 32UQ85R mapping.
 
 ## Connectivity and security
 
-- BLE and Wi-Fi can independently connect AZORIA Touch to AZORIA Desktop.
+- BLE and Wi-Fi can independently connect AZORIA Touch to Yc.
 - Tap the AZORIA logo on Touch to view the current track and control previous,
   play/pause, next, and playback mode through the local network.
 - LAN coordination uses TCP `8732`, UDP `8733`, and UDP `8734`.
@@ -235,6 +235,6 @@ and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before opening a pull request.
 
 ## License
 
-AZORIA Display Control is licensed under
+Yc is licensed under
 [GPL-3.0-or-later](LICENSE). Third-party libraries, hardware names, trademarks,
 and artwork remain subject to their respective licenses and rights.
