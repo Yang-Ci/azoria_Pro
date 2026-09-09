@@ -2,7 +2,7 @@
 #include "sdkconfig.h"
 
 #ifndef AZORIA_FIRMWARE_VERSION
-#define AZORIA_FIRMWARE_VERSION "0.6.0"
+#define AZORIA_FIRMWARE_VERSION "0.6.1"
 #endif
 
 #define AZORIA_PROJECT_NAME "azoria-touch"

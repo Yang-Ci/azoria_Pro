@@ -1,17 +1,18 @@
 /*
- * AZORIA Touch enclosure — V2 fit-corrected prototype
+ * AZORIA Touch enclosure — V3 tight-fit enclosure and desktop stand
  * Target: VIEWE UEDX48480040E-WB-A V1.3, 94 x 94 mm PCBA.
  *
  * Export with OpenSCAD, for example:
- *   openscad -o azoria-touch-front-v2.stl -D 'part="front"' azoria-touch-case.scad
+ *   openscad -o azoria-touch-front-v3.stl -D 'part="front"' azoria-touch-case.scad
  *
- * V2 keeps the broad side openings, changes the PCB pocket to square internal
- * corners, and notches the rear lid around the two side-facing USB-C ports.
+ * V3 tightens the PCB pocket, strengthens the rear-cover press fit, mirrors the
+ * USB cut-outs into their installed position, and adds two desktop-stand
+ * alternatives.
  */
 
 $fn = 48;
 
-part = "preview"; // [preview,layout,front,rear,fit_gauge]
+part = "preview"; // [preview,all,layout,front,rear,stand_dock,stand_frame,fit_gauge]
 
 // Official module envelope (millimetres).
 board_size = 94;
@@ -22,7 +23,9 @@ mount_hole_spacing = 87;
 mount_hole_diameter = 3;
 
 // Printer and fit tuning.
-xy_clearance = 0.60;       // clearance on each side of the PCB
+// The V2 value was 0.60 mm per side and allowed the module to rattle.  A square
+// pocket no longer needs that much compensation for the PCB corners.
+xy_clearance = 0.25;       // clearance on each side of the PCB
 wall = 2.4;
 front_skin = 2.4;
 case_depth = 15.5;
@@ -33,22 +36,53 @@ window_size = 82;         // 1 mm overlap on each edge of the 84 mm glass
 window_corner_radius = 3;
 
 // Rear cover tuning. Increase pad_height if the board rattles after assembly.
-lid_clearance = 0.18;
+lid_clearance = 0.12;
 lid_thickness = 2.2;
 lid_lip_height = 1.8;
-pad_height = 2.2;
-friction_rib = 0.30;
+// 15.5 - 2.4 - 8.33 - 2.2 = 2.57 mm nominal rear gap.  Leave 0.02 mm
+// compression clearance; a 0.2 mm foam dot on each pad gives gentle preload.
+pad_height = 2.55;
+friction_rib = 0.35;
 
 // Large revision-tolerant openings on the physical left and right edges.
 port_opening_length = 72;
 port_opening_front_offset = front_skin;
 
-// Rear-lid cable relief for the two USB-C sockets shown on the PCB's right
-// edge. The continuous notch spans both connectors and leaves the upper-right
-// mounting-hole pad intact. Coordinates are viewed from the PCB/component side.
-usb_lid_notch_length = 42;
-usb_lid_notch_center_y = 16;
-usb_lid_notch_depth = 15;
+// USB locations from the official V3.2 back-view mechanical drawing.  The rear
+// cover is modelled with its inside face up for support-free printing, so X is
+// mirrored when it is flipped into the enclosure: print-left becomes the
+// installed back-view right side.
+usb_center_from_top = [17.33, 31.72];
+usb_notch_width = 11.0;
+usb_notch_depth = 11.5;
+usb_installed_back_view_side = 1; // -1 = left, 1 = right
+usb_print_side = -usb_installed_back_view_side;
+
+// Separate one-piece desktop stand: flat base, inclined back plate and a raised
+// front edge matching the supplied reference.  The small rear heel keeps the
+// centre of gravity inside the footprint when the screen leans backward.
+stand_angle = 10;
+stand_base_width = 76;
+stand_base_front = 42;
+stand_base_rear = 18;
+stand_base_thickness = 4;
+stand_back_width = 70;
+stand_back_height = 82;
+stand_back_thickness = 4;
+stand_front_lip_depth = 10;
+stand_front_lip_height = 12;
+stand_gusset_width = 6;
+
+// Alternate full-width triangular frame.  This version uses more material but
+// gives the widest rear footprint and the best resistance to side loads.
+frame_angle = 15;
+frame_width = 60;
+frame_height = 98;
+frame_rear_foot = 75;
+frame_case_back_offset = 14;
+frame_shelf_depth = 28;
+frame_shelf_thickness = 6;
+frame_front_lip_height = 11;
 
 pocket_size = board_size + 2 * xy_clearance;
 outer_size = pocket_size + 2 * wall;
@@ -139,17 +173,17 @@ module rear_lid() {
             );
 
             // Shallow locating lip on the enclosure-facing side.
-            translate([0, 0, lid_thickness])
+            translate([0, 0, lid_thickness - epsilon])
                 difference() {
                     rounded_prism(
                         [lid_size, lid_size],
                         max(outer_corner_radius - wall - lid_clearance, 1),
-                        lid_lip_height
+                        lid_lip_height + epsilon
                     );
                     rounded_prism(
                         [lid_size - 2.2, lid_size - 2.2],
                         max(outer_corner_radius - wall - lid_clearance - 1.1, 0.8),
-                        lid_lip_height + epsilon
+                        lid_lip_height + 2 * epsilon
                     );
                 }
 
@@ -160,39 +194,138 @@ module rear_lid() {
                         translate([
                             side * (lid_size / 2 + friction_rib / 2 - epsilon),
                             0,
-                            lid_thickness + lid_lip_height / 2
+                            lid_thickness + lid_lip_height / 2 - epsilon / 2
                         ])
-                            cube([friction_rib, 18, lid_lip_height], center = true);
+                            cube([
+                                friction_rib,
+                                18,
+                                lid_lip_height + epsilon
+                            ], center = true);
 
             // Pads bear on the PCB only around the official mounting holes.
             for (x = [-hole_offset, hole_offset])
                 for (y = [-hole_offset, hole_offset])
-                    translate([x, y, lid_thickness])
+                    translate([x, y, lid_thickness - epsilon])
                         difference() {
-                            cylinder(d = 6.2, h = pad_height);
+                            cylinder(d = 6.2, h = pad_height + epsilon);
                             translate([0, 0, -epsilon])
                                 cylinder(d = mount_hole_diameter + 0.5,
-                                         h = pad_height + 2 * epsilon);
+                                         h = pad_height + 3 * epsilon);
                         }
         }
 
         ventilation_slots();
 
-        // U-shaped edge cutout: the cable plugs can remain inserted while the
-        // lid is fitted or removed. Cut through both the plate and locating lip.
-        translate([
-            lid_size / 2 - usb_lid_notch_depth,
-            usb_lid_notch_center_y - usb_lid_notch_length / 2,
-            -epsilon
-        ])
-            cube([
-                // Extend past the friction rib as well as the nominal lid edge
-                // so no thin printed fin remains across the cable opening.
-                usb_lid_notch_depth + friction_rib + 1 + 2 * epsilon,
-                usb_lid_notch_length,
-                lid_thickness + lid_lip_height + pad_height + 2 * epsilon
-            ], center = false);
+        // Two compact edge cut-outs retain much more lid material than V2's
+        // single 42 x 15 mm opening while clearing both Type-C shells/plugs.
+        for (from_top = usb_center_from_top)
+            translate([
+                usb_print_side * (lid_size / 2 - usb_notch_depth / 2),
+                board_size / 2 - from_top,
+                (lid_thickness + lid_lip_height + pad_height) / 2
+            ])
+                cube([
+                    usb_notch_depth + friction_rib + 2,
+                    usb_notch_width,
+                    lid_thickness + lid_lip_height + pad_height + 2 * epsilon
+                ], center = true);
     }
+}
+
+// Extrude a depth/height (Y/Z) profile across X.  This keeps the lip and the
+// two gussets as simple printable prisms rather than unsupported cylinders.
+module yz_profile_prism(width, x_center = 0) {
+    multmatrix([
+        [0, 0, 1, x_center - width / 2],
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 0, 1]
+    ])
+        linear_extrude(height = width)
+            children();
+}
+
+module desktop_dock_stand() {
+    union() {
+        // Wide rounded footprint, printed directly on this face.
+        translate([0, (stand_base_front - stand_base_rear) / 2, 0])
+            rounded_prism(
+                [stand_base_width, stand_base_front + stand_base_rear],
+                4,
+                stand_base_thickness
+            );
+
+        // The back plate tilts away from the viewer.  Ten degrees is enough to
+        // steady the display without making the footprint excessively deep.
+        translate([
+            -stand_back_width / 2,
+            0,
+            stand_base_thickness - epsilon
+        ])
+            rotate([stand_angle, 0, 0])
+                cube([
+                    stand_back_width,
+                    stand_back_thickness,
+                    stand_back_height
+                ]);
+
+        // Chamfered front retaining edge, visually close to the rolled edge in
+        // the reference but safe to print without support.
+        yz_profile_prism(stand_base_width - 4)
+            polygon([
+                [stand_base_front - stand_front_lip_depth,
+                 stand_base_thickness - epsilon],
+                [stand_base_front, stand_base_thickness - epsilon],
+                [stand_base_front, stand_base_thickness + 4],
+                [stand_base_front - 4, stand_front_lip_height],
+                [stand_base_front - stand_front_lip_depth,
+                 stand_base_thickness + 6]
+            ]);
+
+        // Two local triangular ribs reinforce the high-stress back/base joint.
+        for (x = [
+            -stand_back_width / 2 + stand_gusset_width / 2,
+             stand_back_width / 2 - stand_gusset_width / 2
+        ])
+            yz_profile_prism(stand_gusset_width, x)
+                polygon([
+                    [-9, stand_base_thickness - epsilon],
+                    [ 7, stand_base_thickness - epsilon],
+                    [-3, 24]
+                ]);
+    }
+}
+
+module frame_stand_side_profile_2d() {
+    frame_top_depth = frame_case_back_offset
+                      + frame_height * tan(frame_angle);
+
+    union() {
+        difference() {
+            polygon([
+                [frame_case_back_offset, 0],
+                [frame_rear_foot, 0],
+                [frame_top_depth, frame_height]
+            ]);
+            polygon([
+                [frame_case_back_offset + 6, frame_shelf_thickness],
+                [frame_rear_foot - 7, frame_shelf_thickness],
+                [frame_top_depth + 2.5, frame_height - 12]
+            ]);
+        }
+
+        translate([-5, 0])
+            square([frame_shelf_depth + 5, frame_shelf_thickness]);
+        translate([-5, 0])
+            square([5, frame_front_lip_height]);
+    }
+}
+
+module desktop_frame_stand() {
+    // One triangular side is the print-bed face; the opening runs vertically
+    // through the print, so this stronger alternative also needs no support.
+    linear_extrude(height = frame_width)
+        frame_stand_side_profile_2d();
 }
 
 module fit_gauge() {
@@ -248,6 +381,16 @@ module assembly_preview() {
     module_placeholder();
     color([0.72, 0.72, 0.76])
         translate([0, 0, case_depth + 8]) rear_lid();
+
+    // The stand is shown beside the exploded enclosure in its print/use
+    // orientation: the broad base lies directly on the print bed.
+    color([0.35, 0.38, 0.44, 0.8])
+        translate([outer_size / 2 + 16, -stand_base_front / 2, 0])
+            scale([0.45, 0.45, 0.45]) desktop_dock_stand();
+
+    color([0.22, 0.28, 0.36, 0.65])
+        translate([outer_size / 2 + 60, -frame_rear_foot / 2, 0])
+            scale([0.32, 0.32, 0.32]) desktop_frame_stand();
 }
 
 module print_layout() {
@@ -255,11 +398,26 @@ module print_layout() {
     translate([ (outer_size / 2 + 4), 0, 0]) rear_lid();
 }
 
+// Complete one-plate export: enclosure plus both stand alternatives.  The
+// 199 x 208 mm footprint fits a 256 x 256 mm Bambu A1 plate with useful margin.
+// The fit gauge is deliberately excluded.
+module print_all_layout() {
+    translate([-52, -53.5, 0]) front_shell();
+    translate([ 50, -53.5, 0]) rear_lid();
+    translate([-45,  60.0, 0]) desktop_dock_stand();
+    translate([ 12,   7.0, 0]) desktop_frame_stand();
+}
+
 echo(str("PCB pocket: ", pocket_size, " x ", pocket_size, " mm"));
 echo(str("Case outside: ", outer_size, " x ", outer_size, " x ", case_depth, " mm"));
+echo(str("Installed USB side: ", usb_installed_back_view_side == 1 ? "right" : "left"));
+echo(str("Dock/frame stand angles: ", stand_angle, "/", frame_angle, " degrees"));
 
 if (part == "front") front_shell();
 else if (part == "rear") rear_lid();
+else if (part == "stand" || part == "stand_dock") desktop_dock_stand();
+else if (part == "stand_frame") desktop_frame_stand();
 else if (part == "fit_gauge") fit_gauge();
+else if (part == "all") print_all_layout();
 else if (part == "layout") print_layout();
 else assembly_preview();
