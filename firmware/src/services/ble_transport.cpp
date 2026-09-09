@@ -468,7 +468,8 @@ bool exchange(const String &unsigned_request, uint32_t request_id,
 
 bool decodeStatus(const String &wire, String &response) {
   const int count = fieldCount(wire);
-  if ((count != 12 && count != 14) || field(wire, 3) != "S") return false;
+  if ((count != 12 && count != 14 && count != 15) ||
+      field(wire, 3) != "S") return false;
   response =
       "{\"brightness\":" + field(wire, 4) +
       ",\"volume\":" + field(wire, 5) +
@@ -477,9 +478,12 @@ bool decodeStatus(const String &wire, String &response) {
       ",\"available\":" + (field(wire, 8) == "1" ? "true" : "false") +
       ",\"unixTime\":" + field(wire, 9) +
       ",\"timezoneOffsetMinutes\":" + field(wire, 10);
-  if (count == 14) {
+  if (count == 14 || count == 15) {
     response += ",\"wallpaperHash\":\"" + field(wire, 11) +
                 "\",\"wallpaperSize\":" + field(wire, 12);
+  }
+  if (count == 15) {
+    response += ",\"wallpaperIdleMinutes\":" + field(wire, 13);
   }
   response += "}";
   return true;

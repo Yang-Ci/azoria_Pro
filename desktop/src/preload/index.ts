@@ -37,6 +37,8 @@ const api: DesktopApi = {
   },
   wallpaper: {
     info: () => ipcRenderer.invoke("wallpaper:info"),
+    settings: () => ipcRenderer.invoke("wallpaper:settings"),
+    setIdleMinutes: (minutes) => ipcRenderer.invoke("wallpaper:set-idle-minutes", minutes),
     upload: (input) => ipcRenderer.invoke("wallpaper:upload", input),
     remove: () => ipcRenderer.invoke("wallpaper:remove"),
   },

@@ -179,6 +179,8 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   ipcMain.handle("device:flash", (_event, input: { path: string; firmwarePath: string; expectedSha256: string }) =>
     devices.flash(input.path, input.firmwarePath, input.expectedSha256))
   ipcMain.handle("wallpaper:info", () => wallpaper.info())
+  ipcMain.handle("wallpaper:settings", () => wallpaper.settings())
+  ipcMain.handle("wallpaper:set-idle-minutes", (_event, minutes: number) => wallpaper.setIdleMinutes(minutes))
   ipcMain.handle("wallpaper:upload", (_event, input) => wallpaper.upload(input))
   ipcMain.handle("wallpaper:remove", () => wallpaper.remove())
   ipcMain.handle("security:sign", (_event, message: string) => {

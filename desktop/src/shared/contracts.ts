@@ -12,6 +12,7 @@ export interface MonitorStatus {
   available?: boolean
   wallpaperHash?: string
   wallpaperSize?: number
+  wallpaperIdleMinutes?: WallpaperIdleMinutes
 }
 
 export interface ControlRequest {
@@ -99,6 +100,11 @@ export interface LanDevice {
 }
 
 export type WallpaperKind = "image" | "video"
+export type WallpaperIdleMinutes = 0 | 1 | 5 | 10 | 30
+
+export interface WallpaperSettings {
+  idleMinutes: WallpaperIdleMinutes
+}
 
 export interface WallpaperInfo {
   name: string
@@ -261,6 +267,8 @@ export interface DesktopApi {
   }
   wallpaper: {
     info(): Promise<WallpaperInfo | null>
+    settings(): Promise<WallpaperSettings>
+    setIdleMinutes(minutes: WallpaperIdleMinutes): Promise<WallpaperSettings>
     upload(input: WallpaperUpload): Promise<WallpaperInfo>
     remove(): Promise<void>
   }

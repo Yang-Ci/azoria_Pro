@@ -67,12 +67,14 @@ lv_obj_t *music_play_label = nullptr;
 lv_obj_t *music_mode_label = nullptr;
 lv_obj_t *music_buttons[4]{};
 bool music_view_active = false;
+uint16_t wallpaper_idle_minutes = 5;
 
 constexpr char kBacklightNamespace[] = "azoria.ui";
 constexpr char kBacklightKey[] = "screen";
 constexpr int kDefaultBacklightPercent = 86;
 constexpr int kMinBacklightPercent = 5;
-constexpr uint32_t kWallpaperIdleTimeoutMs = 5UL * 60UL * 1000UL;
+constexpr char kWallpaperIdleKey[] = "wall_idle";
+constexpr uint16_t kDefaultWallpaperIdleMinutes = 5;
 
 // LG USB VCP needs roughly 300 ms per preview on this monitor. Producing updates
 // faster only keeps Wi-Fi/HTTP continuously busy; the local slider remains
@@ -108,6 +110,30 @@ void saveBacklightSetting(int value) {
   Preferences preferences;
   preferences.begin(kBacklightNamespace, false);
   preferences.putInt(kBacklightKey, constrain(value, kMinBacklightPercent, 100));
+  preferences.end();
+}
+
+bool validWallpaperIdleMinutes(uint16_t minutes) {
+  return minutes == 0 || minutes == 1 || minutes == 5 ||
+         minutes == 10 || minutes == 30;
+}
+
+uint16_t loadWallpaperIdleMinutes() {
+  Preferences preferences;
+  if (!preferences.begin(kBacklightNamespace, true)) {
+    return kDefaultWallpaperIdleMinutes;
+  }
+  const uint16_t value = preferences.getUShort(
+      kWallpaperIdleKey, kDefaultWallpaperIdleMinutes);
+  preferences.end();
+  return validWallpaperIdleMinutes(value) ? value
+                                         : kDefaultWallpaperIdleMinutes;
+}
+
+void saveWallpaperIdleMinutes(uint16_t minutes) {
+  Preferences preferences;
+  if (!preferences.begin(kBacklightNamespace, false)) return;
+  preferences.putUShort(kWallpaperIdleKey, minutes);
   preferences.end();
 }
 
@@ -736,6 +762,7 @@ void showScreen() {
   disableScrolling(controls);
   lv_obj_set_scroll_dir(controls, LV_DIR_NONE);
   current_backlight_percent = loadBacklightSetting();
+  wallpaper_idle_minutes = loadWallpaperIdleMinutes();
   applyBacklight(current_backlight_percent);
   lv_obj_add_event_cb(
       controls, screenGesture, LV_EVENT_GESTURE, nullptr);
@@ -903,7 +930,9 @@ void refresh() {
     scheduleFullRedraw();
   }
   if (!Wallpaper::active() && !music_view_active &&
-      millis() - last_interaction_at >= kWallpaperIdleTimeoutMs) {
+      wallpaper_idle_minutes > 0 &&
+      millis() - last_interaction_at >=
+          static_cast<uint32_t>(wallpaper_idle_minutes) * 60UL * 1000UL) {
     Wallpaper::show();
     scheduleFullRedraw();
   }
@@ -998,6 +1027,14 @@ bool takeFullRedrawRequest() {
 void noteInteraction() {
   last_interaction_at = millis();
   if (Wallpaper::active()) wallpaper_exit_requested = true;
+}
+
+void setWallpaperIdleMinutes(uint16_t minutes) {
+  if (!validWallpaperIdleMinutes(minutes) ||
+      wallpaper_idle_minutes == minutes) return;
+  wallpaper_idle_minutes = minutes;
+  saveWallpaperIdleMinutes(minutes);
+  Serial.printf("WALLPAPER_IDLE_MINUTES=%u\n", minutes);
 }
 
 }  // namespace DisplayControl

@@ -8,6 +8,7 @@
 #include <freertos/semphr.h>
 
 #include "services/ble_transport.h"
+#include "features/display_control/screen.h"
 #include "features/wallpaper/wallpaper.h"
 
 namespace DisplayControl {
@@ -587,6 +588,8 @@ bool readStatus() {
       jsonValueStart(response, "wallpaperSize") >= 0;
   const String wallpaper_hash = jsonString(response, "wallpaperHash", "");
   const int wallpaper_size = jsonInt(response, "wallpaperSize", 0);
+  const int wallpaper_idle_minutes =
+      jsonInt(response, "wallpaperIdleMinutes", -1);
   xSemaphoreTake(state_mutex, portMAX_DELAY);
   int brightness = constrain(jsonInt(response, "brightness", remote_state.brightness), 0, 100);
   int volume = constrain(jsonInt(response, "volume", remote_state.volume), 0, 100);
@@ -643,6 +646,12 @@ bool readStatus() {
     ++remote_state.revision;
   }
   xSemaphoreGive(state_mutex);
+  if (wallpaper_idle_minutes == 0 || wallpaper_idle_minutes == 1 ||
+      wallpaper_idle_minutes == 5 || wallpaper_idle_minutes == 10 ||
+      wallpaper_idle_minutes == 30) {
+    setWallpaperIdleMinutes(
+        static_cast<uint16_t>(wallpaper_idle_minutes));
+  }
   if (wallpaper_metadata_present && WiFi.status() == WL_CONNECTED &&
       !remote_config.host.isEmpty()) {
     const String previous_wallpaper_hash = Wallpaper::currentHash();

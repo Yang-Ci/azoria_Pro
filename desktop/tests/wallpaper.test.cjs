@@ -44,6 +44,7 @@ test('wallpaper package is validated, persisted and restored', async () => {
     const manager = new WallpaperManager(directory)
     await manager.initialize()
     assert.equal(manager.info(), null)
+    assert.deepEqual(manager.settings(), { idleMinutes: 5 })
 
     const info = await manager.upload({ name: 'photo.jpg', kind: 'image', data: wallpaperPackage() })
     assert.equal(info.frameCount, 1)
@@ -53,6 +54,11 @@ test('wallpaper package is validated, persisted and restored', async () => {
     const restored = new WallpaperManager(directory)
     await restored.initialize()
     assert.deepEqual(restored.info(), info)
+    await restored.setIdleMinutes(30)
+    const restoredSettings = new WallpaperManager(directory)
+    await restoredSettings.initialize()
+    assert.deepEqual(restoredSettings.settings(), { idleMinutes: 30 })
+    await assert.rejects(() => restoredSettings.setIdleMinutes(2), /自动壁纸时间无效/)
     await restored.remove()
     assert.equal(restored.info(), null)
   } finally {

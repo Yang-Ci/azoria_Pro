@@ -1,10 +1,19 @@
 import { useEffect, useRef, useState } from "react"
-import { Film, Image as ImageIcon, Trash2, Upload } from "lucide-react"
-import type { LanDevice, WallpaperInfo } from "../../../shared/contracts"
+import { Clock3, Film, Image as ImageIcon, Trash2, Upload } from "lucide-react"
+import type { LanDevice, WallpaperIdleMinutes, WallpaperInfo } from "../../../shared/contracts"
 import { createWallpaperUpload } from "../wallpaper-format"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+
+const idleOptions: Array<{ value: WallpaperIdleMinutes; label: string }> = [
+  { value: 1, label: "1 分钟" },
+  { value: 5, label: "5 分钟" },
+  { value: 10, label: "10 分钟" },
+  { value: 30, label: "30 分钟" },
+  { value: 0, label: "关闭" },
+]
 
 function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
@@ -14,12 +23,32 @@ export function WallpaperCard({ devices, onMessage }: { devices: LanDevice[]; on
   const inputRef = useRef<HTMLInputElement>(null)
   const [wallpaper, setWallpaper] = useState<WallpaperInfo | null>(null)
   const [processing, setProcessing] = useState(false)
+  const [idleMinutes, setIdleMinutes] = useState<WallpaperIdleMinutes>(5)
+  const [savingIdle, setSavingIdle] = useState(false)
 
   useEffect(() => {
     let active = true
-    void window.azoria.wallpaper.info().then((info) => { if (active) setWallpaper(info) })
+    void Promise.all([window.azoria.wallpaper.info(), window.azoria.wallpaper.settings()]).then(([info, settings]) => {
+      if (!active) return
+      setWallpaper(info)
+      setIdleMinutes(settings.idleMinutes)
+    }).catch(() => onMessage("壁纸设置读取失败"))
     return () => { active = false }
-  }, [])
+  }, [onMessage])
+
+  const saveIdleMinutes = async (value: string) => {
+    const minutes = Number(value) as WallpaperIdleMinutes
+    setSavingIdle(true)
+    try {
+      const settings = await window.azoria.wallpaper.setIdleMinutes(minutes)
+      setIdleMinutes(settings.idleMinutes)
+      onMessage(minutes === 0 ? "已关闭自动进入壁纸模式" : `无操作 ${minutes} 分钟后将自动进入壁纸模式`)
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : "自动壁纸时间保存失败")
+    } finally {
+      setSavingIdle(false)
+    }
+  }
 
   const selectFile = () => inputRef.current?.click()
   const upload = async (file: File) => {
@@ -60,6 +89,16 @@ export function WallpaperCard({ devices, onMessage }: { devices: LanDevice[]; on
       <CardDescription>图片或视频会转换为 480 × 480，并同步到同一 Wi‑Fi 下的所有 Touch</CardDescription>
     </CardHeader>
     <CardContent className="space-y-4">
+      <div className="flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-black p-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <Clock3 className="size-5 shrink-0 text-zinc-400" />
+          <div><p className="text-sm font-medium">自动进入壁纸</p><p className="mt-1 text-xs text-zinc-500">Touch 无操作达到指定时间后进入</p></div>
+        </div>
+        <Select value={String(idleMinutes)} disabled={savingIdle} onValueChange={(value) => void saveIdleMinutes(value)}>
+          <SelectTrigger className="w-28 shrink-0"><SelectValue /></SelectTrigger>
+          <SelectContent>{idleOptions.map((option) => <SelectItem key={option.value} value={String(option.value)}>{option.label}</SelectItem>)}</SelectContent>
+        </Select>
+      </div>
       {wallpaper ? <div className="rounded-lg border border-white/10 bg-black p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0"><p className="truncate font-medium">{wallpaper.name}</p><p className="mt-1 text-sm text-zinc-500">{wallpaper.kind === "video" ? `动态 · ${wallpaper.frameCount} 帧 · ${(wallpaper.durationMs / 1000).toFixed(1)} 秒循环` : "静态图片"} · {formatBytes(wallpaper.size)}</p></div>

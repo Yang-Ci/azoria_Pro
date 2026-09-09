@@ -3,11 +3,13 @@ import { createReadStream } from "node:fs"
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { ServerResponse } from "node:http"
-import type { WallpaperInfo, WallpaperKind, WallpaperUpload } from "../shared/contracts"
+import type { WallpaperIdleMinutes, WallpaperInfo, WallpaperKind, WallpaperSettings, WallpaperUpload } from "../shared/contracts"
 
 const headerSize = 20
 const maxPackageSize = 3_200_000
 const maxFrames = 120
+const defaultIdleMinutes: WallpaperIdleMinutes = 5
+const allowedIdleMinutes = new Set<number>([0, 1, 5, 10, 30])
 
 function readUInt16(data: Uint8Array, offset: number): number {
   return data[offset]! | (data[offset + 1]! << 8)
@@ -48,15 +50,26 @@ function validatePackage(data: Uint8Array, kind: WallpaperKind): { frameCount: n
 export class WallpaperManager {
   private readonly packagePath: string
   private readonly metadataPath: string
+  private readonly settingsPath: string
   private current: WallpaperInfo | null = null
+  private currentSettings: WallpaperSettings = { idleMinutes: defaultIdleMinutes }
 
   constructor(private readonly directory: string) {
     this.packagePath = path.join(directory, "wallpaper.azw")
     this.metadataPath = path.join(directory, "wallpaper.json")
+    this.settingsPath = path.join(directory, "wallpaper-settings.json")
   }
 
   async initialize(): Promise<void> {
     await mkdir(this.directory, { recursive: true })
+    try {
+      const parsed = JSON.parse(await readFile(this.settingsPath, "utf8")) as Partial<WallpaperSettings>
+      if (typeof parsed.idleMinutes === "number" && allowedIdleMinutes.has(parsed.idleMinutes)) {
+        this.currentSettings = { idleMinutes: parsed.idleMinutes as WallpaperIdleMinutes }
+      }
+    } catch {
+      this.currentSettings = { idleMinutes: defaultIdleMinutes }
+    }
     try {
       const [data, rawMetadata] = await Promise.all([readFile(this.packagePath), readFile(this.metadataPath, "utf8")])
       const metadata = JSON.parse(rawMetadata) as WallpaperInfo
@@ -76,6 +89,20 @@ export class WallpaperManager {
 
   info(): WallpaperInfo | null {
     return this.current ? { ...this.current } : null
+  }
+
+  settings(): WallpaperSettings {
+    return { ...this.currentSettings }
+  }
+
+  async setIdleMinutes(minutes: number): Promise<WallpaperSettings> {
+    if (!Number.isInteger(minutes) || !allowedIdleMinutes.has(minutes)) throw new Error("自动壁纸时间无效")
+    const settings: WallpaperSettings = { idleMinutes: minutes as WallpaperIdleMinutes }
+    const temporaryPath = `${this.settingsPath}.tmp`
+    await writeFile(temporaryPath, JSON.stringify(settings, null, 2), { mode: 0o600 })
+    await rename(temporaryPath, this.settingsPath)
+    this.currentSettings = settings
+    return { ...settings }
   }
 
   async upload(input: WallpaperUpload): Promise<WallpaperInfo> {

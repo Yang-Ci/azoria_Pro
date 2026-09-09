@@ -371,6 +371,7 @@ export class LanController {
         available: this.reachable,
         wallpaperHash: wallpaper?.sha256 || "",
         wallpaperSize: wallpaper?.size || 0,
+        wallpaperIdleMinutes: this.wallpaper?.settings().idleMinutes ?? 5,
       }
     }
     const now = Date.now()
@@ -502,6 +503,7 @@ export class LanController {
           wallpaperSize: wallpaper?.size || 0,
           wallpaperKind: wallpaper?.kind || "",
           ...this.music?.touchStatus(),
+          wallpaperIdleMinutes: this.wallpaper?.settings().idleMinutes ?? 5,
         })
       }
       if (request.method === "POST" && request.url === "/v1/music/control") {
