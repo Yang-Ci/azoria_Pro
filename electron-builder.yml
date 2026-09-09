@@ -1,5 +1,5 @@
 appId: io.github.yang-ci.azoria-desktop
-productName: Yc
+productName: YangCi
 directories:
   output: release
   buildResources: desktop/assets
@@ -19,16 +19,16 @@ extraResources:
 linux:
   syncDesktopName: true
   executableName: azoria-desktop
-  synopsis: Yc monitor and Touch control
+  synopsis: YangCi monitor and Touch control
   icon: desktop/assets/icons
   category: Utility
   target:
     - target: deb
       arch: [x64]
-  artifactName: Yc-${version}-linux-${arch}.${ext}
+  artifactName: YangCi-${version}-linux-${arch}.${ext}
   desktop:
     entry:
-      Name: Yc
+      Name: YangCi
       Comment: Control your monitor and AZORIA Touch
       Comment[zh_CN]: 控制显示器与 AZORIA Touch
       StartupWMClass: azoria-desktop

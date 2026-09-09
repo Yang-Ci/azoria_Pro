@@ -57,10 +57,10 @@ License: Expat
 License: MIT and BSD-3-Clause
  The bundled Electron runtime is distributed under the MIT and BSD 3-clause
  licenses. The complete license texts are installed in
- /opt/Yc/LICENSE.electron.txt and
- /opt/Yc/LICENSES.chromium.html.
+ /opt/YangCi/LICENSE.electron.txt and
+ /opt/YangCi/LICENSES.chromium.html.
 
 License: BSD-3-Clause and LGPL-2.1+
  The bundled Chromium components are distributed under the BSD 3-clause and
  LGPL 2.1-or-later licenses. The complete license text is installed in
- /opt/Yc/LICENSES.chromium.html.
+ /opt/YangCi/LICENSES.chromium.html.

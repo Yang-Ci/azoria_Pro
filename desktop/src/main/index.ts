@@ -13,7 +13,7 @@ import { MusicManager } from "./music"
 
 const isDevelopment = !app.isPackaged
 
-app.setName("Yc")
+app.setName("YangCi")
 if (process.platform === "linux") app.setDesktopName("azoria-desktop.desktop")
 const hasInstanceLock = app.requestSingleInstanceLock()
 if (!hasInstanceLock) app.quit()
