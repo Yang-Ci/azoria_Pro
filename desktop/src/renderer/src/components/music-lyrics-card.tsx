@@ -44,12 +44,21 @@ function neteasePlaybackModeLabel(track: MusicTrack) {
   return "未同步，点击切换"
 }
 
+function projectedPosition(track: MusicTrack, now: number) {
+  const elapsed = track.status === "playing" && track.sampledAt > 0
+    ? Math.max(0, now - track.sampledAt) * track.playbackRate
+    : 0
+  const position = track.positionMs + elapsed
+  return track.durationMs > 0 ? Math.min(position, track.durationMs) : position
+}
+
 export function optimisticMusicControl(snapshot: MusicSnapshot, request: MusicControlRequest): MusicSnapshot {
   if (!snapshot.track) return snapshot
   const track = { ...snapshot.track }
-  if (request.action === "play") track.status = "playing"
-  if (request.action === "pause") track.status = "paused"
-  if (request.action === "seek") track.positionMs = request.positionMs
+  const now = Date.now()
+  if (request.action === "play") { track.status = "playing"; track.sampledAt = now }
+  if (request.action === "pause") { track.positionMs = projectedPosition(track, now); track.status = "paused"; track.sampledAt = now }
+  if (request.action === "seek") { track.positionMs = request.positionMs; track.sampledAt = now }
   if (request.action === "set-shuffle") track.shuffleActive = request.enabled
   if (request.action === "set-repeat") track.repeatMode = request.repeatMode
   if (request.action === "toggle-shuffle" && track.shuffleActive !== null) track.shuffleActive = !track.shuffleActive
@@ -132,6 +141,7 @@ export function MusicLyricsCard() {
   const controlCooldownRef = useRef(false)
   const controlRequestRef = useRef(0)
   const controlInFlightRef = useRef(0)
+  const [playbackNow, setPlaybackNow] = useState(Date.now())
   const refresh = useCallback(async () => {
     if (refreshingRef.current || controlInFlightRef.current > 0) return
     refreshingRef.current = true
@@ -142,12 +152,18 @@ export function MusicLyricsCard() {
 
   useEffect(() => {
     void refresh()
-    const timer = window.setInterval(() => void refresh(), 1500)
+    const timer = window.setInterval(() => void refresh(), 750)
     return () => window.clearInterval(timer)
   }, [refresh])
 
   const track = snapshot.track
-  const positionMs = seekingMs ?? track?.positionMs ?? 0
+  useEffect(() => {
+    setPlaybackNow(Date.now())
+    if (track?.status !== "playing") return
+    const timer = window.setInterval(() => setPlaybackNow(Date.now()), 100)
+    return () => window.clearInterval(timer)
+  }, [track?.status, track?.title, track?.artist])
+  const positionMs = seekingMs ?? (track ? projectedPosition(track, playbackNow) : 0)
   const currentIndex = useMemo(() => {
     if (!track || positionMs <= 0) return -1
     for (let index = snapshot.lines.length - 1; index >= 0; index--) {

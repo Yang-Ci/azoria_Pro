@@ -19,20 +19,29 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
+use windows::Win32::UI::Accessibility::{
+    CUIAutomation, IUIAutomation, IUIAutomationValuePattern, TreeScope_Descendants,
+    UIA_ValuePatternId,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowTextW, GetWindowThreadProcessId,
 };
 use windows::core::{BOOL, Interface, PWSTR};
-use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationValuePattern, TreeScope_Descendants, UIA_ValuePatternId};
 
 fn clock_ms(value: &str) -> Option<i64> {
     let parts: Vec<_> = value.trim().split(':').collect();
-    if !(2..=3).contains(&parts.len()) { return None; }
+    if !(2..=3).contains(&parts.len()) {
+        return None;
+    }
     let mut seconds = 0i64;
     for (index, part) in parts.iter().enumerate() {
-        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) { return None; }
+        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
         let number = part.parse::<i64>().ok()?;
-        if index > 0 && number >= 60 { return None; }
+        if index > 0 && number >= 60 {
+            return None;
+        }
         seconds = seconds.checked_mul(60)?.checked_add(number)?;
     }
     (seconds <= 86_400).then_some(seconds * 1000)
@@ -54,13 +63,21 @@ fn accessible_progress(hwnd: HWND) -> Option<(i64, i64)> {
         let condition = automation.CreateTrueCondition().ok()?;
         let elements = root.FindAll(TreeScope_Descendants, &condition).ok()?;
         for index in 0..elements.Length().ok()?.min(2000) {
-            let Ok(element) = elements.GetElement(index) else { continue };
+            let Ok(element) = elements.GetElement(index) else {
+                continue;
+            };
             if let Ok(name) = element.CurrentName() {
-                if let Some(pair) = progress_pair(&name.to_string()) { return Some(pair); }
+                if let Some(pair) = progress_pair(&name.to_string()) {
+                    return Some(pair);
+                }
             }
-            if let Ok(pattern) = element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) {
+            if let Ok(pattern) =
+                element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+            {
                 if let Ok(value) = pattern.CurrentValue() {
-                    if let Some(pair) = progress_pair(&value.to_string()) { return Some(pair); }
+                    if let Some(pair) = progress_pair(&value.to_string()) {
+                        return Some(pair);
+                    }
                 }
             }
         }
@@ -319,6 +336,7 @@ fn snapshot(include_artwork: bool) -> Result<Value, String> {
     };
     for (pid, app_id, window_title, hwnd) in windows {
         let source_key = app_id.trim_end_matches(".exe");
+        let is_audible = audible.contains(&pid);
         if let Some(track) = tracks.iter_mut().find(|track| {
             track["sourceAppId"]
                 .as_str()
@@ -326,7 +344,12 @@ fn snapshot(include_artwork: bool) -> Result<Value, String> {
                 .to_lowercase()
                 .contains(source_key)
         }) {
-            if track["positionMs"].is_null() {
+            // UI Automation can take close to a second on QQ Music. Only scan
+            // its progress controls while that player is active; a paused QQ
+            // window must not delay NetEase snapshots.
+            if track["positionMs"].is_null()
+                && (is_audible || track["status"].as_str() == Some("playing"))
+            {
                 if let Some((position, duration)) = accessible_progress(hwnd) {
                     track["positionMs"] = json!(position);
                     track["durationMs"] = json!(duration);
@@ -334,7 +357,7 @@ fn snapshot(include_artwork: bool) -> Result<Value, String> {
                     track["sampledAt"] = json!(now_ms());
                 }
             }
-            if audible.contains(&pid) {
+            if is_audible {
                 track["status"] = json!("playing");
             } else if track["status"] == "unknown" {
                 // A known player window with a current track and no audible
@@ -346,7 +369,7 @@ fn snapshot(include_artwork: bool) -> Result<Value, String> {
             let Some((title, artist)) = window_title.rsplit_once(" - ") else {
                 continue;
             };
-            let progress = accessible_progress(hwnd);
+            let progress = is_audible.then(|| accessible_progress(hwnd)).flatten();
             tracks.push(json!({
                 "title": title.trim(),
                 "artist": artist.trim(),
@@ -354,7 +377,7 @@ fn snapshot(include_artwork: bool) -> Result<Value, String> {
                 "trackId": "",
                 "artworkUrl": "",
                 "sourceAppId": app_id,
-                "status": if audible.contains(&pid) { "playing" } else { "paused" },
+                "status": if is_audible { "playing" } else { "paused" },
                 "positionMs": progress.map(|value| value.0),
                 "durationMs": progress.map(|value| value.1),
                 "playbackRate": 1.0,
@@ -393,7 +416,14 @@ mod tests {
     fn accepts_only_explicit_playback_clocks() {
         assert_eq!(progress_pair("01:23 / 04:56"), Some((83_000, 296_000)));
         assert_eq!(progress_pair("0:00/1:02:03"), Some((0, 3_723_000)));
-        for value in ["50%", "音量 50/100", "04:56", "05:00/04:00", "00:99/04:00", "1/2"] {
+        for value in [
+            "50%",
+            "音量 50/100",
+            "04:56",
+            "05:00/04:00",
+            "00:99/04:00",
+            "1/2",
+        ] {
             assert_eq!(progress_pair(value), None);
         }
     }

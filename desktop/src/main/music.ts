@@ -212,6 +212,7 @@ export class MusicManager {
   private latestSnapshot: MusicSnapshot = { available: false, track: null, provider: null, lines: [], plainText: "", message: "正在检测音乐播放器", syncReady: false }
   private pollTimer?: NodeJS.Timeout
   private pollInFlight = false
+  private snapshotInFlight?: Promise<MusicSnapshot>
 
   constructor(private readonly sidecarBinary: string) {}
 
@@ -223,7 +224,7 @@ export class MusicManager {
       void this.snapshot().finally(() => { this.pollInFlight = false })
     }
     update()
-    this.pollTimer = setInterval(update, 1500)
+    this.pollTimer = setInterval(update, 750)
     this.pollTimer.unref()
   }
 
@@ -449,10 +450,22 @@ export class MusicManager {
       this.clock = { ...this.clock, updatedAt: Date.now(), status: request.action === "play" ? "playing" : "paused" }
     }
     await new Promise((resolve) => setTimeout(resolve, 120))
+    const pendingSnapshot = this.snapshotInFlight
+    if (pendingSnapshot) await pendingSnapshot.catch(() => undefined)
     return this.snapshot()
   }
 
-  async snapshot(): Promise<MusicSnapshot> {
+  snapshot(): Promise<MusicSnapshot> {
+    if (this.snapshotInFlight) return this.snapshotInFlight
+    const request = this.collectSnapshot()
+    this.snapshotInFlight = request
+    void request.finally(() => {
+      if (this.snapshotInFlight === request) this.snapshotInFlight = undefined
+    })
+    return request
+  }
+
+  private async collectSnapshot(): Promise<MusicSnapshot> {
     let snapshot: MusicSnapshot
     try {
       const track = await this.currentTrack()
