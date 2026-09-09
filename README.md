@@ -207,6 +207,8 @@ schema and the validated LG 32UQ85R mapping.
 ## Connectivity and security
 
 - BLE and Wi-Fi can independently connect AZORIA Touch to AZORIA Desktop.
+- Tap the AZORIA logo on Touch to view the current track and control previous,
+  play/pause, next, and playback mode through the local network.
 - LAN coordination uses TCP `8732`, UDP `8733`, and UDP `8734`.
 - Network services reject public-source traffic and are intended only for a
   trusted private network.

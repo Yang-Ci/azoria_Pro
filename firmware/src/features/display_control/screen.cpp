@@ -59,6 +59,14 @@ bool controls_enabled = false;
 int current_backlight_percent = 86;
 uint32_t last_interaction_at = 0;
 bool wallpaper_exit_requested = false;
+lv_obj_t *music_view = nullptr;
+lv_obj_t *music_title = nullptr;
+lv_obj_t *music_artist = nullptr;
+lv_obj_t *music_status = nullptr;
+lv_obj_t *music_play_label = nullptr;
+lv_obj_t *music_mode_label = nullptr;
+lv_obj_t *music_buttons[4]{};
+bool music_view_active = false;
 
 constexpr char kBacklightNamespace[] = "azoria.ui";
 constexpr char kBacklightKey[] = "screen";
@@ -487,6 +495,113 @@ void wallpaperClicked(lv_event_t *) {
   scheduleFullRedraw();
 }
 
+const char *musicModeLabel(const char *mode) {
+  if (!strcmp(mode, "order")) return "顺序播放";
+  if (!strcmp(mode, "list")) return "列表循环";
+  if (!strcmp(mode, "track")) return "单曲循环";
+  if (!strcmp(mode, "shuffle")) return "随机播放";
+  return "模式未同步";
+}
+
+void musicControlClicked(lv_event_t *event) {
+  const char *action = static_cast<const char *>(lv_event_get_user_data(event));
+  if (!action || !queueMusicControl(action)) {
+    setFooter("请稍后");
+    return;
+  }
+  last_interaction_at = millis();
+  scheduleFullRedraw();
+}
+
+void hideMusicView(lv_event_t *) {
+  if (!music_view) return;
+  music_view_active = false;
+  lv_obj_add_flag(music_view, LV_OBJ_FLAG_HIDDEN);
+  scheduleFullRedraw();
+}
+
+void showMusicView(lv_event_t *) {
+  if (!music_view) return;
+  hideBacklightPanel();
+  music_view_active = true;
+  lv_obj_clear_flag(music_view, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(music_view);
+  last_interaction_at = millis();
+  scheduleFullRedraw();
+}
+
+lv_obj_t *musicButton(lv_obj_t *parent, int x, int width, const char *text,
+                      const char *action, lv_obj_t **button_label = nullptr) {
+  lv_obj_t *button = lv_btn_create(parent);
+  lv_obj_set_pos(button, x, 300);
+  lv_obj_set_size(button, width, 72);
+  lv_obj_set_style_bg_color(button, color(0x1D1D1D), 0);
+  lv_obj_set_style_shadow_width(button, 0, 0);
+  lv_obj_set_style_radius(button, 18, 0);
+  lv_obj_set_style_pad_all(button, 0, 0);
+  disableScrolling(button);
+  lv_obj_add_event_cb(button, musicControlClicked, LV_EVENT_CLICKED,
+                      const_cast<char *>(action));
+  lv_obj_t *caption = label(button, text, 0, 0, &azoria_font_zh_16);
+  lv_obj_set_width(caption, width);
+  lv_obj_set_style_text_align(caption, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_center(caption);
+  if (button_label) *button_label = caption;
+  return button;
+}
+
+void createMusicView(lv_obj_t *parent) {
+  music_view = lv_obj_create(parent);
+  lv_obj_set_pos(music_view, 0, 0);
+  lv_obj_set_size(music_view, 480, 480);
+  lv_obj_set_style_bg_color(music_view, color(0x050505), 0);
+  lv_obj_set_style_bg_opa(music_view, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(music_view, 0, 0);
+  lv_obj_set_style_pad_all(music_view, 0, 0);
+  disableScrolling(music_view);
+
+  lv_obj_t *back = lv_btn_create(music_view);
+  lv_obj_set_pos(back, 20, 20);
+  lv_obj_set_size(back, 52, 52);
+  lv_obj_set_style_bg_color(back, color(0x1D1D1D), 0);
+  lv_obj_set_style_shadow_width(back, 0, 0);
+  lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_pad_all(back, 0, 0);
+  lv_obj_add_event_cb(back, hideMusicView, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *back_label = label(back, "<", 0, 0, &lv_font_montserrat_28);
+  lv_obj_center(back_label);
+
+  lv_obj_t *heading = staticLabel(music_view, "NOW PLAYING", 92, 34,
+                                  &lv_font_montserrat_16, 0xF8FAFC);
+  lv_obj_set_style_text_opa(heading, LV_OPA_50, 0);
+  music_status = label(music_view, "等待 Desktop", 92, 58,
+                       &azoria_font_zh_16);
+  lv_obj_set_style_text_color(music_status, color(0x70FF00), 0);
+
+  music_title = label(music_view, "暂无音乐", 32, 122,
+                      &azoria_font_zh_16);
+  lv_obj_set_width(music_title, 416);
+  lv_label_set_long_mode(music_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  music_artist = label(music_view, "", 32, 174, &azoria_font_zh_16);
+  lv_obj_set_width(music_artist, 416);
+  lv_label_set_long_mode(music_artist, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_style_text_color(music_artist, color(0x94A3B8), 0);
+  music_mode_label = label(music_view, "模式未同步", 32, 228,
+                           &azoria_font_zh_16);
+  lv_obj_set_style_text_color(music_mode_label, color(0xA9D2FF), 0);
+
+  music_buttons[0] = musicButton(music_view, 28, 88, "上一首", "previous");
+  music_buttons[1] = musicButton(music_view, 126, 112, "播放", "toggle-play",
+                                 &music_play_label);
+  music_buttons[2] = musicButton(music_view, 248, 88, "下一首", "next");
+  music_buttons[3] = musicButton(music_view, 346, 106, "模式", "cycle-mode");
+  lv_obj_t *hint = staticLabel(music_view, "由 AZORIA Desktop 控制当前播放器",
+                               0, 420, &azoria_font_zh_16, 0x94A3B8);
+  lv_obj_set_width(hint, 480);
+  lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_add_flag(music_view, LV_OBJ_FLAG_HIDDEN);
+}
+
 void createBacklightPanel(lv_obj_t *parent) {
   backlight_panel = card(parent, 13, 13, 454, 154);
   lv_obj_set_style_bg_color(backlight_panel, color(0x111827), 0);
@@ -627,6 +742,15 @@ void showScreen() {
 
   createUiImage(controls, &icon_azoria_logo_80, 28, 24,
                    color(0xF8FAFC));
+  lv_obj_t *music_open_button = lv_btn_create(controls);
+  lv_obj_set_pos(music_open_button, 20, 16);
+  lv_obj_set_size(music_open_button, 96, 96);
+  lv_obj_set_style_bg_opa(music_open_button, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_shadow_width(music_open_button, 0, 0);
+  lv_obj_set_style_border_width(music_open_button, 0, 0);
+  lv_obj_set_style_pad_all(music_open_button, 0, 0);
+  disableScrolling(music_open_button);
+  lv_obj_add_event_cb(music_open_button, showMusicView, LV_EVENT_CLICKED, nullptr);
   lv_obj_t *wallpaper_button = DisplayBadge::create(controls);
   lv_obj_add_flag(wallpaper_button, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(
@@ -760,6 +884,7 @@ void showScreen() {
   }
   createBacklightPanel(controls);
   Wallpaper::createView(controls, wallpaperClicked);
+  createMusicView(controls);
   updateInputButtons();
   updateMuteVisual();
   updateBrightnessSegments(50);
@@ -777,7 +902,7 @@ void refresh() {
     Wallpaper::hide();
     scheduleFullRedraw();
   }
-  if (!Wallpaper::active() &&
+  if (!Wallpaper::active() && !music_view_active &&
       millis() - last_interaction_at >= kWallpaperIdleTimeoutMs) {
     Wallpaper::show();
     scheduleFullRedraw();
@@ -841,6 +966,17 @@ void refresh() {
     pending_input = -1;
   }
   updateInputButtons(state.input_pending);
+
+  if (music_title) lv_label_set_text(music_title, state.music_available ? state.music_title : "暂无音乐");
+  if (music_artist) lv_label_set_text(music_artist, state.music_available ? state.music_artist : "打开播放器后自动同步");
+  if (music_status) lv_label_set_text(music_status, state.music_available ? (state.music_playing ? "正在播放" : "已暂停") : "未检测到播放器");
+  if (music_play_label) lv_label_set_text(music_play_label, state.music_playing ? "暂停" : "播放");
+  if (music_mode_label) lv_label_set_text(music_mode_label, musicModeLabel(state.music_mode));
+  for (lv_obj_t *button : music_buttons) {
+    if (!button) continue;
+    if (state.music_available) lv_obj_clear_state(button, LV_STATE_DISABLED);
+    else lv_obj_add_state(button, LV_STATE_DISABLED);
+  }
 
   const char *message = localizedMessage(state.message);
   if (footer_text && strcmp(lv_label_get_text(footer_text), message)) {

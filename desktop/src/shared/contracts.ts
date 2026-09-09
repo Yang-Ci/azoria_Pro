@@ -116,6 +116,65 @@ export interface WallpaperUpload {
   data: Uint8Array
 }
 
+export type MusicSource = "netease" | "qqmusic" | "other"
+export type MusicPlaybackStatus = "playing" | "paused" | "stopped" | "unknown"
+export type MusicPositionSource = "system" | "accessibility" | "estimated" | "manual" | "unavailable"
+export type MusicRepeatMode = "none" | "track" | "list" | "unknown"
+export type LyricsProvider = "netease" | "qqmusic" | "lrclib"
+
+export interface MusicControls {
+  play: boolean
+  pause: boolean
+  previous: boolean
+  next: boolean
+  seek: boolean
+  shuffle: boolean
+  repeat: boolean
+}
+
+export type MusicControlRequest =
+  | { action: "play" | "pause" | "previous" | "next" | "cycle-repeat" | "toggle-shuffle" | "cycle-play-mode" }
+  | { action: "seek"; positionMs: number }
+  | { action: "set-shuffle"; enabled: boolean }
+  | { action: "set-repeat"; repeatMode: Exclude<MusicRepeatMode, "unknown"> }
+
+export interface MusicTrack {
+  title: string
+  artist: string
+  album: string
+  trackId: string
+  artworkUrl: string
+  sourceAppId: string
+  source: MusicSource
+  status: MusicPlaybackStatus
+  positionMs: number
+  durationMs: number
+  playbackRate: number
+  sampledAt: number
+  positionSource: MusicPositionSource
+  shuffleActive: boolean | null
+  repeatMode: MusicRepeatMode
+  controls: MusicControls
+  detectedBy: "smtc" | "window" | "mpris" | "mediaremote" | "app-script"
+}
+
+export interface LyricLine {
+  timeMs: number
+  text: string
+}
+
+export interface MusicSnapshot {
+  available: boolean
+  track: MusicTrack | null
+  provider: LyricsProvider | null
+  lines: LyricLine[]
+  plainText: string
+  matchedTitle?: string
+  matchedArtist?: string
+  message: string
+  syncReady: boolean
+}
+
 export type DiagnosticLevel = "info" | "warn" | "error"
 
 export interface DiagnosticRecord {
@@ -170,6 +229,11 @@ export interface DiagnosticsReport {
 }
 
 export interface DesktopApi {
+  music: {
+    snapshot(): Promise<MusicSnapshot>
+    calibrate(positionMs: number): Promise<MusicSnapshot>
+    control(request: MusicControlRequest): Promise<MusicSnapshot>
+  }
   monitor: {
     status(): Promise<MonitorStatus>
     statusSnapshot(): Promise<MonitorStatus>

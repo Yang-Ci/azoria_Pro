@@ -7,6 +7,12 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 #[cfg(target_os = "windows")]
 use wmi::WMIConnection;
+#[cfg(target_os = "windows")]
+mod current_media;
+#[cfg(target_os = "linux")]
+mod current_media_linux;
+#[cfg(target_os = "macos")]
+mod current_media_macos;
 #[cfg(target_os = "linux")]
 mod linux_internal;
 #[cfg(target_os = "windows")]
@@ -20,6 +26,17 @@ const DDC_DESTINATION: u8 = 0x6e;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
+    CurrentMedia {
+        #[serde(default)]
+        include_artwork: bool,
+    },
+    ControlMedia {
+        source_app_id: String,
+        action: String,
+        position_ms: Option<i64>,
+        enabled: Option<bool>,
+        repeat_mode: Option<String>,
+    },
     Probe {
         transport: Transport,
     },
@@ -431,6 +448,58 @@ fn lg_input(source: InputSource) -> Result<Value, String> {
 
 fn execute(request: Request) -> Result<Value, String> {
     match request {
+        Request::CurrentMedia { include_artwork } => {
+            #[cfg(target_os = "windows")]
+            {
+                current_media::get(include_artwork)
+            }
+            #[cfg(target_os = "linux")]
+            {
+                current_media_linux::get(include_artwork)
+            }
+            #[cfg(target_os = "macos")]
+            {
+                current_media_macos::get(include_artwork)
+            }
+        }
+        Request::ControlMedia {
+            source_app_id,
+            action,
+            position_ms,
+            enabled,
+            repeat_mode,
+        } => {
+            #[cfg(target_os = "windows")]
+            {
+                current_media::control(
+                    &source_app_id,
+                    &action,
+                    position_ms,
+                    enabled,
+                    repeat_mode.as_deref(),
+                )
+            }
+            #[cfg(target_os = "linux")]
+            {
+                current_media_linux::control(
+                    &source_app_id,
+                    &action,
+                    position_ms,
+                    enabled,
+                    repeat_mode.as_deref(),
+                )
+            }
+            #[cfg(target_os = "macos")]
+            {
+                current_media_macos::control(
+                    &source_app_id,
+                    &action,
+                    position_ms,
+                    enabled,
+                    repeat_mode.as_deref(),
+                )
+            }
+        }
         Request::Probe {
             transport: Transport::NativeDdc,
         } => {

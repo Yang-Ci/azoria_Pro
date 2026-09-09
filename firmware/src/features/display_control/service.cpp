@@ -50,9 +50,9 @@ constexpr uint32_t kStatusRequestTimeoutMs = 8000;
 constexpr uint32_t kConfirmedSettleMs = 2000;
 constexpr uint32_t kRegistrationIntervalMs = 30000;
 constexpr uint32_t kBleHealthIntervalMs = 5000;
-constexpr uint32_t kIdleStatusIntervalMs = 5000;
+constexpr uint32_t kIdleStatusIntervalMs = 2000;
 #ifndef AZORIA_FIRMWARE_VERSION
-#define AZORIA_FIRMWARE_VERSION "0.4.18"
+#define AZORIA_FIRMWARE_VERSION "0.6.0"
 #endif
 constexpr char kFirmwareVersion[] = AZORIA_FIRMWARE_VERSION;
 Command latest_commands[static_cast<size_t>(ControlKind::Count)]{};
@@ -71,6 +71,9 @@ String pending_result_control;
 String pending_result_response;
 bool pending_result_ready = false;
 String command_boot_nonce;
+char music_commands[4][16]{};
+uint8_t music_command_head = 0;
+uint8_t music_command_count = 0;
 
 bool isPrivateIpv4(const IPAddress &address) {
   const uint8_t first = address[0];
@@ -590,6 +593,12 @@ bool readStatus() {
   bool muted = jsonBool(response, "mute", remote_state.muted);
   String input = jsonString(response, "input", remote_state.input);
   bool ddc_available = jsonBool(response, "available", true);
+  bool music_available = jsonBool(response, "musicAvailable", false);
+  bool music_playing = jsonBool(response, "musicPlaying", false);
+  String music_title = jsonString(response, "musicTitle", "No music");
+  String music_artist = jsonString(response, "musicArtist", "");
+  String music_mode = jsonString(response, "musicMode", "unknown");
+  String music_source = jsonString(response, "musicSource", "other");
   syncDesktopClock(response);
   uint32_t now = millis();
   bool brightness_writable =
@@ -605,6 +614,12 @@ bool readStatus() {
                  (volume_writable && remote_state.volume != volume) ||
                  (mute_writable && remote_state.muted != muted) ||
                  (input_writable && strcmp(remote_state.input, input.c_str())) ||
+                 remote_state.music_available != music_available ||
+                 remote_state.music_playing != music_playing ||
+                 strcmp(remote_state.music_title, music_title.c_str()) ||
+                 strcmp(remote_state.music_artist, music_artist.c_str()) ||
+                 strcmp(remote_state.music_mode, music_mode.c_str()) ||
+                 strcmp(remote_state.music_source, music_source.c_str()) ||
                  strcmp(remote_state.message,
                         anyPendingLocked() ? "Saving changes" : status_message);
   if (changed) {
@@ -616,6 +631,12 @@ bool readStatus() {
     if (input_writable) {
       strlcpy(remote_state.input, input.c_str(), sizeof(remote_state.input));
     }
+    remote_state.music_available = music_available;
+    remote_state.music_playing = music_playing;
+    strlcpy(remote_state.music_title, music_title.c_str(), sizeof(remote_state.music_title));
+    strlcpy(remote_state.music_artist, music_artist.c_str(), sizeof(remote_state.music_artist));
+    strlcpy(remote_state.music_mode, music_mode.c_str(), sizeof(remote_state.music_mode));
+    strlcpy(remote_state.music_source, music_source.c_str(), sizeof(remote_state.music_source));
     strlcpy(remote_state.message,
             anyPendingLocked() ? "Saving changes" : status_message,
             sizeof(remote_state.message));
@@ -697,6 +718,31 @@ bool takeNextCommand(Command &command) {
   command_available[selected] = false;
   xSemaphoreGive(state_mutex);
   return true;
+}
+
+bool takeNextMusicCommand(char *action, size_t action_size) {
+  if (!state_mutex || music_command_count == 0) return false;
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  if (music_command_count == 0) {
+    xSemaphoreGive(state_mutex);
+    return false;
+  }
+  strlcpy(action, music_commands[music_command_head], action_size);
+  music_command_head = (music_command_head + 1) % 4;
+  --music_command_count;
+  xSemaphoreGive(state_mutex);
+  return true;
+}
+
+void runMusicCommand(const char *action) {
+  char body[48];
+  snprintf(body, sizeof(body), "{\"action\":\"%s\"}", action);
+  String response;
+  if (!wifiRequest("POST", "/v1/music/control", body, response, 6000)) {
+    Serial.printf("MUSIC_CONTROL_FAILED,ACTION=%s\n", action);
+    return;
+  }
+  Serial.printf("MUSIC_CONTROL_OK,ACTION=%s\n", action);
 }
 
 void buildCommandBody(const Command &command, char *body, size_t body_size) {
@@ -931,6 +977,12 @@ void remoteTask(void *) {
     }
 
     Command command{};
+    char music_action[16]{};
+    if (takeNextMusicCommand(music_action, sizeof(music_action))) {
+      runMusicCommand(music_action);
+      last_status = 0;
+      continue;
+    }
     if (takeNextCommand(command)) {
       runCommand(command);
       // A final control response already performs a targeted DDC readback and
@@ -1043,6 +1095,35 @@ bool queueStringControl(const char *control, const char *value) {
   strlcpy(command.text, value, sizeof(command.text));
   command.final_value = true;
   return enqueueLatest(command);
+}
+
+bool queueMusicControl(const char *action) {
+  if (!state_mutex || !remote_task_handle || !action ||
+      (strcmp(action, "previous") && strcmp(action, "toggle-play") &&
+       strcmp(action, "next") && strcmp(action, "cycle-mode"))) {
+    return false;
+  }
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  if (music_command_count >= 4) {
+    xSemaphoreGive(state_mutex);
+    return false;
+  }
+  uint8_t tail = (music_command_head + music_command_count) % 4;
+  strlcpy(music_commands[tail], action, sizeof(music_commands[tail]));
+  ++music_command_count;
+  if (!strcmp(action, "toggle-play")) {
+    remote_state.music_playing = !remote_state.music_playing;
+  } else if (!strcmp(action, "cycle-mode")) {
+    const char *next = !strcmp(remote_state.music_mode, "order") ? "list" :
+                       !strcmp(remote_state.music_mode, "list") ? "track" :
+                       !strcmp(remote_state.music_mode, "track") ? "shuffle" :
+                       !strcmp(remote_state.music_mode, "shuffle") ? "order" : "unknown";
+    strlcpy(remote_state.music_mode, next, sizeof(remote_state.music_mode));
+  }
+  ++remote_state.revision;
+  xSemaphoreGive(state_mutex);
+  wakeRemoteTask();
+  return true;
 }
 
 }  // namespace DisplayControl

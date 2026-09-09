@@ -9,6 +9,7 @@ import { LanController } from "./lan"
 import { LocalLogger } from "./logger"
 import { MonitorController } from "./monitor"
 import { WallpaperManager } from "./wallpaper"
+import { MusicManager } from "./music"
 
 const isDevelopment = !app.isPackaged
 
@@ -118,7 +119,13 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   monitor.startBackgroundStatus()
   const wallpaper = new WallpaperManager(app.getPath("userData"))
   await wallpaper.initialize()
-  const lan = new LanController(config.desktopId, monitor, wallpaper)
+  const music = new MusicManager(
+    isDevelopment
+      ? path.resolve(app.getAppPath(), "sidecar/target/release", process.platform === "win32" ? "azoria-ddc-sidecar.exe" : "azoria-ddc-sidecar")
+      : path.join(process.resourcesPath, "sidecar", process.platform === "win32" ? "azoria-ddc-sidecar.exe" : "azoria-ddc-sidecar"),
+  )
+  music.startPolling()
+  const lan = new LanController(config.desktopId, monitor, wallpaper, music)
   await lan.start()
   const devices = new TouchManager(config.token)
   const diagnostics = new DiagnosticsController(logger, monitor, lan)
@@ -179,6 +186,9 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
     return createHmac("sha256", config.token).update(message).digest("hex").slice(0, 16)
   })
   ipcMain.handle("diagnostics:report", () => diagnostics.report())
+  ipcMain.handle("music:snapshot", () => music.snapshot())
+  ipcMain.handle("music:calibrate", (_event, positionMs: number) => music.calibrate(positionMs))
+  ipcMain.handle("music:control", (_event, request) => music.control(request))
 
   createWindow()
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })

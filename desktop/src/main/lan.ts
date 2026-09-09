@@ -3,9 +3,10 @@ import { createSocket, type RemoteInfo, type Socket } from "node:dgram"
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { AddressInfo } from "node:net"
 import { networkInterfaces } from "node:os"
-import type { ControlRequest, LanDevice, MonitorStatus } from "../shared/contracts"
+import type { ControlRequest, LanDevice, MonitorStatus, MusicControlRequest } from "../shared/contracts"
 import type { MonitorController } from "./monitor"
 import type { WallpaperManager } from "./wallpaper"
+import type { MusicManager } from "./music"
 
 const controlPort = 8732
 const discoveryPort = 8733
@@ -86,6 +87,7 @@ export class LanController {
     private readonly desktopId: string,
     private readonly monitor: MonitorController,
     private readonly wallpaper?: WallpaperManager,
+    private readonly music?: MusicManager,
   ) {
     activeControllers.add(this)
   }
@@ -499,7 +501,24 @@ export class LanController {
           wallpaperHash: wallpaper?.sha256 || "",
           wallpaperSize: wallpaper?.size || 0,
           wallpaperKind: wallpaper?.kind || "",
+          ...this.music?.touchStatus(),
         })
+      }
+      if (request.method === "POST" && request.url === "/v1/music/control") {
+        if (!this.music) return this.json(response, 404, { ok: false, error: "music unavailable" })
+        const payload = await this.body(request)
+        const action = typeof payload.action === "string" ? payload.action : ""
+        const state = this.music.touchStatus()
+        const requestAction = action === "toggle-play"
+          ? (state.musicPlaying ? "pause" : "play")
+          : action === "cycle-mode"
+            ? (state.musicSource === "netease" ? "cycle-play-mode" : "cycle-repeat")
+            : action
+        if (!["play", "pause", "previous", "next", "cycle-play-mode", "cycle-repeat"].includes(requestAction)) {
+          return this.json(response, 400, { ok: false, error: "unsupported music control" })
+        }
+        await this.music.control({ action: requestAction } as MusicControlRequest)
+        return this.json(response, 200, { accepted: true, ...this.music.touchStatus() })
       }
       if (request.method === "GET" && request.url === "/v1/wallpaper") {
         if (!this.wallpaper) return this.json(response, 404, { ok: false, error: "wallpaper unavailable" })

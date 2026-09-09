@@ -1,7 +1,12 @@
 import { contextBridge, ipcRenderer } from "electron"
-import type { ControlRequest, DesktopApi } from "../shared/contracts"
+import type { ControlRequest, DesktopApi, MusicControlRequest } from "../shared/contracts"
 
 const api: DesktopApi = {
+  music: {
+    snapshot: () => ipcRenderer.invoke("music:snapshot"),
+    calibrate: (positionMs: number) => ipcRenderer.invoke("music:calibrate", positionMs),
+    control: (request: MusicControlRequest) => ipcRenderer.invoke("music:control", request),
+  },
   monitor: {
     status: () => ipcRenderer.invoke("monitor:status"),
     statusSnapshot: () => ipcRenderer.invoke("monitor:status-snapshot"),

@@ -5,6 +5,7 @@ import { connectBle } from "./ble"
 import { AzoriaDesktopBrand } from "./components/brand"
 import { ProfileWizard } from "./components/profile-wizard"
 import { WallpaperCard } from "./components/wallpaper-card"
+import { MusicLyricsCard } from "./components/music-lyrics-card"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -237,6 +238,7 @@ export default function App() {
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="mb-6 bg-zinc-950">
           <TabsTrigger value="control">显示器</TabsTrigger>
+          <TabsTrigger value="music">音乐歌词</TabsTrigger>
           <TabsTrigger value="touch">AZORIA Touch</TabsTrigger>
           <TabsTrigger value="diagnostics">诊断</TabsTrigger>
           {developerMode && <TabsTrigger value="developer">开发者</TabsTrigger>}
@@ -259,6 +261,10 @@ export default function App() {
             <CardContent><MetricSlider icon={<Sun />} label="亮度" value={status.brightness} disabled={pendingControls.has("brightness") || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("brightness", value)} /><Separator />{internalPanel && <p className="text-sm text-muted-foreground">音量和静音控制当前默认播放设备（包括耳机）。</p>}<MetricSlider icon={<Volume2 />} label={internalPanel ? "系统音量" : "音量"} value={status.volume} disabled={pendingControls.has("volume") || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("volume", value)} /></CardContent>
           </Card>
           <div className="grid gap-5"><Card><CardHeader><CardTitle>控制源</CardTitle></CardHeader><CardContent className="grid grid-cols-2 gap-2">{inputs.map((input) => <Button key={input.value} variant={status.input === input.value ? "default" : "outline"} className="h-12" disabled={pendingControls.has("input") || !online} onClick={() => void setControl("input", input.value)}>{status.input === input.value && <Check />}{input.label}</Button>)}</CardContent></Card><Card><CardContent className="pt-6"><Button variant={status.mute ? "default" : "outline"} className="h-12 w-full" disabled={pendingControls.has("mute") || !online} onClick={() => void setControl("mute", !status.mute)}>{status.mute ? <VolumeX /> : <Volume2 />}{status.mute ? "取消静音" : "静音"}</Button></CardContent></Card></div>
+        </TabsContent>
+
+        <TabsContent value="music" className="grid gap-5">
+          <MusicLyricsCard />
         </TabsContent>
 
         <TabsContent value="touch" className="grid gap-5 lg:grid-cols-2">
