@@ -72,6 +72,10 @@ lv_obj_t *music_progress_bar = nullptr;
 lv_obj_t *music_elapsed_label = nullptr;
 lv_obj_t *music_duration_label = nullptr;
 lv_obj_t *music_buttons[4]{};
+lv_obj_t *music_immersive_view = nullptr;
+lv_obj_t *music_immersive_previous = nullptr;
+lv_obj_t *music_immersive_current = nullptr;
+lv_obj_t *music_immersive_next = nullptr;
 bool music_view_active = false;
 uint16_t wallpaper_idle_minutes = 5;
 
@@ -561,6 +565,9 @@ void musicControlClicked(lv_event_t *event) {
 
 void hideMusicView(lv_event_t *) {
   if (!music_view) return;
+  if (music_immersive_view) {
+    lv_obj_add_flag(music_immersive_view, LV_OBJ_FLAG_HIDDEN);
+  }
   music_view_active = false;
   lv_obj_add_flag(music_view, LV_OBJ_FLAG_HIDDEN);
   scheduleFullRedraw();
@@ -572,6 +579,20 @@ void showMusicView(lv_event_t *) {
   music_view_active = true;
   lv_obj_clear_flag(music_view, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(music_view);
+  last_interaction_at = millis();
+  scheduleFullRedraw();
+}
+
+void hideImmersiveLyrics(lv_event_t *) {
+  if (!music_immersive_view) return;
+  lv_obj_add_flag(music_immersive_view, LV_OBJ_FLAG_HIDDEN);
+  scheduleFullRedraw();
+}
+
+void showImmersiveLyrics(lv_event_t *) {
+  if (!music_immersive_view) return;
+  lv_obj_clear_flag(music_immersive_view, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(music_immersive_view);
   last_interaction_at = millis();
   scheduleFullRedraw();
 }
@@ -665,6 +686,9 @@ void createMusicView(lv_obj_t *parent) {
   lv_obj_set_style_radius(current_panel, 16, 0);
   lv_obj_set_style_pad_all(current_panel, 0, 0);
   disableScrolling(current_panel);
+  lv_obj_add_flag(current_panel, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(current_panel, showImmersiveLyrics, LV_EVENT_CLICKED,
+                      nullptr);
 
   lv_obj_t *lyric_indicator = lv_obj_create(current_panel);
   lv_obj_set_pos(lyric_indicator, 0, 16);
@@ -719,6 +743,62 @@ void createMusicView(lv_obj_t *parent) {
   music_buttons[3] = musicButton(music_view, 350,
                                  LV_SYMBOL_LOOP "\n模式", "cycle-mode",
                                  &music_mode_label);
+
+  music_immersive_view = lv_obj_create(music_view);
+  lv_obj_set_pos(music_immersive_view, 0, 0);
+  lv_obj_set_size(music_immersive_view, 480, 480);
+  lv_obj_set_style_bg_color(music_immersive_view, color(0x000000), 0);
+  lv_obj_set_style_bg_opa(music_immersive_view, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(music_immersive_view, 0, 0);
+  lv_obj_set_style_pad_all(music_immersive_view, 0, 0);
+  disableScrolling(music_immersive_view);
+
+  music_immersive_previous = label(music_immersive_view, "", 40, 92,
+                                   &azoria_font_zh_16);
+  lv_obj_set_size(music_immersive_previous, 400, 64);
+  lv_label_set_long_mode(music_immersive_previous, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(music_immersive_previous,
+                              LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_color(music_immersive_previous, color(0x57575F), 0);
+
+  lv_obj_t *immersive_indicator = lv_obj_create(music_immersive_view);
+  lv_obj_set_pos(immersive_indicator, 24, 184);
+  lv_obj_set_size(immersive_indicator, 5, 112);
+  lv_obj_set_style_bg_color(immersive_indicator, color(0x168BFF), 0);
+  lv_obj_set_style_bg_opa(immersive_indicator, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(immersive_indicator, 0, 0);
+  lv_obj_set_style_radius(immersive_indicator, 3, 0);
+  lv_obj_clear_flag(immersive_indicator,
+                    LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+  music_immersive_current = label(music_immersive_view, "等待歌词", 48, 178,
+                                  &azoria_font_zh_16);
+  lv_obj_set_size(music_immersive_current, 392, 124);
+  lv_label_set_long_mode(music_immersive_current, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(music_immersive_current, LV_TEXT_ALIGN_CENTER,
+                              0);
+  lv_obj_set_style_text_color(music_immersive_current, color(0xFFFFFF), 0);
+  lv_obj_set_style_text_letter_space(music_immersive_current, 1, 0);
+  lv_obj_set_style_text_line_space(music_immersive_current, 10, 0);
+
+  music_immersive_next = label(music_immersive_view, "", 40, 334,
+                               &azoria_font_zh_16);
+  lv_obj_set_size(music_immersive_next, 400, 64);
+  lv_label_set_long_mode(music_immersive_next, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(music_immersive_next, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_color(music_immersive_next, color(0x57575F), 0);
+
+  lv_obj_t *immersive_exit = lv_btn_create(music_immersive_view);
+  lv_obj_set_pos(immersive_exit, 0, 0);
+  lv_obj_set_size(immersive_exit, 480, 480);
+  lv_obj_set_style_bg_opa(immersive_exit, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_shadow_width(immersive_exit, 0, 0);
+  lv_obj_set_style_border_width(immersive_exit, 0, 0);
+  lv_obj_set_style_pad_all(immersive_exit, 0, 0);
+  disableScrolling(immersive_exit);
+  lv_obj_add_event_cb(immersive_exit, hideImmersiveLyrics, LV_EVENT_CLICKED,
+                      nullptr);
+  lv_obj_add_flag(music_immersive_view, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(music_view, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -1106,6 +1186,14 @@ void refresh() {
                     ? state.music_lyric_current
                     : (state.music_available ? "暂无同步歌词" : "等待歌词"));
   setMusicLabel(music_lyric_next,
+                state.music_available ? state.music_lyric_next : "");
+  setMusicLabel(music_immersive_previous,
+                state.music_available ? state.music_lyric_previous : "");
+  setMusicLabel(music_immersive_current,
+                state.music_available && state.music_lyric_current[0]
+                    ? state.music_lyric_current
+                    : (state.music_available ? "暂无同步歌词" : "等待歌词"));
+  setMusicLabel(music_immersive_next,
                 state.music_available ? state.music_lyric_next : "");
   setMusicLabel(music_play_label,
                 state.music_playing ? LV_SYMBOL_PAUSE "\n暂停"
