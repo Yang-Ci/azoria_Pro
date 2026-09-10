@@ -282,7 +282,16 @@ void setup() {
   delay(300);
   Serial.println("\nAzoria Display Controller");
 
-  if (!Board::begin() || !initLvgl()) {
+  if (!Board::begin()) {
+    Serial.println("Fatal display initialization error");
+    return;
+  }
+  // Match the known-working VIEWE sequence: mount the TF card immediately
+  // after panel initialization, with the backlight off and before other tasks.
+  Board::setBacklight(0);
+  Wallpaper::begin();
+  Board::setBacklight(220);
+  if (!initLvgl()) {
     Serial.println("Fatal display initialization error");
     return;
   }
@@ -297,9 +306,6 @@ void setup() {
 
   saved_config = config;
   have_saved_config = !saved_config.ssid.isEmpty();
-  // Mount TF storage before Wi-Fi's radio task starts to reduce concurrent
-  // bus and radio activity during card initialization.
-  Wallpaper::begin();
   if (have_saved_config) {
     beginWiFi(saved_config);
   }

@@ -103,9 +103,10 @@ test('normalizes non-breaking and Unicode spaces in lyrics for Touch', () => {
 })
 
 test('converts curly quotes in lyrics for the Touch font', () => {
-  assert.deepEqual(parseSyncedLyrics('[00:01.00]Smoke a 3.5 that’s a big roll\n[00:02.00]I’m skiing no mask let the wind blow'), [
+  assert.deepEqual(parseSyncedLyrics('[00:01.00]Smoke a 3.5 that’s a big roll\n[00:02.00]I’m skiing no mask let the wind blow\n[00:03.00]It\u02bcs another \uff07apostrophe variant'), [
     { timeMs: 1000, text: 'Smoke a 3.5 that\'s a big roll' },
     { timeMs: 2000, text: 'I\'m skiing no mask let the wind blow' },
+    { timeMs: 3000, text: 'It\'s another \'apostrophe variant' },
   ])
 })
 

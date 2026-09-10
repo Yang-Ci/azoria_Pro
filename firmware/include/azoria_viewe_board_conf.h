@@ -10,6 +10,9 @@
 // has received its initialization commands so SDSPI can safely claim it.
 #undef ESP_PANEL_BOARD_LCD_FLAGS_ENABLE_IO_MULTIPLEX
 #define ESP_PANEL_BOARD_LCD_FLAGS_ENABLE_IO_MULTIPLEX (1)
+// GC9503 rejects mirror-by-command together with automatic panel-IO deletion.
+#undef ESP_PANEL_BOARD_LCD_FLAGS_MIRROR_BY_CMD
+#define ESP_PANEL_BOARD_LCD_FLAGS_MIRROR_BY_CMD (0)
 
 #undef ESP_PANEL_BOARD_USE_TOUCH
 #define ESP_PANEL_BOARD_USE_TOUCH (0)

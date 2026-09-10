@@ -23,7 +23,7 @@ function text(value: unknown): string {
 
 function displayText(value: string): string {
   return value
-    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u0060\u00b4\u02bc\u2018\u2019\u2032\uff07]/g, "'")
     .replace(/[\u201c\u201d]/g, "\"")
     .replace(/[\u00a0\u1680\u2000-\u200b\u202f\u205f\u3000\ufeff]/g, " ")
     .replace(/[ \t]+/g, " ")

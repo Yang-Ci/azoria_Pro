@@ -5,6 +5,7 @@
 #include <SD.h>
 #include <SPI.h>
 #include <WiFi.h>
+#include <driver/gpio.h>
 #include <atomic>
 #include <esp_heap_caps.h>
 #include <jpeg_decoder.h>
@@ -30,7 +31,8 @@ constexpr int kSdSck = 45;
 constexpr int kSdMiso = 46;
 constexpr int kSdMosi = 42;
 constexpr int kSdCs = 47;
-constexpr uint32_t kSdFrequency = 10000000;
+constexpr uint32_t kSdFrequency = 20000000;
+constexpr uint32_t kSdProbingFrequency = 400000;
 
 SemaphoreHandle_t storage_mutex = nullptr;
 fs::FS *storage = nullptr;
@@ -280,20 +282,67 @@ bool copyFile(fs::FS &source_fs, fs::FS &target_fs, const char *source_path,
   return ok;
 }
 
-bool tryMountSd() {
-  if (using_sd) return true;
+void prepareSdGpios() {
+  // VIEWE's official BSP releases GPIO holds and clocks the bus before SDSPI
+  // claims GPIO47, which the LCD initializer has just used as its data line.
+  gpio_hold_dis(static_cast<gpio_num_t>(kSdCs));
+  gpio_hold_dis(static_cast<gpio_num_t>(kSdMosi));
+  gpio_hold_dis(static_cast<gpio_num_t>(kSdMiso));
+  gpio_hold_dis(static_cast<gpio_num_t>(kSdSck));
+  gpio_reset_pin(static_cast<gpio_num_t>(kSdCs));
+  gpio_reset_pin(static_cast<gpio_num_t>(kSdMosi));
+  gpio_reset_pin(static_cast<gpio_num_t>(kSdMiso));
+  gpio_reset_pin(static_cast<gpio_num_t>(kSdSck));
 
+  const gpio_config_t output_config = {
+      .pin_bit_mask = (1ULL << kSdCs) | (1ULL << kSdMosi) |
+                      (1ULL << kSdSck),
+      .mode = GPIO_MODE_OUTPUT,
+      .pull_up_en = GPIO_PULLUP_ENABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  gpio_config(&output_config);
+
+  const gpio_config_t input_config = {
+      .pin_bit_mask = 1ULL << kSdMiso,
+      .mode = GPIO_MODE_INPUT,
+      .pull_up_en = GPIO_PULLUP_ENABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  gpio_config(&input_config);
+
+  gpio_set_level(static_cast<gpio_num_t>(kSdCs), 1);
+  gpio_set_level(static_cast<gpio_num_t>(kSdSck), 0);
+  gpio_set_level(static_cast<gpio_num_t>(kSdMosi), 1);
+  for (int index = 0; index < 16; ++index) {
+    gpio_set_level(static_cast<gpio_num_t>(kSdSck), 0);
+    delayMicroseconds(10);
+    gpio_set_level(static_cast<gpio_num_t>(kSdSck), 1);
+    delayMicroseconds(10);
+  }
+  gpio_set_level(static_cast<gpio_num_t>(kSdSck), 0);
+  delay(20);
+}
+
+bool mountSdAtFrequency(uint32_t frequency) {
+  prepareSdGpios();
   SPI.begin(kSdSck, kSdMiso, kSdMosi, kSdCs);
   pinMode(kSdCs, OUTPUT);
   digitalWrite(kSdCs, HIGH);
-  delay(10);
-  if (!SD.begin(kSdCs, SPI, kSdFrequency, "/sd", 5, false) ||
+  Serial.printf("TF mount attempt: %lu Hz\n",
+                static_cast<unsigned long>(frequency));
+  if (!SD.begin(kSdCs, SPI, frequency, "/sd", 5, false) ||
       SD.cardType() == CARD_NONE) {
     SD.end();
     SPI.end();
     return false;
   }
+  return true;
+}
 
+bool adoptSdStorage() {
   // Keep the wallpaper that was installed before the card was inserted.
   String hash;
   File hash_file = LittleFS.open(kHashPath, "r");
@@ -336,6 +385,13 @@ bool tryMountSd() {
   return true;
 }
 
+bool tryMountSd() {
+  if (using_sd) return true;
+  if (mountSdAtFrequency(kSdFrequency)) return adoptSdStorage();
+  if (mountSdAtFrequency(kSdProbingFrequency)) return adoptSdStorage();
+  return false;
+}
+
 void storagePollTask(void *) {
   for (;;) {
     delay(2000);
@@ -355,19 +411,7 @@ bool begin() {
     return false;
   }
 
-  SPI.begin(kSdSck, kSdMiso, kSdMosi, kSdCs);
-  pinMode(kSdCs, OUTPUT);
-  digitalWrite(kSdCs, HIGH);
-  delay(10);
-  if (SD.begin(kSdCs, SPI, kSdFrequency, "/sd", 5, false) &&
-      SD.cardType() != CARD_NONE) {
-    storage = &SD;
-    using_sd = true;
-    Serial.printf("Wallpaper storage: TF card, size=%llu MB\n",
-                  static_cast<unsigned long long>(SD.cardSize() / 1024 / 1024));
-  } else {
-    SD.end();
-    SPI.end();
+  if (!tryMountSd()) {
     if (!LittleFS.begin(true)) {
       Serial.println("Wallpaper storage unavailable");
       return false;
