@@ -11,6 +11,7 @@
 #include <mbedtls/sha256.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <freertos/task.h>
 
 namespace Wallpaper {
 namespace {
@@ -32,7 +33,6 @@ constexpr int kSdCs = 47;
 constexpr uint32_t kSdFrequency = 10000000;
 
 SemaphoreHandle_t storage_mutex = nullptr;
-SPIClass sd_spi(HSPI);
 fs::FS *storage = nullptr;
 lv_obj_t *view = nullptr;
 lv_obj_t *image = nullptr;
@@ -51,6 +51,7 @@ uint16_t frame_index = 0;
 bool is_active = false;
 bool filesystem_ready = false;
 bool using_sd = false;
+TaskHandle_t storage_task_handle = nullptr;
 
 size_t maxPackageSize() {
   return using_sd ? kSdMaxPackageSize : kFlashMaxPackageSize;
@@ -101,9 +102,8 @@ bool readHeader(File &file, uint16_t &frames, uint16_t &delay) {
          payload_size == file.size() - kHeaderSize;
 }
 
-bool validatePackage(const char *path) {
-  if (!storage) return false;
-  File file = storage->open(path, "r");
+bool validatePackage(fs::FS &filesystem, const char *path) {
+  File file = filesystem.open(path, "r");
   uint16_t frames = 0;
   uint16_t delay = 0;
   if (!readHeader(file, frames, delay)) {
@@ -257,6 +257,95 @@ bool download(const String &host, uint16_t port, const String &expected_hash,
          hexDigest(digest) == expected_hash;
 }
 
+bool copyFile(fs::FS &source_fs, fs::FS &target_fs, const char *source_path,
+              const char *target_path) {
+  File source = source_fs.open(source_path, "r");
+  File target = target_fs.open(target_path, "w");
+  if (!source || !target) {
+    source.close();
+    target.close();
+    target_fs.remove(target_path);
+    return false;
+  }
+
+  uint8_t buffer[4096];
+  bool ok = true;
+  while (source.available() > 0 && ok) {
+    const int count = source.read(buffer, sizeof(buffer));
+    if (count <= 0 || target.write(buffer, count) != count) ok = false;
+  }
+  source.close();
+  target.close();
+  if (!ok) target_fs.remove(target_path);
+  return ok;
+}
+
+bool tryMountSd() {
+  if (using_sd) return true;
+
+  SPI.begin(kSdSck, kSdMiso, kSdMosi, kSdCs);
+  pinMode(kSdCs, OUTPUT);
+  digitalWrite(kSdCs, HIGH);
+  delay(10);
+  if (!SD.begin(kSdCs, SPI, kSdFrequency, "/sd", 5, false) ||
+      SD.cardType() == CARD_NONE) {
+    SD.end();
+    SPI.end();
+    return false;
+  }
+
+  // Keep the wallpaper that was installed before the card was inserted.
+  String hash;
+  File hash_file = LittleFS.open(kHashPath, "r");
+  if (hash_file) {
+    hash = hash_file.readString();
+    hash_file.close();
+    hash.trim();
+  }
+
+  if (validHash(hash)) {
+    const bool copied = copyFile(LittleFS, SD, kPackagePath, kTemporaryPath) &&
+                        validatePackage(SD, kTemporaryPath);
+    if (copied) {
+      SD.remove(kPackagePath);
+      if (!SD.rename(kTemporaryPath, kPackagePath)) {
+        SD.remove(kTemporaryPath);
+        hash = "";
+      } else {
+        File hash_file = SD.open(kHashPath, "w");
+        if (hash_file) {
+          hash_file.print(hash);
+          hash_file.close();
+        } else {
+          hash = "";
+        }
+      }
+    } else {
+      hash = "";
+    }
+  }
+
+  xSemaphoreTake(storage_mutex, portMAX_DELAY);
+  storage = &SD;
+  using_sd = true;
+  installed_hash = hash;
+  asset_revision.fetch_add(1);
+  xSemaphoreGive(storage_mutex);
+  Serial.printf("Wallpaper storage: TF card, size=%llu MB\n",
+                static_cast<unsigned long long>(SD.cardSize() / 1024 / 1024));
+  return true;
+}
+
+void storagePollTask(void *) {
+  for (;;) {
+    delay(2000);
+    if (tryMountSd()) {
+      storage_task_handle = nullptr;
+      vTaskDelete(nullptr);
+    }
+  }
+}
+
 }  // namespace
 
 bool begin() {
@@ -266,10 +355,11 @@ bool begin() {
     return false;
   }
 
+  SPI.begin(kSdSck, kSdMiso, kSdMosi, kSdCs);
   pinMode(kSdCs, OUTPUT);
   digitalWrite(kSdCs, HIGH);
-  if (sd_spi.begin(kSdSck, kSdMiso, kSdMosi, kSdCs) &&
-      SD.begin(kSdCs, sd_spi, kSdFrequency, "/sd", 5, false) &&
+  delay(10);
+  if (SD.begin(kSdCs, SPI, kSdFrequency, "/sd", 5, false) &&
       SD.cardType() != CARD_NONE) {
     storage = &SD;
     using_sd = true;
@@ -277,7 +367,7 @@ bool begin() {
                   static_cast<unsigned long long>(SD.cardSize() / 1024 / 1024));
   } else {
     SD.end();
-    sd_spi.end();
+    SPI.end();
     if (!LittleFS.begin(true)) {
       Serial.println("Wallpaper storage unavailable");
       return false;
@@ -285,13 +375,19 @@ bool begin() {
     storage = &LittleFS;
     Serial.printf("Wallpaper storage: LittleFS, size=%u KB\n",
                   static_cast<unsigned>(LittleFS.totalBytes() / 1024));
+    if (xTaskCreatePinnedToCore(storagePollTask, "tf-storage", 4096, nullptr,
+                                1, &storage_task_handle, 0) != pdPASS) {
+      storage_task_handle = nullptr;
+      Serial.println("TF hot-plug monitor unavailable");
+    }
   }
   filesystem_ready = true;
   File hash_file = storage->open(kHashPath, "r");
   installed_hash = hash_file ? hash_file.readString() : "";
   hash_file.close();
   installed_hash.trim();
-  if (!validHash(installed_hash) || !validatePackage(kPackagePath)) {
+  if (!validHash(installed_hash) ||
+      !validatePackage(*storage, kPackagePath)) {
     installed_hash = "";
     storage->remove(kPackagePath);
     storage->remove(kHashPath);
@@ -433,7 +529,7 @@ bool sync(const String &host, uint16_t port, const String &sha256,
     return false;
   }
   if (!download(host, port, sha256, size) ||
-      !validatePackage(kTemporaryPath)) {
+      !validatePackage(*storage, kTemporaryPath)) {
     storage->remove(kTemporaryPath);
     return false;
   }

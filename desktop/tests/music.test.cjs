@@ -102,6 +102,13 @@ test('normalizes non-breaking and Unicode spaces in lyrics for Touch', () => {
   ])
 })
 
+test('converts curly quotes in lyrics for the Touch font', () => {
+  assert.deepEqual(parseSyncedLyrics('[00:01.00]Smoke a 3.5 that’s a big roll\n[00:02.00]I’m skiing no mask let the wind blow'), [
+    { timeMs: 1000, text: 'Smoke a 3.5 that\'s a big roll' },
+    { timeMs: 2000, text: 'I\'m skiing no mask let the wind blow' },
+  ])
+})
+
 test('matches player titles with parenthesized edition text', () => {
   const track = { title: '会呼吸的痛 (我发誓不再说谎了)', artist: '呆呆破' }
   assert.ok(matchScore(track, '会呼吸的痛', '呆呆破') >= 10)

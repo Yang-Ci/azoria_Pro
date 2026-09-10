@@ -297,13 +297,12 @@ void setup() {
 
   saved_config = config;
   have_saved_config = !saved_config.ssid.isEmpty();
-  // Reserve Wi-Fi's latency-sensitive internal buffers before mounting the TF
-  // card or starting BLE. SDSPI and FATFS can then use the remaining memory
-  // without bringing back the low-memory sync failures fixed earlier.
+  // Mount TF storage before Wi-Fi's radio task starts to reduce concurrent
+  // bus and radio activity during card initialization.
+  Wallpaper::begin();
   if (have_saved_config) {
     beginWiFi(saved_config);
   }
-  Wallpaper::begin();
   DisplayControl::showScreen();
   // The BLE host is configured to use PSRAM for dynamic allocations, so both
   // radios remain available without starving RGB DMA.
