@@ -34,8 +34,11 @@ export class TouchManager {
         const manufacturer = port.manufacturer?.toLowerCase() || ""
         const vendorId = port.vendorId?.replace(/^0x/i, "").toLowerCase() || ""
         const isEspressif = manufacturer.includes("espressif") || vendorId === "303a"
-        return isEspressif &&
-          /^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$/i.test(port.serialNumber || "")
+        // Windows often exposes the USB interface-instance suffix here (for
+        // example `7&D3C5B45&0&0000`) instead of the ESP32 MAC address. Keep
+        // every Espressif USB CDC candidate and use AZORIA_IDENTIFY below as
+        // the authoritative device check.
+        return isEspressif
       })
     const devices: UsbDevice[] = []
     for (const port of candidates) {
@@ -46,7 +49,7 @@ export class TouchManager {
       } catch { /* Unverified ESP32-S3 devices remain available for recovery flashing. */ }
       devices.push({
         path: port.path,
-        name: `${verified ? "AZORIA Touch" : "ESP32-S3"} · ${port.serialNumber}`,
+        name: `${verified ? "AZORIA Touch" : "ESP32-S3"} · ${port.path}`,
         verified,
         vendorId: port.vendorId,
         productId: port.productId,
