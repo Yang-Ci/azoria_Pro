@@ -289,6 +289,9 @@ void setup() {
   // Match the known-working VIEWE sequence: mount the TF card immediately
   // after panel initialization, with the backlight off and before other tasks.
   Board::setBacklight(0);
+  // GPIO47 was just released from the LCD 3-wire bus. VIEWE leaves the same
+  // settling window before SDSPI claims the pin as TF-card CS.
+  delay(150);
   Wallpaper::begin();
   Board::setBacklight(220);
   if (!initLvgl()) {

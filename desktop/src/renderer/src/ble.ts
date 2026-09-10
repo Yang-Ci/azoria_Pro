@@ -21,6 +21,14 @@ type BluetoothDeviceLike = {
   addEventListener(type: string, listener: () => void, options?: { once?: boolean }): void
 }
 
+function touchText(value: string): string {
+  return value
+    .replace(/[\u0060\u00b4\u02bc\u2018\u2019\u2032\uff07]/g, "'")
+    .replace(/[\u201c\u201d]/g, "\"")
+    .replace(/[\u00a0\u1680\u2000-\u200b\u202f\u205f\u3000\ufeff]/g, " ")
+    .replace(/[ \t]+/g, " ")
+}
+
 async function attachDevice(
   device: BluetoothDeviceLike,
   status: () => Promise<MonitorStatus>,
@@ -138,7 +146,9 @@ async function handleRequest(
   const id = fields[2] || ""
   let payload = "E|protocol"
   const clean = (value: unknown, maxBytes: number) => {
-    const normalized = typeof value === "string" ? value.replace(/[\\"|\r\n]/g, " ").trim() : ""
+    const normalized = typeof value === "string"
+      ? touchText(value.replace(/[\\"|\r\n]/g, " ")).trim()
+      : ""
     let result = ""
     for (const character of normalized) {
       if (new TextEncoder().encode(result + character).byteLength > maxBytes) break

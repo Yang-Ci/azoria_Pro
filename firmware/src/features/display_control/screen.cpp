@@ -559,12 +559,42 @@ void formatMusicTime(uint32_t milliseconds, char *output,
   const uint32_t total_seconds = milliseconds / 1000;
   snprintf(output, output_size, "%lu:%02lu",
            static_cast<unsigned long>(total_seconds / 60),
-           static_cast<unsigned long>(total_seconds % 60));
+          static_cast<unsigned long>(total_seconds % 60));
+}
+
+String normalizeMusicText(const char *text) {
+  String result;
+  if (!text) return result;
+  for (size_t index = 0; text[index];) {
+    const unsigned char first = static_cast<unsigned char>(text[index]);
+    const unsigned char second = static_cast<unsigned char>(text[index + 1]);
+    const unsigned char third = static_cast<unsigned char>(text[index + 2]);
+    if (first == 0xe2 && second == 0x80 &&
+        (third == 0x98 || third == 0x99 || third == 0xb2)) {
+      result += '\'';
+      index += 3;
+    } else if (first == 0xe2 && second == 0x80 &&
+               (third == 0x9c || third == 0x9d)) {
+      result += '"';
+      index += 3;
+    } else if ((first == 0xc2 && second == 0xb4) ||
+               (first == 0xca && second == 0xbc) ||
+               (first == 0xef && second == 0xbc && third == 0x87)) {
+      result += '\'';
+      index += first == 0xef ? 3 : 2;
+    } else {
+      result += text[index];
+      ++index;
+    }
+  }
+  return result;
 }
 
 bool setMusicLabel(lv_obj_t *object, const char *text) {
-  if (object && strcmp(lv_label_get_text(object), text)) {
-    lv_label_set_text(object, text);
+  if (!object || !text) return false;
+  const String normalized = normalizeMusicText(text);
+  if (strcmp(lv_label_get_text(object), normalized.c_str())) {
+    lv_label_set_text(object, normalized.c_str());
     const bool lyric = object == music_lyric_previous || object == music_lyric_current ||
         object == music_lyric_next || object == music_immersive_previous ||
         object == music_immersive_current || object == music_immersive_next ||

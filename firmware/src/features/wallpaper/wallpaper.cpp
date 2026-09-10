@@ -2,12 +2,17 @@
 
 #include <HTTPClient.h>
 #include <LittleFS.h>
-#include <SD.h>
-#include <SPI.h>
 #include <WiFi.h>
+#include <FS.h>
+#include <vfs_api.h>
 #include <driver/gpio.h>
+#include <driver/sdspi_host.h>
+#include <driver/spi_common.h>
+#include <esp_vfs_fat.h>
+#include <sdmmc_cmd.h>
 #include <atomic>
 #include <esp_heap_caps.h>
+#include <esp_log.h>
 #include <jpeg_decoder.h>
 #include <mbedtls/sha256.h>
 #include <freertos/FreeRTOS.h>
@@ -31,11 +36,17 @@ constexpr int kSdSck = 45;
 constexpr int kSdMiso = 46;
 constexpr int kSdMosi = 42;
 constexpr int kSdCs = 47;
+constexpr char kSdMountPoint[] = "/sd";
 constexpr uint32_t kSdFrequency = 20000000;
 constexpr uint32_t kSdProbingFrequency = 400000;
+constexpr uint8_t kSdRetryRounds = 4;
+constexpr uint16_t kSdRetryRoundDelayMs = 200;
+constexpr uint16_t kSdRetryFrequencyDelayMs = 50;
 
 SemaphoreHandle_t storage_mutex = nullptr;
 fs::FS *storage = nullptr;
+fs::FS *sd_storage = nullptr;
+bool sd_spi_bus_ready = false;
 lv_obj_t *view = nullptr;
 lv_obj_t *image = nullptr;
 lv_obj_t *empty_label = nullptr;
@@ -60,11 +71,21 @@ size_t maxPackageSize() {
 }
 
 uint64_t storageTotalBytes() {
-  return using_sd ? SD.totalBytes() : LittleFS.totalBytes();
+  if (!using_sd) return LittleFS.totalBytes();
+  uint64_t total_bytes = 0;
+  uint64_t free_bytes = 0;
+  return esp_vfs_fat_info(kSdMountPoint, &total_bytes, &free_bytes) == ESP_OK
+             ? total_bytes
+             : 0;
 }
 
 uint64_t storageUsedBytes() {
-  return using_sd ? SD.usedBytes() : LittleFS.usedBytes();
+  if (!using_sd) return LittleFS.usedBytes();
+  uint64_t total_bytes = 0;
+  uint64_t free_bytes = 0;
+  return esp_vfs_fat_info(kSdMountPoint, &total_bytes, &free_bytes) == ESP_OK
+             ? total_bytes - free_bytes
+             : 0;
 }
 
 uint16_t readU16(const uint8_t *value) {
@@ -326,17 +347,59 @@ void prepareSdGpios() {
   delay(20);
 }
 
+bool initializeSdSpiBus() {
+  if (sd_spi_bus_ready) return true;
+
+  spi_bus_config_t bus_config{};
+  bus_config.mosi_io_num = kSdMosi;
+  bus_config.miso_io_num = kSdMiso;
+  bus_config.sclk_io_num = kSdSck;
+  bus_config.quadwp_io_num = -1;
+  bus_config.quadhd_io_num = -1;
+  bus_config.max_transfer_sz = 32 * 1024;
+
+  const esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_config,
+                                            SDSPI_DEFAULT_DMA);
+  if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) return false;
+  sd_spi_bus_ready = true;
+  return true;
+}
+
+bool releaseSdSpiBus() {
+  if (!sd_spi_bus_ready) return true;
+  const esp_err_t ret = spi_bus_free(SPI2_HOST);
+  sd_spi_bus_ready = false;
+  return ret == ESP_OK;
+}
+
 bool mountSdAtFrequency(uint32_t frequency) {
-  prepareSdGpios();
-  SPI.begin(kSdSck, kSdMiso, kSdMosi, kSdCs);
-  pinMode(kSdCs, OUTPUT);
-  digitalWrite(kSdCs, HIGH);
+  if (!initializeSdSpiBus()) return false;
+
+  sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+  host.slot = SPI2_HOST;
+  host.max_freq_khz = frequency / 1000;
+
+  sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+  slot_config.host_id = SPI2_HOST;
+  slot_config.gpio_cs = static_cast<gpio_num_t>(kSdCs);
+  slot_config.gpio_cd = GPIO_NUM_NC;
+  slot_config.gpio_wp = GPIO_NUM_NC;
+  slot_config.gpio_int = GPIO_NUM_NC;
+
+  esp_vfs_fat_mount_config_t mount_config{};
+  mount_config.format_if_mount_failed = false;
+  mount_config.max_files = 5;
+  mount_config.allocation_unit_size = 16 * 1024;
+  mount_config.disk_status_check_enable = false;
+
   Serial.printf("TF mount attempt: %lu Hz\n",
                 static_cast<unsigned long>(frequency));
-  if (!SD.begin(kSdCs, SPI, frequency, "/sd", 5, false) ||
-      SD.cardType() == CARD_NONE) {
-    SD.end();
-    SPI.end();
+  sdmmc_card_t *card = nullptr;
+  const esp_err_t ret = esp_vfs_fat_sdspi_mount(
+      kSdMountPoint, &host, &slot_config, &mount_config, &card);
+  if (ret != ESP_OK || card == nullptr) {
+    Serial.printf("TF mount failed: %s\n", esp_err_to_name(ret));
+    if (card != nullptr) esp_vfs_fat_sdcard_unmount(kSdMountPoint, card);
     return false;
   }
   return true;
@@ -352,16 +415,25 @@ bool adoptSdStorage() {
     hash.trim();
   }
 
+  VFSImpl *implementation = new VFSImpl();
+  implementation->mountpoint(kSdMountPoint);
+  sd_storage = new fs::FS(fs::FSImplPtr(implementation));
+  storage = sd_storage;
+
+  xSemaphoreTake(storage_mutex, portMAX_DELAY);
+  using_sd = true;
+  xSemaphoreGive(storage_mutex);
+
   if (validHash(hash)) {
-    const bool copied = copyFile(LittleFS, SD, kPackagePath, kTemporaryPath) &&
-                        validatePackage(SD, kTemporaryPath);
+    const bool copied = copyFile(LittleFS, *storage, kPackagePath, kTemporaryPath) &&
+                        validatePackage(*storage, kTemporaryPath);
     if (copied) {
-      SD.remove(kPackagePath);
-      if (!SD.rename(kTemporaryPath, kPackagePath)) {
-        SD.remove(kTemporaryPath);
+      storage->remove(kPackagePath);
+      if (!storage->rename(kTemporaryPath, kPackagePath)) {
+        storage->remove(kTemporaryPath);
         hash = "";
       } else {
-        File hash_file = SD.open(kHashPath, "w");
+        File hash_file = storage->open(kHashPath, "w");
         if (hash_file) {
           hash_file.print(hash);
           hash_file.close();
@@ -375,20 +447,31 @@ bool adoptSdStorage() {
   }
 
   xSemaphoreTake(storage_mutex, portMAX_DELAY);
-  storage = &SD;
-  using_sd = true;
   installed_hash = hash;
   asset_revision.fetch_add(1);
   xSemaphoreGive(storage_mutex);
+  uint64_t total_bytes = 0;
+  uint64_t free_bytes = 0;
+  esp_vfs_fat_info(kSdMountPoint, &total_bytes, &free_bytes);
   Serial.printf("Wallpaper storage: TF card, size=%llu MB\n",
-                static_cast<unsigned long long>(SD.cardSize() / 1024 / 1024));
+                static_cast<unsigned long long>(total_bytes / 1024 / 1024));
   return true;
 }
 
 bool tryMountSd() {
   if (using_sd) return true;
-  if (mountSdAtFrequency(kSdFrequency)) return adoptSdStorage();
-  if (mountSdAtFrequency(kSdProbingFrequency)) return adoptSdStorage();
+
+  const uint32_t frequencies[] = {kSdFrequency, kSdProbingFrequency};
+  for (uint8_t round = 0; round < kSdRetryRounds; ++round) {
+    prepareSdGpios();
+    for (uint32_t frequency : frequencies) {
+      if (mountSdAtFrequency(frequency)) return adoptSdStorage();
+      delay(kSdRetryFrequencyDelayMs);
+    }
+    delay(kSdRetryRoundDelayMs);
+  }
+
+  releaseSdSpiBus();
   return false;
 }
 

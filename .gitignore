@@ -28,6 +28,8 @@ venv/
 # PlatformIO / ESP-IDF generated files
 .pio/
 firmware/.pio/
+firmware/CMakeLists.txt
+.pio-idf-cache/
 firmware/.dummy/
 firmware/managed_components/
 firmware/dependencies.lock
