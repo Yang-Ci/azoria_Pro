@@ -72,6 +72,7 @@ export default function App() {
   const initializedRef = useRef(false)
   const [message, setMessage] = useState("正在连接显示器")
   const [usb, setUsb] = useState<UsbDevice[]>([])
+  const [usbDetecting, setUsbDetecting] = useState(false)
   const [lanDevices, setLanDevices] = useState<LanDevice[]>([])
   const [selectedUsb, setSelectedUsb] = useState("")
   const [networks, setNetworks] = useState<Array<{ ssid: string; rssi: number; secure: boolean }>>([])
@@ -112,9 +113,19 @@ export default function App() {
     catch { /* The background loop will retry the next DDC/CI read. */ }
   }, [])
   const detectUsb = useCallback(async () => {
-    const devices = await window.azoria.device.listUsb(); setUsb(devices)
-    setSelectedUsb((current) => devices.some((device) => device.path === current) ? current : devices[0]?.path || "")
-    setVerifiedChip("")
+    setUsbDetecting(true)
+    try {
+      const devices = await window.azoria.device.listUsb()
+      setUsb(devices)
+      setSelectedUsb((current) => devices.some((device) => device.path === current) ? current : devices[0]?.path || "")
+      setVerifiedChip("")
+      const verified = devices.find((device) => device.verified)
+      setMessage(verified ? `已识别 ${verified.name}` : "未检测到可用的 Touch USB 连接")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "USB 检测失败")
+    } finally {
+      setUsbDetecting(false)
+    }
   }, [])
   const discoverLan = useCallback(async () => {
     setBusy(true)
@@ -287,7 +298,7 @@ export default function App() {
         </TabsContent>
 
         <TabsContent value="touch" className="grid gap-5 lg:grid-cols-2">
-          <Card><CardHeader><CardTitle>AZORIA Touch</CardTitle></CardHeader><CardContent className="space-y-4">{lanDevices.length ? <div className="space-y-2">{lanDevices.map((device) => <div key={device.id} className="rounded-lg border border-white/10 bg-black p-5"><div className="flex items-center justify-between"><p className="font-medium">{device.name}</p><Badge variant="outline" className="border-white/10"><Check />已连接</Badge></div></div>)}</div> : selectedDevice?.verified ? <div className="rounded-lg border border-white/10 bg-black p-5"><div className="flex items-center justify-between"><div><p className="font-medium">{selectedDevice.name}</p><p className="mt-1 text-sm text-zinc-500">USB 已连接{bleName ? " · 蓝牙已连接" : ""}</p></div><Badge variant="outline" className="border-white/10"><Check />已识别</Badge></div></div> : bleName ? <div className="rounded-lg border border-white/10 bg-black p-5"><div className="flex items-center justify-between"><div><p className="font-medium">{bleName}</p><p className="mt-1 text-sm text-zinc-500">蓝牙已连接</p></div><Badge variant="outline" className="border-white/10"><Bluetooth />已识别</Badge></div></div> : <div className="rounded-lg border border-dashed border-white/10 p-8 text-center text-sm text-zinc-500">未发现 AZORIA Touch</div>}<div className="grid grid-cols-2 gap-2"><Button variant="outline" disabled={busy} onClick={() => void detectUsb()}><RefreshCw />重新检测 USB</Button>{selectedDevice?.verified && !blePrepared && <Button variant="outline" disabled={busy} onClick={prepareBluetooth}><Cable />准备蓝牙</Button>}<Button variant="outline" disabled={bleConnecting} onClick={connectBluetooth}><Bluetooth />{bleName ? "蓝牙已连接" : bleConnecting ? "正在连接" : "连接蓝牙"}</Button></div></CardContent></Card>
+          <Card><CardHeader><CardTitle>AZORIA Touch</CardTitle></CardHeader><CardContent className="space-y-4">{lanDevices.length ? <div className="space-y-2">{lanDevices.map((device) => <div key={device.id} className="rounded-lg border border-white/10 bg-black p-5"><div className="flex items-center justify-between"><p className="font-medium">{device.name}</p><Badge variant="outline" className="border-white/10"><Check />已连接</Badge></div></div>)}</div> : selectedDevice?.verified ? <div className="rounded-lg border border-white/10 bg-black p-5"><div className="flex items-center justify-between"><div><p className="font-medium">{selectedDevice.name}</p><p className="mt-1 text-sm text-zinc-500">USB 已连接{bleName ? " · 蓝牙已连接" : ""}</p></div><Badge variant="outline" className="border-white/10"><Check />已识别</Badge></div></div> : bleName ? <div className="rounded-lg border border-white/10 bg-black p-5"><div className="flex items-center justify-between"><div><p className="font-medium">{bleName}</p><p className="mt-1 text-sm text-zinc-500">蓝牙已连接</p></div><Badge variant="outline" className="border-white/10"><Bluetooth />已识别</Badge></div></div> : <div className="rounded-lg border border-dashed border-white/10 p-8 text-center text-sm text-zinc-500">未发现 AZORIA Touch</div>}<div className="grid grid-cols-2 gap-2"><Button variant="outline" disabled={busy || usbDetecting} onClick={() => void detectUsb()}><RefreshCw />{usbDetecting ? "正在检测…" : "重新检测 USB"}</Button>{selectedDevice?.verified && !blePrepared && <Button variant="outline" disabled={busy} onClick={prepareBluetooth}><Cable />准备蓝牙</Button>}<Button variant="outline" disabled={bleConnecting} onClick={connectBluetooth}><Bluetooth />{bleName ? "蓝牙已连接" : bleConnecting ? "正在连接" : "连接蓝牙"}</Button></div></CardContent></Card>
           <Card><CardHeader><CardTitle className="flex items-center gap-2"><Router />Wi‑Fi 配置</CardTitle></CardHeader><CardContent className="space-y-3">{!selectedDevice?.verified && <p className="text-sm text-zinc-500">请连接 USB 数据线并点击“重新检测 USB”进行配网。</p>}<Button variant="outline" className="w-full" disabled={!selectedDevice?.verified || busy} onClick={() => void scanWifi()}>{wifiScanning ? "正在扫描…" : "扫描 2.4 GHz 网络"}</Button><Select value={ssid} onValueChange={setSsid}><SelectTrigger><SelectValue placeholder="选择 Wi‑Fi" /></SelectTrigger><SelectContent>{networks.map((network) => <SelectItem key={network.ssid} value={network.ssid}>{network.secure ? "加密 · " : "开放 · "}{network.ssid} · {network.rssi} dBm</SelectItem>)}</SelectContent></Select><input className="h-10 w-full rounded-md border border-white/10 bg-black px-3 text-sm outline-none focus:border-white/30" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Wi‑Fi 密码" /><Button className="w-full" disabled={!selectedDevice?.verified || !ssid || busy} onClick={saveWifi}>保存并连接</Button></CardContent></Card>
           <div className="lg:col-span-2"><WallpaperCard devices={lanDevices} onMessage={setMessage} /></div>
         </TabsContent>
