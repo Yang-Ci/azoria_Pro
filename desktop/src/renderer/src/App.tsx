@@ -75,6 +75,7 @@ export default function App() {
   const [lanDevices, setLanDevices] = useState<LanDevice[]>([])
   const [selectedUsb, setSelectedUsb] = useState("")
   const [networks, setNetworks] = useState<Array<{ ssid: string; rssi: number; secure: boolean }>>([])
+  const [wifiScanning, setWifiScanning] = useState(false)
   const [ssid, setSsid] = useState("")
   const [password, setPassword] = useState("")
   const [bleName, setBleName] = useState("")
@@ -199,7 +200,21 @@ export default function App() {
   }
   const selectedDevice = useMemo(() => usb.find((device) => device.path === selectedUsb), [usb, selectedUsb])
   const internalPanel = status.input === "internal" || connection.transport === "internal-panel"
-  const scanWifi = () => { setBusy(true); void window.azoria.device.scanWifi(selectedUsb).then(setNetworks).catch((error) => setMessage(String(error))).finally(() => setBusy(false)) }
+  const scanWifi = async () => {
+    setBusy(true)
+    setWifiScanning(true)
+    setMessage("正在扫描 2.4 GHz 网络")
+    try {
+      const found = await window.azoria.device.scanWifi(selectedUsb)
+      setNetworks(found)
+      setMessage(found.length ? `已发现 ${found.length} 个 2.4 GHz 网络` : "未发现可用的 2.4 GHz 网络")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Wi-Fi 扫描失败")
+    } finally {
+      setWifiScanning(false)
+      setBusy(false)
+    }
+  }
   const saveWifi = () => { setBusy(true); void window.azoria.device.configureWifi(selectedUsb, ssid, password).then(() => { setPassword(""); setMessage("AZORIA Touch Wi‑Fi 配置完成") }).catch((error) => setMessage(String(error))).finally(() => setBusy(false)) }
   const prepareBluetooth = () => { setBusy(true); void window.azoria.device.prepareBle(selectedUsb).then(() => { setBlePrepared(true); setMessage("AZORIA Touch 蓝牙已就绪") }).catch((error) => setMessage(error instanceof Error ? error.message : "蓝牙配对准备失败")).finally(() => setBusy(false)) }
   const connectBluetooth = () => {
@@ -269,7 +284,7 @@ export default function App() {
 
         <TabsContent value="touch" className="grid gap-5 lg:grid-cols-2">
           <Card><CardHeader><CardTitle>AZORIA Touch</CardTitle></CardHeader><CardContent className="space-y-4">{lanDevices.length ? <div className="space-y-2">{lanDevices.map((device) => <div key={device.id} className="rounded-lg border border-white/10 bg-black p-5"><div className="flex items-center justify-between"><p className="font-medium">{device.name}</p><Badge variant="outline" className="border-white/10"><Check />已连接</Badge></div></div>)}</div> : selectedDevice?.verified ? <div className="rounded-lg border border-white/10 bg-black p-5"><div className="flex items-center justify-between"><div><p className="font-medium">{selectedDevice.name}</p><p className="mt-1 text-sm text-zinc-500">USB 已连接</p></div><Badge variant="outline" className="border-white/10"><Check />已识别</Badge></div></div> : <div className="rounded-lg border border-dashed border-white/10 p-8 text-center text-sm text-zinc-500">未发现 AZORIA Touch</div>}<div className="grid grid-cols-2 gap-2">{selectedDevice?.verified && !blePrepared && <Button variant="outline" disabled={busy} onClick={prepareBluetooth}><Cable />准备蓝牙</Button>}<Button variant="outline" disabled={bleConnecting} onClick={connectBluetooth}><Bluetooth />{bleName ? "蓝牙已连接" : bleConnecting ? "正在连接" : "连接蓝牙"}</Button></div></CardContent></Card>
-          <Card><CardHeader><CardTitle className="flex items-center gap-2"><Router />Wi‑Fi 配置</CardTitle></CardHeader><CardContent className="space-y-3"><Button variant="outline" className="w-full" disabled={!selectedDevice?.verified || busy} onClick={scanWifi}>扫描 2.4 GHz 网络</Button><Select value={ssid} onValueChange={setSsid}><SelectTrigger><SelectValue placeholder="选择 Wi‑Fi" /></SelectTrigger><SelectContent>{networks.map((network) => <SelectItem key={network.ssid} value={network.ssid}>{network.secure ? "加密 · " : "开放 · "}{network.ssid} · {network.rssi} dBm</SelectItem>)}</SelectContent></Select><input className="h-10 w-full rounded-md border border-white/10 bg-black px-3 text-sm outline-none focus:border-white/30" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Wi‑Fi 密码" /><Button className="w-full" disabled={!selectedDevice?.verified || !ssid || busy} onClick={saveWifi}>保存并连接</Button></CardContent></Card>
+          <Card><CardHeader><CardTitle className="flex items-center gap-2"><Router />Wi‑Fi 配置</CardTitle></CardHeader><CardContent className="space-y-3"><Button variant="outline" className="w-full" disabled={!selectedDevice?.verified || busy} onClick={() => void scanWifi()}>{wifiScanning ? "正在扫描…" : "扫描 2.4 GHz 网络"}</Button><Select value={ssid} onValueChange={setSsid}><SelectTrigger><SelectValue placeholder="选择 Wi‑Fi" /></SelectTrigger><SelectContent>{networks.map((network) => <SelectItem key={network.ssid} value={network.ssid}>{network.secure ? "加密 · " : "开放 · "}{network.ssid} · {network.rssi} dBm</SelectItem>)}</SelectContent></Select><input className="h-10 w-full rounded-md border border-white/10 bg-black px-3 text-sm outline-none focus:border-white/30" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Wi‑Fi 密码" /><Button className="w-full" disabled={!selectedDevice?.verified || !ssid || busy} onClick={saveWifi}>保存并连接</Button></CardContent></Card>
           <div className="lg:col-span-2"><WallpaperCard devices={lanDevices} onMessage={setMessage} /></div>
         </TabsContent>
 

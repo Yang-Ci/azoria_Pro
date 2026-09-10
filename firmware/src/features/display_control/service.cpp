@@ -53,7 +53,7 @@ constexpr uint32_t kRegistrationIntervalMs = 30000;
 constexpr uint32_t kBleHealthIntervalMs = 5000;
 constexpr uint32_t kIdleStatusIntervalMs = 750;
 #ifndef AZORIA_FIRMWARE_VERSION
-#define AZORIA_FIRMWARE_VERSION "0.7.1"
+#define AZORIA_FIRMWARE_VERSION "0.7.2"
 #endif
 constexpr char kFirmwareVersion[] = AZORIA_FIRMWARE_VERSION;
 Command latest_commands[static_cast<size_t>(ControlKind::Count)]{};

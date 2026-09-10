@@ -104,11 +104,25 @@ void restoreSavedWiFi(const DeviceConfig &saved) {
 
 void scanNetworks() {
   Serial.println("AZORIA_SCAN_STARTED");
+  DeviceConfig saved_config;
+  const bool has_saved_wifi = loadDeviceConfig(saved_config) &&
+                              !saved_config.ssid.isEmpty();
+
+  // esp_wifi_scan_start rejects a scan while the station is still associating
+  // with an unavailable saved network. Pause that retry before scanning, then
+  // resume it afterwards so USB provisioning works away from the old router.
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(false, false, 1000);
   WiFi.mode(WIFI_STA);
+  delay(100);
   int count = WiFi.scanNetworks(false, false);
   if (count < 0) {
-    Serial.println("AZORIA_ERROR Wi-Fi scan failed");
+    Serial.printf("AZORIA_ERROR Wi-Fi scan failed (%d)\n", count);
     Serial.println("AZORIA_NETWORKS_DONE");
+    if (has_saved_wifi) {
+      WiFi.setAutoReconnect(true);
+      WiFi.begin(saved_config.ssid.c_str(), saved_config.password.c_str());
+    }
     return;
   }
 
@@ -132,6 +146,10 @@ void scanNetworks() {
   }
   WiFi.scanDelete();
   Serial.println("AZORIA_NETWORKS_DONE");
+  if (has_saved_wifi) {
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(saved_config.ssid.c_str(), saved_config.password.c_str());
+  }
 }
 
 void sendScreenshot(uint8_t buffer_index) {

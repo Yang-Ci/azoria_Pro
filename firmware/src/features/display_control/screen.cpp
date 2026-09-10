@@ -813,9 +813,10 @@ void createBacklightPanel(lv_obj_t *parent) {
       backlight_panel, "SCREEN LIGHT", 20, 18,
       &lv_font_montserrat_16, 0xF8FAFC);
   lv_obj_set_style_text_opa(title, LV_OPA_70, 0);
-  backlight_value = label(backlight_panel, "86%", 372, 14,
+  backlight_value = label(backlight_panel, "86%", 340, 14,
                            &lv_font_montserrat_28);
-  lv_obj_set_width(backlight_value, 70);
+  lv_obj_set_width(backlight_value, 102);
+  lv_label_set_long_mode(backlight_value, LV_LABEL_LONG_CLIP);
   lv_obj_set_style_text_align(backlight_value, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_set_style_text_color(backlight_value, color(0xF8FAFC), 0);
   lv_obj_set_style_text_opa(backlight_value, LV_OPA_COVER, 0);
