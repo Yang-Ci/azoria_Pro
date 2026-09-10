@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include <esp_heap_caps.h>
 #include <WiFi.h>
 #include <lvgl.h>
 #include <time.h>
@@ -65,6 +66,19 @@ lv_obj_t *music_artist = nullptr;
 lv_obj_t *music_status = nullptr;
 lv_obj_t *music_play_label = nullptr;
 lv_obj_t *music_mode_label = nullptr;
+lv_obj_t *music_immersive_extra[4]{};
+lv_obj_t *music_cover = nullptr;
+lv_obj_t *music_cover_placeholder = nullptr;
+lv_obj_t *immersive_cover = nullptr;
+lv_obj_t *immersive_cover_placeholder = nullptr;
+lv_obj_t *immersive_title = nullptr;
+constexpr size_t kMusicCoverBytes = 64 * 64 * 2;
+uint8_t *music_cover_pixels = nullptr;
+lv_img_dsc_t music_cover_descriptor{};
+uint32_t shown_artwork_revision = UINT32_MAX;
+bool music_seeking = false;
+uint32_t music_seek_duration = 0;
+
 lv_obj_t *music_lyric_previous = nullptr;
 lv_obj_t *music_lyric_current = nullptr;
 lv_obj_t *music_lyric_next = nullptr;
@@ -76,6 +90,7 @@ lv_obj_t *music_immersive_view = nullptr;
 lv_obj_t *music_immersive_previous = nullptr;
 lv_obj_t *music_immersive_current = nullptr;
 lv_obj_t *music_immersive_next = nullptr;
+lv_obj_t *music_immersive_indicator = nullptr;
 bool music_view_active = false;
 uint16_t wallpaper_idle_minutes = 5;
 
@@ -547,10 +562,43 @@ void formatMusicTime(uint32_t milliseconds, char *output,
            static_cast<unsigned long>(total_seconds % 60));
 }
 
-void setMusicLabel(lv_obj_t *object, const char *text) {
+bool setMusicLabel(lv_obj_t *object, const char *text) {
   if (object && strcmp(lv_label_get_text(object), text)) {
     lv_label_set_text(object, text);
+    const bool lyric = object == music_lyric_previous || object == music_lyric_current ||
+        object == music_lyric_next || object == music_immersive_previous ||
+        object == music_immersive_current || object == music_immersive_next ||
+        object == music_immersive_extra[0] || object == music_immersive_extra[1] ||
+        object == music_immersive_extra[2] || object == music_immersive_extra[3];
+    if (lyric) lv_obj_center(object);
+    return true;
   }
+  return false;
+}
+
+void lyricLineAnimation(void *target, int32_t value) {
+  auto *line = static_cast<lv_obj_t *>(target);
+  lv_obj_set_style_translate_y(line, (255 - value) * 12 / 255, 0);
+  lv_obj_set_style_text_opa(line, 104 + value * 151 / 255, 0);
+}
+
+void lyricIndicatorAnimation(void *target, int32_t value) {
+  auto *indicator = static_cast<lv_obj_t *>(target);
+  lv_obj_set_style_translate_y(indicator, (255 - value) * 8 / 255, 0);
+  lv_obj_set_style_opa(indicator, 96 + value * 159 / 255, 0);
+}
+
+void startLyricAnimation(lv_obj_t *object, lv_anim_exec_xcb_t callback) {
+  if (!object) return;
+  lv_anim_del(object, callback);
+  lv_anim_t animation;
+  lv_anim_init(&animation);
+  lv_anim_set_var(&animation, object);
+  lv_anim_set_values(&animation, 0, 255);
+  lv_anim_set_time(&animation, 480);
+  lv_anim_set_path_cb(&animation, lv_anim_path_ease_out);
+  lv_anim_set_exec_cb(&animation, callback);
+  lv_anim_start(&animation);
 }
 
 void musicControlClicked(lv_event_t *event) {
@@ -624,6 +672,54 @@ lv_obj_t *musicButton(lv_obj_t *parent, int x, const char *text,
   return button;
 }
 
+// Center the measured text inside a fixed slot, including wrapped lines.
+lv_obj_t *musicLyricSlot(lv_obj_t *parent, int x, int y, int width, int height,
+                         uint32_t text_color) {
+  lv_obj_t *slot = lv_obj_create(parent);
+  lv_obj_set_pos(slot, x, y);
+  lv_obj_set_size(slot, width, height);
+  lv_obj_set_style_bg_opa(slot, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(slot, 0, 0);
+  lv_obj_set_style_pad_all(slot, 0, 0);
+  disableScrolling(slot);
+  lv_obj_clear_flag(slot, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_t *line = label(slot, "", 0, 0, &azoria_font_zh_28);
+  lv_obj_set_width(line, width);
+  lv_obj_set_height(line, LV_SIZE_CONTENT);
+  lv_label_set_long_mode(line, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(line, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_color(line, color(text_color), 0);
+  lv_obj_set_style_text_line_space(line, 5, 0);
+  lv_obj_center(line);
+  return line;
+}
+
+void musicSeekChanged(lv_event_t *event) {
+  const auto code = lv_event_get_code(event);
+  if (code == LV_EVENT_PRESSED) {
+    RemoteState state = getRemoteState();
+    music_seeking = state.music_can_seek && state.music_duration_ms > 0;
+    music_seek_duration = state.music_duration_ms;
+  }
+  if (music_seeking && (code == LV_EVENT_VALUE_CHANGED || code == LV_EVENT_RELEASED)) {
+    const uint32_t position = static_cast<uint64_t>(
+        lv_slider_get_value(music_progress_bar)) * music_seek_duration / 1000;
+    char time[16];
+    formatMusicTime(position, time, sizeof(time));
+    setMusicLabel(music_elapsed_label, time);
+    last_interaction_at = millis();
+    if (code == LV_EVENT_RELEASED) {
+      music_seeking = false;
+      if (!queueMusicControl("seek", position)) setFooter("跳转失败，请重试");
+      shown_revision = UINT32_MAX;
+    }
+  }
+  if (code == LV_EVENT_PRESS_LOST) {
+    music_seeking = false;
+    shown_revision = UINT32_MAX;
+  }
+}
+
 void createMusicView(lv_obj_t *parent) {
   music_view = lv_obj_create(parent);
   lv_obj_set_pos(music_view, 0, 0);
@@ -635,8 +731,8 @@ void createMusicView(lv_obj_t *parent) {
   disableScrolling(music_view);
 
   lv_obj_t *back = lv_btn_create(music_view);
-  lv_obj_set_pos(back, 16, 16);
-  lv_obj_set_size(back, 48, 48);
+  lv_obj_set_pos(back, 12, 24);
+  lv_obj_set_size(back, 36, 36);
   lv_obj_set_style_bg_color(back, color(0x111113), 0);
   lv_obj_set_style_shadow_width(back, 0, 0);
   lv_obj_set_style_radius(back, 14, 0);
@@ -647,14 +743,17 @@ void createMusicView(lv_obj_t *parent) {
   lv_obj_t *back_label = label(back, "<", 0, 0, &lv_font_montserrat_28);
   lv_obj_center(back_label);
 
-  music_title = label(music_view, "暂无音乐", 80, 17,
+  music_title = label(music_view, "暂无音乐", 138, 18,
                       &azoria_font_zh_16);
-  lv_obj_set_width(music_title, 252);
+  lv_obj_set_width(music_title, 194);
   lv_label_set_long_mode(music_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  music_artist = label(music_view, "", 80, 45, &azoria_font_zh_16);
-  lv_obj_set_width(music_artist, 252);
+  lv_obj_set_style_text_color(music_title, color(0xFFFFFF), 0);
+  lv_obj_set_style_text_opa(music_title, LV_OPA_COVER, 0);
+  music_artist = label(music_view, "", 138, 46, &azoria_font_zh_16);
+  lv_obj_set_width(music_artist, 194);
   lv_label_set_long_mode(music_artist, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_set_style_text_color(music_artist, color(0x94A3B8), 0);
+  lv_obj_set_style_text_color(music_artist, color(0xCBD5E1), 0);
+  lv_obj_set_style_text_opa(music_artist, LV_OPA_COVER, 0);
   music_status = label(music_view, "等待 YangCi", 344, 28,
                        &azoria_font_zh_16);
   lv_obj_set_width(music_status, 116);
@@ -669,51 +768,12 @@ void createMusicView(lv_obj_t *parent) {
   lv_obj_set_style_border_width(divider, 0, 0);
   lv_obj_clear_flag(divider, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
-  music_lyric_previous = label(music_view, "", 48, 112,
-                               &azoria_font_zh_16);
-  lv_obj_set_size(music_lyric_previous, 384, 42);
-  lv_label_set_long_mode(music_lyric_previous, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_text_align(music_lyric_previous, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_text_color(music_lyric_previous, color(0x66666F), 0);
-
-  lv_obj_t *current_panel = lv_obj_create(music_view);
-  lv_obj_set_pos(current_panel, 24, 164);
-  lv_obj_set_size(current_panel, 432, 86);
-  lv_obj_set_style_bg_color(current_panel, color(0x0A0A0C), 0);
-  lv_obj_set_style_bg_opa(current_panel, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_width(current_panel, 1, 0);
-  lv_obj_set_style_border_color(current_panel, color(0x202024), 0);
-  lv_obj_set_style_radius(current_panel, 16, 0);
-  lv_obj_set_style_pad_all(current_panel, 0, 0);
-  disableScrolling(current_panel);
+  music_lyric_previous = musicLyricSlot(music_view, 28, 98, 424, 62, 0x71717A);
+  music_lyric_current = musicLyricSlot(music_view, 24, 162, 432, 96, 0xFFFFFF);
+  lv_obj_t *current_panel = lv_obj_get_parent(music_lyric_current);
   lv_obj_add_flag(current_panel, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(current_panel, showImmersiveLyrics, LV_EVENT_CLICKED,
-                      nullptr);
-
-  lv_obj_t *lyric_indicator = lv_obj_create(current_panel);
-  lv_obj_set_pos(lyric_indicator, 0, 16);
-  lv_obj_set_size(lyric_indicator, 4, 54);
-  lv_obj_set_style_bg_color(lyric_indicator, color(0x168BFF), 0);
-  lv_obj_set_style_bg_opa(lyric_indicator, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_width(lyric_indicator, 0, 0);
-  lv_obj_set_style_radius(lyric_indicator, 2, 0);
-  lv_obj_clear_flag(lyric_indicator,
-                    LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-
-  music_lyric_current = label(current_panel, "等待歌词", 22, 12,
-                              &azoria_font_zh_16);
-  lv_obj_set_size(music_lyric_current, 388, 62);
-  lv_label_set_long_mode(music_lyric_current, LV_LABEL_LONG_WRAP);
-  lv_obj_set_style_text_align(music_lyric_current, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_text_color(music_lyric_current, color(0xF8FAFC), 0);
-  lv_obj_set_style_text_letter_space(music_lyric_current, 1, 0);
-
-  music_lyric_next = label(music_view, "", 48, 266,
-                           &azoria_font_zh_16);
-  lv_obj_set_size(music_lyric_next, 384, 42);
-  lv_label_set_long_mode(music_lyric_next, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_text_align(music_lyric_next, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_text_color(music_lyric_next, color(0x66666F), 0);
+  lv_obj_add_event_cb(current_panel, showImmersiveLyrics, LV_EVENT_CLICKED, nullptr);
+  music_lyric_next = musicLyricSlot(music_view, 28, 262, 424, 62, 0x71717A);
 
   music_elapsed_label = staticLabel(music_view, "0:00", 20, 324,
                                     &lv_font_montserrat_14, 0x94A3B8);
@@ -721,17 +781,23 @@ void createMusicView(lv_obj_t *parent) {
                                      &lv_font_montserrat_14, 0x94A3B8);
   lv_obj_set_width(music_duration_label, 38);
   lv_obj_set_style_text_align(music_duration_label, LV_TEXT_ALIGN_RIGHT, 0);
-  music_progress_bar = lv_bar_create(music_view);
+  music_progress_bar = lv_slider_create(music_view);
   lv_obj_set_pos(music_progress_bar, 72, 331);
   lv_obj_set_size(music_progress_bar, 336, 5);
-  lv_bar_set_range(music_progress_bar, 0, 1000);
-  lv_bar_set_value(music_progress_bar, 0, LV_ANIM_OFF);
+  lv_slider_set_range(music_progress_bar, 0, 1000);
+  lv_slider_set_value(music_progress_bar, 0, LV_ANIM_OFF);
   lv_obj_set_style_bg_color(music_progress_bar, color(0x27272A), LV_PART_MAIN);
   lv_obj_set_style_bg_opa(music_progress_bar, LV_OPA_COVER, LV_PART_MAIN);
   lv_obj_set_style_radius(music_progress_bar, 3, LV_PART_MAIN);
   lv_obj_set_style_bg_color(music_progress_bar, color(0x168BFF),
                             LV_PART_INDICATOR);
   lv_obj_set_style_radius(music_progress_bar, 3, LV_PART_INDICATOR);
+
+  lv_obj_set_style_bg_color(music_progress_bar, color(0xFFFFFF), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(music_progress_bar, color(0xFFFFFF), LV_PART_KNOB);
+  lv_obj_set_style_pad_all(music_progress_bar, 6, LV_PART_KNOB);
+  lv_obj_set_ext_click_area(music_progress_bar, 18);
+  lv_obj_add_event_cb(music_progress_bar, musicSeekChanged, LV_EVENT_ALL, nullptr);
 
   music_buttons[0] = musicButton(music_view, 38,
                                  LV_SYMBOL_PREV "\n上一首", "previous");
@@ -753,40 +819,66 @@ void createMusicView(lv_obj_t *parent) {
   lv_obj_set_style_pad_all(music_immersive_view, 0, 0);
   disableScrolling(music_immersive_view);
 
-  music_immersive_previous = label(music_immersive_view, "", 40, 92,
-                                   &azoria_font_zh_16);
-  lv_obj_set_size(music_immersive_previous, 400, 64);
-  lv_label_set_long_mode(music_immersive_previous, LV_LABEL_LONG_WRAP);
-  lv_obj_set_style_text_align(music_immersive_previous,
-                              LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_text_color(music_immersive_previous, color(0x57575F), 0);
-
-  lv_obj_t *immersive_indicator = lv_obj_create(music_immersive_view);
-  lv_obj_set_pos(immersive_indicator, 24, 184);
-  lv_obj_set_size(immersive_indicator, 5, 112);
-  lv_obj_set_style_bg_color(immersive_indicator, color(0x168BFF), 0);
-  lv_obj_set_style_bg_opa(immersive_indicator, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_width(immersive_indicator, 0, 0);
-  lv_obj_set_style_radius(immersive_indicator, 3, 0);
-  lv_obj_clear_flag(immersive_indicator,
+  music_immersive_previous = musicLyricSlot(music_immersive_view, 28, 182, 424, 44, 0x71717A);
+  music_immersive_current = musicLyricSlot(music_immersive_view, 24, 228, 432, 76, 0xFFFFFF);
+  music_immersive_next = musicLyricSlot(music_immersive_view, 28, 306, 424, 44, 0x71717A);
+  music_immersive_indicator = lv_obj_create(music_immersive_view);
+  lv_obj_set_pos(music_immersive_indicator, 14, 236);
+  lv_obj_set_size(music_immersive_indicator, 4, 60);
+  lv_obj_set_style_bg_color(music_immersive_indicator, color(0x168BFF), 0);
+  lv_obj_set_style_bg_opa(music_immersive_indicator, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(music_immersive_indicator, 0, 0);
+  lv_obj_set_style_radius(music_immersive_indicator, 2, 0);
+  lv_obj_clear_flag(music_immersive_indicator,
                     LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+  const int extra_y[] = {90, 136, 352, 398};
+  for (int i = 0; i < 4; ++i) {
+    music_immersive_extra[i] = musicLyricSlot(music_immersive_view, 28, extra_y[i], 424, 44,
+                                             i == 0 || i == 3 ? 0x3F3F46 : 0x52525B);
+  }
+  // Keep context to a single line so seven rows remain compact.
+  for (auto *line : {music_immersive_previous, music_immersive_next,
+                    music_immersive_extra[0], music_immersive_extra[1],
+                    music_immersive_extra[2], music_immersive_extra[3]}) {
+    lv_obj_set_height(line, 34);
+    lv_label_set_long_mode(line, LV_LABEL_LONG_DOT);
+  }
+  immersive_title = label(music_immersive_view, "暂无音乐", 104, 39, &azoria_font_zh_16);
+  lv_obj_set_width(immersive_title, 344);
+  lv_label_set_long_mode(immersive_title, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_text_color(immersive_title, color(0xFFFFFF), 0);
+  lv_obj_set_style_text_opa(immersive_title, LV_OPA_COVER, 0);
 
-  music_immersive_current = label(music_immersive_view, "等待歌词", 48, 178,
-                                  &azoria_font_zh_16);
-  lv_obj_set_size(music_immersive_current, 392, 124);
-  lv_label_set_long_mode(music_immersive_current, LV_LABEL_LONG_WRAP);
-  lv_obj_set_style_text_align(music_immersive_current, LV_TEXT_ALIGN_CENTER,
-                              0);
-  lv_obj_set_style_text_color(music_immersive_current, color(0xFFFFFF), 0);
-  lv_obj_set_style_text_letter_space(music_immersive_current, 1, 0);
-  lv_obj_set_style_text_line_space(music_immersive_current, 10, 0);
-
-  music_immersive_next = label(music_immersive_view, "", 40, 334,
-                               &azoria_font_zh_16);
-  lv_obj_set_size(music_immersive_next, 400, 64);
-  lv_label_set_long_mode(music_immersive_next, LV_LABEL_LONG_WRAP);
-  lv_obj_set_style_text_align(music_immersive_next, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_text_color(music_immersive_next, color(0x57575F), 0);
+  music_cover_pixels = static_cast<uint8_t *>(
+      heap_caps_calloc(kMusicCoverBytes, 1,
+                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  music_cover_descriptor.header.cf = LV_IMG_CF_TRUE_COLOR;
+  music_cover_descriptor.header.w = 64;
+  music_cover_descriptor.header.h = 64;
+  music_cover_descriptor.data_size = music_cover_pixels ? kMusicCoverBytes : 0;
+  music_cover_descriptor.data = music_cover_pixels;
+  auto create_cover = [](lv_obj_t *parent, int x, int y, lv_obj_t **placeholder) {
+    lv_obj_t *frame = lv_obj_create(parent);
+    lv_obj_set_pos(frame, x, y);
+    lv_obj_set_size(frame, 64, 64);
+    lv_obj_set_style_pad_all(frame, 0, 0);
+    lv_obj_set_style_border_width(frame, 0, 0);
+    lv_obj_set_style_radius(frame, 10, 0);
+    lv_obj_set_style_clip_corner(frame, true, 0);
+    lv_obj_set_style_bg_color(frame, color(0x202024), 0);
+    disableScrolling(frame);
+    *placeholder = label(frame, LV_SYMBOL_AUDIO, 0, 0, &lv_font_montserrat_28);
+    lv_obj_center(*placeholder);
+    lv_obj_t *cover = lv_img_create(frame);
+    if (music_cover_descriptor.data) {
+      lv_img_set_src(cover, &music_cover_descriptor);
+    }
+    lv_obj_add_flag(cover, LV_OBJ_FLAG_HIDDEN);
+    return cover;
+  };
+  music_cover = create_cover(music_view, 60, 12, &music_cover_placeholder);
+  immersive_cover = create_cover(music_immersive_view, 24, 18, &immersive_cover_placeholder);
+  lv_obj_move_foreground(music_immersive_view);
 
   lv_obj_t *immersive_exit = lv_btn_create(music_immersive_view);
   lv_obj_set_pos(immersive_exit, 0, 0);
@@ -1171,6 +1263,38 @@ void refresh() {
   }
   updateInputButtons(state.input_pending);
 
+  if (shown_artwork_revision != state.music_artwork_revision) {
+    shown_artwork_revision = state.music_artwork_revision;
+    if (state.music_has_artwork && music_cover_pixels) {
+      copyMusicArtwork(music_cover_pixels, kMusicCoverBytes);
+      lv_img_cache_invalidate_src(&music_cover_descriptor);
+    }
+    const bool show_artwork = state.music_has_artwork && music_cover_pixels;
+    for (auto *cover : {music_cover, immersive_cover}) {
+      if (show_artwork) lv_obj_clear_flag(cover, LV_OBJ_FLAG_HIDDEN);
+      else lv_obj_add_flag(cover, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_invalidate(cover);
+    }
+    for (auto *placeholder : {music_cover_placeholder, immersive_cover_placeholder}) {
+      if (show_artwork) lv_obj_add_flag(placeholder, LV_OBJ_FLAG_HIDDEN);
+      else lv_obj_clear_flag(placeholder, LV_OBJ_FLAG_HIDDEN);
+    }
+    const lv_color_t accent = color(state.music_artwork_accent);
+    lv_obj_set_style_bg_color(music_progress_bar, accent, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(music_progress_bar, accent, LV_PART_KNOB);
+    lv_obj_set_style_text_color(music_status, accent, 0);
+    lv_obj_set_style_bg_color(music_immersive_indicator, accent, 0);
+    for (auto *cover : {music_cover, immersive_cover}) {
+      lv_obj_t *frame = lv_obj_get_parent(cover);
+      lv_obj_set_style_shadow_color(frame, accent, 0);
+      lv_obj_set_style_shadow_width(frame, show_artwork ? 16 : 0, 0);
+      lv_obj_set_style_shadow_opa(frame, show_artwork ? LV_OPA_30 : LV_OPA_TRANSP, 0);
+    }
+  }
+  for (int i = 0; i < 4; ++i) {
+    setMusicLabel(music_immersive_extra[i], state.music_available ? state.music_lyric_extra[i] : "");
+  }
+  setMusicLabel(immersive_title, state.music_available ? state.music_title : "暂无音乐");
   setMusicLabel(music_title,
                 state.music_available ? state.music_title : "暂无音乐");
   setMusicLabel(music_artist,
@@ -1182,7 +1306,7 @@ void refresh() {
                     : "未检测到播放器");
   setMusicLabel(music_lyric_previous,
                 state.music_available ? state.music_lyric_previous : "");
-  setMusicLabel(music_lyric_current,
+  const bool regular_lyric_changed = setMusicLabel(music_lyric_current,
                 state.music_available && state.music_lyric_current[0]
                     ? state.music_lyric_current
                     : (state.music_available ? "暂无同步歌词" : "等待歌词"));
@@ -1190,12 +1314,24 @@ void refresh() {
                 state.music_available ? state.music_lyric_next : "");
   setMusicLabel(music_immersive_previous,
                 state.music_available ? state.music_lyric_previous : "");
-  setMusicLabel(music_immersive_current,
+  const bool immersive_lyric_changed = setMusicLabel(music_immersive_current,
                 state.music_available && state.music_lyric_current[0]
                     ? state.music_lyric_current
                     : (state.music_available ? "暂无同步歌词" : "等待歌词"));
   setMusicLabel(music_immersive_next,
                 state.music_available ? state.music_lyric_next : "");
+  if ((regular_lyric_changed || immersive_lyric_changed) &&
+      !lv_obj_has_flag(music_view, LV_OBJ_FLAG_HIDDEN)) {
+    const bool immersive =
+        !lv_obj_has_flag(music_immersive_view, LV_OBJ_FLAG_HIDDEN);
+    startLyricAnimation(immersive ? music_immersive_current
+                                  : music_lyric_current,
+                        lyricLineAnimation);
+    if (immersive) {
+      startLyricAnimation(music_immersive_indicator,
+                          lyricIndicatorAnimation);
+    }
+  }
   setMusicLabel(music_play_label,
                 state.music_playing ? LV_SYMBOL_PAUSE "\n暂停"
                                     : LV_SYMBOL_PLAY "\n播放");
@@ -1206,16 +1342,18 @@ void refresh() {
                   sizeof(elapsed_text));
   formatMusicTime(state.music_duration_ms, duration_text,
                   sizeof(duration_text));
-  setMusicLabel(music_elapsed_label, elapsed_text);
+  if (!music_seeking) setMusicLabel(music_elapsed_label, elapsed_text);
   setMusicLabel(music_duration_label, duration_text);
-  if (music_progress_bar) {
+  if (music_progress_bar && !music_seeking) {
+    if (state.music_can_seek && state.music_duration_ms > 0) lv_obj_clear_state(music_progress_bar, LV_STATE_DISABLED);
+    else lv_obj_add_state(music_progress_bar, LV_STATE_DISABLED);
     const uint64_t scaled_progress = state.music_duration_ms > 0
         ? static_cast<uint64_t>(state.music_position_ms) * 1000 /
               state.music_duration_ms
         : 0;
     const uint32_t progress = static_cast<uint32_t>(
         scaled_progress > 1000 ? 1000 : scaled_progress);
-    lv_bar_set_value(music_progress_bar, static_cast<int32_t>(progress),
+    lv_slider_set_value(music_progress_bar, static_cast<int32_t>(progress),
                      LV_ANIM_OFF);
   }
   for (lv_obj_t *button : music_buttons) {

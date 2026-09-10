@@ -95,6 +95,13 @@ test('parses LRC timestamps and ignores metadata', () => {
   ])
 })
 
+test('normalizes non-breaking and Unicode spaces in lyrics for Touch', () => {
+  assert.deepEqual(parseSyncedLyrics('[00:01.00]祈祷你靠近我\u00a0抱紧我\n[00:02.00]下一\u3000句'), [
+    { timeMs: 1000, text: '祈祷你靠近我 抱紧我' },
+    { timeMs: 2000, text: '下一 句' },
+  ])
+})
+
 test('matches player titles with parenthesized edition text', () => {
   const track = { title: '会呼吸的痛 (我发誓不再说谎了)', artist: '呆呆破' }
   assert.ok(matchScore(track, '会呼吸的痛', '呆呆破') >= 10)
@@ -138,15 +145,24 @@ test('publishes the surrounding lyric lines for Touch', () => {
       shuffleActive: false, repeatMode: 'list',
     },
     lines: [
-      { timeMs: 0, text: '上一句' },
+      { timeMs: 0, text: '上三句' },
+      { timeMs: 500, text: '上两句' },
+      { timeMs: 800, text: '上一句' },
       { timeMs: 1000, text: '当前歌词' },
       { timeMs: 2000, text: '下一句' },
+      { timeMs: 2500, text: '下两句' },
+      { timeMs: 2800, text: '下三句' },
     ],
   }
   const status = manager.touchStatus()
   assert.equal(status.musicLyricPrevious, '上一句')
   assert.equal(status.musicLyricCurrent, '当前歌词')
   assert.equal(status.musicLyricNext, '下一句')
+  assert.equal(status.musicLyricPrevious3, '上三句')
+  assert.equal(status.musicLyricPrevious2, '上两句')
+  assert.equal(status.musicLyricNext2, '下两句')
+  assert.equal(status.musicLyricNext3, '下三句')
+  assert.equal(status.musicCanSeek, false)
   assert.equal(status.musicPositionMs, 1500)
   assert.equal(status.musicDurationMs, 3000)
 })

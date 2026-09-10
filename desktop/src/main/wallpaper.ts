@@ -6,7 +6,7 @@ import type { ServerResponse } from "node:http"
 import type { WallpaperIdleMinutes, WallpaperInfo, WallpaperKind, WallpaperSettings, WallpaperUpload } from "../shared/contracts"
 
 const headerSize = 20
-const maxPackageSize = 3_200_000
+const maxPackageSize = 24 * 1024 * 1024
 const maxFrames = 120
 const defaultIdleMinutes: WallpaperIdleMinutes = 5
 const allowedIdleMinutes = new Set<number>([0, 1, 5, 10, 30])

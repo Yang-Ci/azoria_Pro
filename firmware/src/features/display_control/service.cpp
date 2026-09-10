@@ -6,6 +6,8 @@
 #include <WiFiUdp.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <mbedtls/base64.h>
+#include <esp_heap_caps.h>
 
 #include "services/ble_transport.h"
 #include "features/display_control/screen.h"
@@ -73,6 +75,11 @@ String pending_result_response;
 bool pending_result_ready = false;
 String command_boot_nonce;
 char music_commands[4][16]{};
+uint32_t music_command_positions[4]{};
+constexpr size_t kMusicArtworkBytes = 64 * 64 * 2;
+uint8_t *music_artwork_pixels = nullptr;
+String music_artwork_hash;
+uint32_t music_artwork_retry_at = 0;
 uint8_t music_command_head = 0;
 uint8_t music_command_count = 0;
 
@@ -562,14 +569,17 @@ void invalidateDiscoveredDesktop() {
 }
 
 void registerDevice() {
-  char body[448];
+  char body[512];
   String address = WiFi.localIP().toString();
   snprintf(body, sizeof(body),
            "{\"device_id\":\"%s\",\"hostname\":\"%s\",\"board\":"
            "\"VIEWE UEDX48480040E-WB-A V1.3\",\"firmware\":\"%s\","
-           "\"address\":\"%s\",\"wallpaper_hash\":\"%s\"}",
+           "\"address\":\"%s\",\"wallpaper_hash\":\"%s\","
+           "\"wallpaper_storage\":\"%s\",\"wallpaper_limit\":%u}",
            device_id.c_str(), device_hostname.c_str(), kFirmwareVersion,
-           address.c_str(), Wallpaper::currentHash().c_str());
+           address.c_str(), Wallpaper::currentHash().c_str(),
+           Wallpaper::storageKind(),
+           static_cast<unsigned>(Wallpaper::packageLimit()));
   String response;
   if (request("POST", "/v1/device/register", body, response)) {
     Serial.printf("Registered with Desktop as %s\n", device_id.c_str());
@@ -583,6 +593,19 @@ bool readStatus() {
     updateReady(false, false, "Desktop offline");
     return false;
   }
+  if (jsonString(response, "transport", "") == "ble") {
+    for (int page = 0; page < 3; ++page) {
+      String music_response;
+      if (!bleTransportRequest("GET", String("/v1/music/status/") + page,
+                               nullptr, music_response, 1200)) {
+        continue;
+      }
+      if (response.endsWith("}") && music_response.startsWith("{")) {
+        response.remove(response.length() - 1);
+        response += "," + music_response.substring(1);
+      }
+    }
+  }
   const bool wallpaper_metadata_present =
       jsonValueStart(response, "wallpaperHash") >= 0 &&
       jsonValueStart(response, "wallpaperSize") >= 0;
@@ -590,27 +613,77 @@ bool readStatus() {
   const int wallpaper_size = jsonInt(response, "wallpaperSize", 0);
   const int wallpaper_idle_minutes =
       jsonInt(response, "wallpaperIdleMinutes", -1);
+  const bool artwork_metadata_present =
+      jsonValueStart(response, "musicArtworkHash") >= 0;
+  const String artwork_hash =
+      jsonString(response, "musicArtworkHash", music_artwork_hash.c_str());
+  if (artwork_metadata_present && artwork_hash != music_artwork_hash) {
+    music_artwork_hash = "";
+    // Clear the previous track immediately; fetch/decode off the UI task.
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+    if (remote_state.music_has_artwork) {
+      remote_state.music_has_artwork = false;
+      remote_state.music_artwork_accent = 0x168BFF;
+      ++remote_state.music_artwork_revision;
+      ++remote_state.revision;
+    }
+    xSemaphoreGive(state_mutex);
+    if (artwork_hash.isEmpty()) music_artwork_hash = "";
+    else if (WiFi.status() == WL_CONNECTED &&
+             static_cast<int32_t>(millis() - music_artwork_retry_at) >= 0) {
+      music_artwork_retry_at = millis() + 5000;
+      String artwork_response;
+      if (wifiRequest("GET", "/v1/music/artwork", nullptr, artwork_response, 2000) &&
+          jsonString(artwork_response, "hash", "") == artwork_hash) {
+        const String encoded = jsonString(artwork_response, "pixels", "");
+        size_t decoded_size = 0;
+        xSemaphoreTake(state_mutex, portMAX_DELAY);
+        if (music_artwork_pixels && encoded.length() == 10924 && mbedtls_base64_decode(
+                music_artwork_pixels, kMusicArtworkBytes, &decoded_size,
+                reinterpret_cast<const unsigned char *>(encoded.c_str()), encoded.length()) == 0 &&
+            decoded_size == kMusicArtworkBytes) {
+          music_artwork_hash = artwork_hash;
+          remote_state.music_has_artwork = true;
+          remote_state.music_artwork_accent = static_cast<uint32_t>(
+              constrain(jsonInt(artwork_response, "accent", 0x168BFF), 0, 0xFFFFFF));
+          ++remote_state.music_artwork_revision;
+          ++remote_state.revision;
+        }
+        xSemaphoreGive(state_mutex);
+      }
+    }
+  }
   xSemaphoreTake(state_mutex, portMAX_DELAY);
   int brightness = constrain(jsonInt(response, "brightness", remote_state.brightness), 0, 100);
   int volume = constrain(jsonInt(response, "volume", remote_state.volume), 0, 100);
   bool muted = jsonBool(response, "mute", remote_state.muted);
   String input = jsonString(response, "input", remote_state.input);
   bool ddc_available = jsonBool(response, "available", true);
-  bool music_available = jsonBool(response, "musicAvailable", false);
-  bool music_playing = jsonBool(response, "musicPlaying", false);
-  String music_title = jsonString(response, "musicTitle", "No music");
-  String music_artist = jsonString(response, "musicArtist", "");
-  String music_mode = jsonString(response, "musicMode", "unknown");
-  String music_source = jsonString(response, "musicSource", "other");
+  bool music_available = jsonBool(response, "musicAvailable", remote_state.music_available);
+  bool music_playing = jsonBool(response, "musicPlaying", remote_state.music_playing);
+  bool music_can_seek = jsonBool(response, "musicCanSeek", remote_state.music_can_seek);
+  String music_title = jsonString(response, "musicTitle", remote_state.music_title);
+  String music_artist = jsonString(response, "musicArtist", remote_state.music_artist);
+  String music_mode = jsonString(response, "musicMode", remote_state.music_mode);
+  String music_source = jsonString(response, "musicSource", remote_state.music_source);
   uint32_t music_position_ms = static_cast<uint32_t>(
-      max(0, jsonInt(response, "musicPositionMs", 0)));
+      max(0, jsonInt(response, "musicPositionMs", remote_state.music_position_ms)));
   uint32_t music_duration_ms = static_cast<uint32_t>(
-      max(0, jsonInt(response, "musicDurationMs", 0)));
+      max(0, jsonInt(response, "musicDurationMs", remote_state.music_duration_ms)));
   String music_lyric_previous =
-      jsonString(response, "musicLyricPrevious", "");
+      jsonString(response, "musicLyricPrevious", remote_state.music_lyric_previous);
   String music_lyric_current =
-      jsonString(response, "musicLyricCurrent", "");
-  String music_lyric_next = jsonString(response, "musicLyricNext", "");
+      jsonString(response, "musicLyricCurrent", remote_state.music_lyric_current);
+  String music_lyric_next = jsonString(response, "musicLyricNext", remote_state.music_lyric_next);
+  const char *extra_keys[] = {"musicLyricPrevious3", "musicLyricPrevious2",
+                              "musicLyricNext2", "musicLyricNext3"};
+  for (int i = 0; i < 4; ++i) {
+    const String text = jsonString(response, extra_keys[i], remote_state.music_lyric_extra[i]);
+    if (strcmp(remote_state.music_lyric_extra[i], text.c_str())) {
+      strlcpy(remote_state.music_lyric_extra[i], text.c_str(), sizeof(remote_state.music_lyric_extra[i]));
+      ++remote_state.revision;
+    }
+  }
   syncDesktopClock(response);
   uint32_t now = millis();
   bool brightness_writable =
@@ -628,6 +701,7 @@ bool readStatus() {
                  (input_writable && strcmp(remote_state.input, input.c_str())) ||
                  remote_state.music_available != music_available ||
                  remote_state.music_playing != music_playing ||
+                 remote_state.music_can_seek != music_can_seek ||
                  strcmp(remote_state.music_title, music_title.c_str()) ||
                  strcmp(remote_state.music_artist, music_artist.c_str()) ||
                  strcmp(remote_state.music_mode, music_mode.c_str()) ||
@@ -653,6 +727,7 @@ bool readStatus() {
     }
     remote_state.music_available = music_available;
     remote_state.music_playing = music_playing;
+    remote_state.music_can_seek = music_can_seek;
     strlcpy(remote_state.music_title, music_title.c_str(), sizeof(remote_state.music_title));
     strlcpy(remote_state.music_artist, music_artist.c_str(), sizeof(remote_state.music_artist));
     strlcpy(remote_state.music_mode, music_mode.c_str(), sizeof(remote_state.music_mode));
@@ -756,7 +831,7 @@ bool takeNextCommand(Command &command) {
   return true;
 }
 
-bool takeNextMusicCommand(char *action, size_t action_size) {
+bool takeNextMusicCommand(char *action, size_t action_size, uint32_t &position_ms) {
   if (!state_mutex || music_command_count == 0) return false;
   xSemaphoreTake(state_mutex, portMAX_DELAY);
   if (music_command_count == 0) {
@@ -764,17 +839,19 @@ bool takeNextMusicCommand(char *action, size_t action_size) {
     return false;
   }
   strlcpy(action, music_commands[music_command_head], action_size);
+  position_ms = music_command_positions[music_command_head];
   music_command_head = (music_command_head + 1) % 4;
   --music_command_count;
   xSemaphoreGive(state_mutex);
   return true;
 }
 
-void runMusicCommand(const char *action) {
-  char body[48];
-  snprintf(body, sizeof(body), "{\"action\":\"%s\"}", action);
+void runMusicCommand(const char *action, uint32_t position_ms) {
+  char body[96];
+  snprintf(body, sizeof(body), "{\"action\":\"%s\",\"positionMs\":%lu}", action,
+           static_cast<unsigned long>(position_ms));
   String response;
-  if (!wifiRequest("POST", "/v1/music/control", body, response, 6000)) {
+  if (!request("POST", "/v1/music/control", body, response, 6000)) {
     Serial.printf("MUSIC_CONTROL_FAILED,ACTION=%s\n", action);
     return;
   }
@@ -1014,8 +1091,9 @@ void remoteTask(void *) {
 
     Command command{};
     char music_action[16]{};
-    if (takeNextMusicCommand(music_action, sizeof(music_action))) {
-      runMusicCommand(music_action);
+    uint32_t music_position_ms = 0;
+    if (takeNextMusicCommand(music_action, sizeof(music_action), music_position_ms)) {
+      runMusicCommand(music_action, music_position_ms);
       last_status = 0;
       continue;
     }
@@ -1058,6 +1136,14 @@ bool enqueueLatest(Command command) {
 
 void startRemote(const DeviceConfig &config) {
   remote_config = config;
+  if (!music_artwork_pixels) {
+    music_artwork_pixels = static_cast<uint8_t *>(
+        heap_caps_calloc(kMusicArtworkBytes, 1,
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!music_artwork_pixels) {
+      Serial.println("Music artwork disabled: PSRAM allocation failed");
+    }
+  }
   uint64_t chip = ESP.getEfuseMac();
   char id[18];
   snprintf(id, sizeof(id), "%04X%08X",
@@ -1133,21 +1219,33 @@ bool queueStringControl(const char *control, const char *value) {
   return enqueueLatest(command);
 }
 
-bool queueMusicControl(const char *action) {
+void copyMusicArtwork(uint8_t *pixels, size_t size) {
+  if (!state_mutex || !music_artwork_pixels || !pixels ||
+      size != kMusicArtworkBytes) return;
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  memcpy(pixels, music_artwork_pixels, kMusicArtworkBytes);
+  xSemaphoreGive(state_mutex);
+}
+
+bool queueMusicControl(const char *action, uint32_t position_ms) {
   if (!state_mutex || !remote_task_handle || !action ||
       (strcmp(action, "previous") && strcmp(action, "toggle-play") &&
-       strcmp(action, "next") && strcmp(action, "cycle-mode"))) {
+       strcmp(action, "next") && strcmp(action, "cycle-mode") && strcmp(action, "seek"))) {
     return false;
   }
   xSemaphoreTake(state_mutex, portMAX_DELAY);
-  if (music_command_count >= 4) {
+  if (music_command_count >= 4 || (!strcmp(action, "seek") &&
+      (!remote_state.music_can_seek || !remote_state.music_duration_ms))) {
     xSemaphoreGive(state_mutex);
     return false;
   }
   uint8_t tail = (music_command_head + music_command_count) % 4;
   strlcpy(music_commands[tail], action, sizeof(music_commands[tail]));
+  music_command_positions[tail] = min(position_ms, remote_state.music_duration_ms);
   ++music_command_count;
-  if (!strcmp(action, "toggle-play")) {
+  if (!strcmp(action, "seek")) {
+    remote_state.music_position_ms = music_command_positions[tail];
+  } else if (!strcmp(action, "toggle-play")) {
     remote_state.music_playing = !remote_state.music_playing;
   } else if (!strcmp(action, "cycle-mode")) {
     const char *next = !strcmp(remote_state.music_mode, "order") ? "list" :

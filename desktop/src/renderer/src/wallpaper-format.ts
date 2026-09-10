@@ -3,9 +3,10 @@ import type { WallpaperKind, WallpaperUpload } from "../../shared/contracts"
 const width = 480
 const height = 480
 const headerSize = 20
-const maxPackageSize = 3_150_000
-const maxVideoDurationSeconds = 12
-const targetFrameCount = 60
+const flashPackageSize = 3_150_000
+const tfPackageSize = 24 * 1024 * 1024 - 64 * 1024
+const maxVideoDurationSeconds = 20
+const targetFrameCount = 120
 const videoExtensions = new Set(["mp4", "mov", "m4v", "webm", "avi", "mkv"])
 const imageExtensions = new Set(["jpg", "jpeg", "png", "webp", "gif", "bmp"])
 
@@ -78,7 +79,7 @@ async function seek(video: HTMLVideoElement, seconds: number): Promise<void> {
   await ready
 }
 
-async function encodeVideo(file: File, canvas: HTMLCanvasElement, context: CanvasRenderingContext2D): Promise<{ frames: Uint8Array[]; delay: number }> {
+async function encodeVideo(file: File, canvas: HTMLCanvasElement, context: CanvasRenderingContext2D, packageLimit: number): Promise<{ frames: Uint8Array[]; delay: number }> {
   const url = URL.createObjectURL(file)
   const video = document.createElement("video")
   video.muted = true
@@ -98,7 +99,7 @@ async function encodeVideo(file: File, canvas: HTMLCanvasElement, context: Canva
       await seek(video, Math.min(time, Math.max(0, video.duration - 0.02)))
       drawCover(context, video, video.videoWidth, video.videoHeight)
       const frame = await canvasJpeg(canvas, 0.64)
-      if (packageSize + 4 + frame.byteLength > maxPackageSize) break
+      if (packageSize + 4 + frame.byteLength > packageLimit) break
       frames.push(frame)
       packageSize += 4 + frame.byteLength
     }
@@ -111,7 +112,8 @@ async function encodeVideo(file: File, canvas: HTMLCanvasElement, context: Canva
   }
 }
 
-export async function createWallpaperUpload(file: File): Promise<WallpaperUpload> {
+export async function createWallpaperUpload(file: File, packageLimit = flashPackageSize): Promise<WallpaperUpload> {
+  const safePackageLimit = Math.min(tfPackageSize, Math.max(flashPackageSize, Math.floor(packageLimit)))
   const extension = file.name.toLowerCase().split(".").at(-1) || ""
   const kind: WallpaperKind = file.type.startsWith("video/") || videoExtensions.has(extension)
     ? "video"
@@ -127,6 +129,6 @@ export async function createWallpaperUpload(file: File): Promise<WallpaperUpload
     const frames = await encodeImage(file, canvas, context)
     return { name: file.name, kind, data: buildPackage(frames, 0) }
   }
-  const { frames, delay } = await encodeVideo(file, canvas, context)
+  const { frames, delay } = await encodeVideo(file, canvas, context, safePackageLimit)
   return { name: file.name, kind, data: buildPackage(frames, delay) }
 }

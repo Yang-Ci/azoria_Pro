@@ -115,7 +115,20 @@ void scanNetworks() {
   WiFi.disconnect(false, false, 1000);
   WiFi.mode(WIFI_STA);
   delay(100);
+  WiFi.scanDelete();
   int count = WiFi.scanNetworks(false, false);
+  if (count == WIFI_SCAN_FAILED) {
+    // A failed driver allocation or an interrupted association can leave the
+    // station interface present but unable to start a scan. Recreate it once
+    // before reporting failure to Desktop.
+    Serial.println("AZORIA_SCAN_RETRY resetting Wi-Fi driver");
+    WiFi.scanDelete();
+    WiFi.disconnect(true, false, 1000);
+    delay(200);
+    WiFi.mode(WIFI_STA);
+    delay(300);
+    count = WiFi.scanNetworks(false, false);
+  }
   if (count < 0) {
     Serial.printf("AZORIA_ERROR Wi-Fi scan failed (%d)\n", count);
     Serial.println("AZORIA_NETWORKS_DONE");

@@ -2,6 +2,8 @@
 
 #include <HTTPClient.h>
 #include <LittleFS.h>
+#include <SD.h>
+#include <SPI.h>
 #include <WiFi.h>
 #include <atomic>
 #include <esp_heap_caps.h>
@@ -17,13 +19,21 @@ constexpr char kPackagePath[] = "/wallpaper.azw";
 constexpr char kTemporaryPath[] = "/wallpaper.tmp";
 constexpr char kHashPath[] = "/wallpaper.sha";
 constexpr size_t kHeaderSize = 20;
-constexpr size_t kMaxPackageSize = 3200000;
+constexpr size_t kFlashMaxPackageSize = 3200000;
+constexpr size_t kSdMaxPackageSize = 24 * 1024 * 1024;
 constexpr size_t kMaxFrameSize = 600000;
 constexpr uint16_t kWidth = 480;
 constexpr uint16_t kHeight = 480;
 constexpr size_t kPixelBufferSize = kWidth * kHeight * sizeof(lv_color_t);
+constexpr int kSdSck = 45;
+constexpr int kSdMiso = 46;
+constexpr int kSdMosi = 42;
+constexpr int kSdCs = 47;
+constexpr uint32_t kSdFrequency = 10000000;
 
 SemaphoreHandle_t storage_mutex = nullptr;
+SPIClass sd_spi(HSPI);
+fs::FS *storage = nullptr;
 lv_obj_t *view = nullptr;
 lv_obj_t *image = nullptr;
 lv_obj_t *empty_label = nullptr;
@@ -40,6 +50,19 @@ uint16_t frame_delay_ms = 0;
 uint16_t frame_index = 0;
 bool is_active = false;
 bool filesystem_ready = false;
+bool using_sd = false;
+
+size_t maxPackageSize() {
+  return using_sd ? kSdMaxPackageSize : kFlashMaxPackageSize;
+}
+
+uint64_t storageTotalBytes() {
+  return using_sd ? SD.totalBytes() : LittleFS.totalBytes();
+}
+
+uint64_t storageUsedBytes() {
+  return using_sd ? SD.usedBytes() : LittleFS.usedBytes();
+}
 
 uint16_t readU16(const uint8_t *value) {
   return static_cast<uint16_t>(value[0]) |
@@ -79,7 +102,8 @@ bool readHeader(File &file, uint16_t &frames, uint16_t &delay) {
 }
 
 bool validatePackage(const char *path) {
-  File file = LittleFS.open(path, "r");
+  if (!storage) return false;
+  File file = storage->open(path, "r");
   uint16_t frames = 0;
   uint16_t delay = 0;
   if (!readHeader(file, frames, delay)) {
@@ -141,7 +165,7 @@ bool decodeFrame(File &file) {
 bool loadFirstFrame() {
   if (!filesystem_ready || !pixels || !compressed || currentHash().isEmpty()) return false;
   xSemaphoreTake(storage_mutex, portMAX_DELAY);
-  File file = LittleFS.open(kPackagePath, "r");
+  File file = storage->open(kPackagePath, "r");
   uint16_t frames = 0;
   uint16_t delay = 0;
   bool loaded = readHeader(file, frames, delay) && decodeFrame(file);
@@ -190,7 +214,7 @@ bool download(const String &host, uint16_t port, const String &expected_hash,
     http.end();
     return false;
   }
-  File file = LittleFS.open(kTemporaryPath, "w");
+  File file = storage->open(kTemporaryPath, "w");
   if (!file) {
     http.end();
     return false;
@@ -237,19 +261,40 @@ bool download(const String &host, uint16_t port, const String &expected_hash,
 
 bool begin() {
   storage_mutex = xSemaphoreCreateMutex();
-  if (!storage_mutex || !LittleFS.begin(true)) {
+  if (!storage_mutex) {
     Serial.println("Wallpaper storage unavailable");
     return false;
   }
+
+  pinMode(kSdCs, OUTPUT);
+  digitalWrite(kSdCs, HIGH);
+  if (sd_spi.begin(kSdSck, kSdMiso, kSdMosi, kSdCs) &&
+      SD.begin(kSdCs, sd_spi, kSdFrequency, "/sd", 5, false) &&
+      SD.cardType() != CARD_NONE) {
+    storage = &SD;
+    using_sd = true;
+    Serial.printf("Wallpaper storage: TF card, size=%llu MB\n",
+                  static_cast<unsigned long long>(SD.cardSize() / 1024 / 1024));
+  } else {
+    SD.end();
+    sd_spi.end();
+    if (!LittleFS.begin(true)) {
+      Serial.println("Wallpaper storage unavailable");
+      return false;
+    }
+    storage = &LittleFS;
+    Serial.printf("Wallpaper storage: LittleFS, size=%u KB\n",
+                  static_cast<unsigned>(LittleFS.totalBytes() / 1024));
+  }
   filesystem_ready = true;
-  File hash_file = LittleFS.open(kHashPath, "r");
+  File hash_file = storage->open(kHashPath, "r");
   installed_hash = hash_file ? hash_file.readString() : "";
   hash_file.close();
   installed_hash.trim();
   if (!validHash(installed_hash) || !validatePackage(kPackagePath)) {
     installed_hash = "";
-    LittleFS.remove(kPackagePath);
-    LittleFS.remove(kHashPath);
+    storage->remove(kPackagePath);
+    storage->remove(kHashPath);
   }
   return true;
 }
@@ -315,6 +360,15 @@ String currentHash() {
   return value;
 }
 
+const char *storageKind() {
+  if (!filesystem_ready) return "unavailable";
+  return using_sd ? "tf" : "flash";
+}
+
+size_t packageLimit() {
+  return maxPackageSize();
+}
+
 void refresh() {
   if (!is_active || !view) return;
   const uint32_t current_revision = asset_revision.load();
@@ -326,7 +380,7 @@ void refresh() {
   if (frame_count < 2 || frame_delay_ms == 0 ||
       static_cast<int32_t>(millis() - next_frame_due) < 0) return;
   xSemaphoreTake(storage_mutex, portMAX_DELAY);
-  File file = LittleFS.open(kPackagePath, "r");
+  File file = storage->open(kPackagePath, "r");
   bool loaded = file && file.seek(next_frame_offset) && decodeFrame(file);
   file.close();
   xSemaphoreGive(storage_mutex);
@@ -345,39 +399,50 @@ bool sync(const String &host, uint16_t port, const String &sha256,
   if (sha256.isEmpty() || size == 0) {
     if (installed_hash.isEmpty()) return true;
     xSemaphoreTake(storage_mutex, portMAX_DELAY);
-    LittleFS.remove(kPackagePath);
-    LittleFS.remove(kHashPath);
+    storage->remove(kPackagePath);
+    storage->remove(kHashPath);
     installed_hash = "";
     asset_revision.fetch_add(1);
     xSemaphoreGive(storage_mutex);
     return true;
   }
   if (!validHash(sha256) || size < kHeaderSize + 8 ||
-      size > kMaxPackageSize) return false;
+      size > maxPackageSize()) {
+    Serial.printf("WALLPAPER_SYNC,rejected=package,size=%u,limit=%u,storage=%s\n",
+                  static_cast<unsigned>(size),
+                  static_cast<unsigned>(maxPackageSize()), storageKind());
+    return false;
+  }
   if (installed_hash == sha256) return true;
-  LittleFS.remove(kTemporaryPath);
-  // The board-data partition can hold one full 3 MB animation, but not two.
+  storage->remove(kTemporaryPath);
   // Preserve the old package when there is room for an atomic replacement;
   // otherwise release it before downloading the new version.
-  if (LittleFS.totalBytes() - LittleFS.usedBytes() < size + 4096) {
+  if (storageTotalBytes() - storageUsedBytes() < size + 4096) {
     xSemaphoreTake(storage_mutex, portMAX_DELAY);
-    LittleFS.remove(kPackagePath);
-    LittleFS.remove(kHashPath);
+    storage->remove(kPackagePath);
+    storage->remove(kHashPath);
     installed_hash = "";
     asset_revision.fetch_add(1);
     xSemaphoreGive(storage_mutex);
   }
+  if (storageTotalBytes() - storageUsedBytes() < size + 4096) {
+    Serial.printf("WALLPAPER_SYNC,rejected=space,size=%u,free=%llu,storage=%s\n",
+                  static_cast<unsigned>(size),
+                  static_cast<unsigned long long>(storageTotalBytes() - storageUsedBytes()),
+                  storageKind());
+    return false;
+  }
   if (!download(host, port, sha256, size) ||
       !validatePackage(kTemporaryPath)) {
-    LittleFS.remove(kTemporaryPath);
+    storage->remove(kTemporaryPath);
     return false;
   }
   xSemaphoreTake(storage_mutex, portMAX_DELAY);
-  LittleFS.remove(kPackagePath);
-  const bool renamed = LittleFS.rename(kTemporaryPath, kPackagePath);
+  storage->remove(kPackagePath);
+  const bool renamed = storage->rename(kTemporaryPath, kPackagePath);
   bool committed = false;
   if (renamed) {
-    File hash_file = LittleFS.open(kHashPath, "w");
+    File hash_file = storage->open(kHashPath, "w");
     if (hash_file) {
       hash_file.print(sha256);
       hash_file.close();
@@ -387,8 +452,9 @@ bool sync(const String &host, uint16_t port, const String &sha256,
     }
   }
   xSemaphoreGive(storage_mutex);
-  Serial.printf("WALLPAPER_SYNC,ok=%d,size=%u\n",
-                committed ? 1 : 0, static_cast<unsigned>(size));
+  Serial.printf("WALLPAPER_SYNC,ok=%d,size=%u,storage=%s\n",
+                committed ? 1 : 0, static_cast<unsigned>(size),
+                using_sd ? "tf" : "flash");
   return committed;
 }
 

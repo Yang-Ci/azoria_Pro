@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process"
+import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { promisify } from "node:util"
 import type { LyricLine, LyricsProvider, MusicControlRequest, MusicControls, MusicSnapshot, MusicSource, MusicTrack } from "../shared/contracts"
@@ -18,6 +19,13 @@ const noControls: MusicControls = { play: false, pause: false, previous: false, 
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : ""
+}
+
+function displayText(value: string): string {
+  return value
+    .replace(/[\u00a0\u1680\u2000-\u200b\u202f\u205f\u3000\ufeff]/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .trim()
 }
 
 export function sourceName(sourceAppId: string): MusicTrack["source"] {
@@ -45,7 +53,7 @@ export function parseSyncedLyrics(raw: string): LyricLine[] {
   for (const row of raw.replace(/\r/g, "").split("\n")) {
     const timestamps = [...row.matchAll(/\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g)]
     if (!timestamps.length) continue
-    const content = row.replace(/\[[^\]]*\]/g, "").trim()
+    const content = displayText(row.replace(/\[[^\]]*\]/g, ""))
     if (!content) continue
     for (const match of timestamps) {
       const fraction = (match[3] ?? "0").padEnd(3, "0").slice(0, 3)
@@ -231,7 +239,7 @@ export class MusicManager {
   touchStatus(): Record<string, unknown> {
     const track = this.latestSnapshot.track
     const clean = (value: string, maxBytes: number) => {
-      const normalizedValue = value.replace(/[\\"|\r\n]/g, " ").trim()
+      const normalizedValue = displayText(value.replace(/[\\"|\r\n]/g, " "))
       let result = ""
       for (const character of normalizedValue) {
         if (Buffer.byteLength(result + character, "utf8") > maxBytes) break
@@ -261,6 +269,8 @@ export class MusicManager {
     const lyrics = this.latestSnapshot.lines
     return {
       musicAvailable: Boolean(track),
+      musicCanSeek: Boolean(track?.controls?.seek && track.durationMs > 0),
+      musicArtworkHash: this.touchArtwork().hash,
       musicTitle: clean(track?.title ?? "", 72),
       musicArtist: clean(track?.artist ?? "", 48),
       musicPlaying: track?.status === "playing",
@@ -271,7 +281,21 @@ export class MusicManager {
       musicLyricPrevious: clean(lyricIndex > 0 ? lyrics[lyricIndex - 1]?.text ?? "" : "", 108),
       musicLyricCurrent: clean(lyricIndex >= 0 ? lyrics[lyricIndex]?.text ?? "" : "", 108),
       musicLyricNext: clean(lyrics[lyricIndex + 1]?.text ?? "", 108),
+      musicLyricPrevious2: clean(lyricIndex >= 2 ? lyrics[lyricIndex - 2]?.text ?? "" : "", 108),
+      musicLyricPrevious3: clean(lyricIndex >= 3 ? lyrics[lyricIndex - 3]?.text ?? "" : "", 108),
+      musicLyricNext2: clean(lyrics[lyricIndex + 2]?.text ?? "", 108),
+      musicLyricNext3: clean(lyrics[lyricIndex + 3]?.text ?? "", 108),
     }
+  }
+
+  private touchArtworkCache = { url: "", hash: "" }
+
+  touchArtwork() {
+    const url = this.latestSnapshot.track?.artworkUrl ?? ""
+    if (url !== this.touchArtworkCache.url) {
+      this.touchArtworkCache = { url, hash: url ? createHash("sha256").update(url).digest("hex") : "" }
+    }
+    return this.touchArtworkCache
   }
 
   private async sidecar(request: Record<string, unknown>, maxBuffer = 256 * 1024): Promise<unknown> {

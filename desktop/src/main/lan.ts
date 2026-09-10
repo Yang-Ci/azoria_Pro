@@ -38,6 +38,36 @@ function isPrivateIpv4(value: string): boolean {
   )
 }
 
+function artworkAccent(bitmap: Buffer): number {
+  let red = 0
+  let green = 0
+  let blue = 0
+  let totalWeight = 0
+  for (let offset = 0; offset + 3 < bitmap.length; offset += 4) {
+    const alpha = bitmap[offset + 3]! / 255
+    const b = bitmap[offset]!
+    const g = bitmap[offset + 1]!
+    const r = bitmap[offset + 2]!
+    const brightness = Math.max(r, g, b)
+    if (alpha < 0.5 || brightness < 28) continue
+    const weight = alpha * (1 + (brightness - Math.min(r, g, b)) / 64)
+    red += r * weight
+    green += g * weight
+    blue += b * weight
+    totalWeight += weight
+  }
+  if (!totalWeight) return 0x168bff
+  let r = red / totalWeight
+  let g = green / totalWeight
+  let b = blue / totalWeight
+  const brightest = Math.max(r, g, b)
+  const lift = brightest < 150 ? Math.min(1.65, 150 / Math.max(1, brightest)) : 1
+  r = Math.min(235, Math.round(r * lift))
+  g = Math.min(235, Math.round(g * lift))
+  b = Math.min(235, Math.round(b * lift))
+  return (r << 16) | (g << 8) | b
+}
+
 function privateInterfaces(): PrivateInterface[] {
   const found: PrivateInterface[] = []
   for (const addresses of Object.values(networkInterfaces())) {
@@ -211,7 +241,13 @@ export class LanController {
     return Number.isInteger(value) && value >= 0 && value <= 100 ? value : undefined
   }
 
-  private rememberTouch(id: string, address: string, details?: { name?: string; firmware?: string; wallpaperHash?: string }): void {
+  private rememberTouch(id: string, address: string, details?: {
+    name?: string
+    firmware?: string
+    wallpaperHash?: string
+    wallpaperStorage?: LanDevice["wallpaperStorage"]
+    wallpaperLimit?: number
+  }): void {
     if (!/^[0-9A-F]{12}$/i.test(id) || !isPrivateIpv4(address)) return
     const existing = this.touchDevices.get(id)?.device
     const name = details?.name && /^azoria-touch-[a-z0-9-]{1,32}$/i.test(details.name)
@@ -223,8 +259,14 @@ export class LanController {
     const wallpaperHash = details?.wallpaperHash && /^[0-9a-f]{64}$/.test(details.wallpaperHash)
       ? details.wallpaperHash
       : existing?.wallpaperHash || ""
+    const wallpaperStorage = details?.wallpaperStorage ?? existing?.wallpaperStorage
+    const reportedWallpaperLimit = details?.wallpaperLimit
+    const wallpaperLimit = typeof reportedWallpaperLimit === "number" &&
+      Number.isInteger(reportedWallpaperLimit) && reportedWallpaperLimit > 0
+      ? reportedWallpaperLimit
+      : existing?.wallpaperLimit
     this.touchDevices.set(id, {
-      device: { id, name, address, firmware, paired: true, wallpaperHash },
+      device: { id, name, address, firmware, paired: true, wallpaperHash, wallpaperStorage, wallpaperLimit },
       seenAt: Date.now(),
     })
   }
@@ -372,6 +414,7 @@ export class LanController {
         wallpaperHash: wallpaper?.sha256 || "",
         wallpaperSize: wallpaper?.size || 0,
         wallpaperIdleMinutes: this.wallpaper?.settings().idleMinutes ?? 5,
+        ...this.music?.touchStatus(),
       }
     }
     const now = Date.now()
@@ -490,6 +533,25 @@ export class LanController {
   private async handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (!this.authorized(request)) return this.json(response, 401, { ok: false, error: "unauthorized" })
     try {
+      if (request.method === "GET" && request.url === "/v1/music/artwork") {
+        const artwork = this.music?.touchArtwork()
+        if (!artwork?.url.startsWith("data:image/")) return this.json(response, 404, { error: "artwork unavailable" })
+        const { nativeImage } = await import("electron")
+        const source = nativeImage.createFromDataURL(artwork.url)
+        if (source.isEmpty()) return this.json(response, 404, { error: "invalid artwork" })
+        const size = source.getSize()
+        const side = Math.min(size.width, size.height)
+        const bitmap = source.crop({ x: Math.floor((size.width - side) / 2), y: Math.floor((size.height - side) / 2), width: side, height: side })
+          .resize({ width: 64, height: 64, quality: "best" }).toBitmap()
+        const accent = artworkAccent(bitmap)
+        const pixels = Buffer.alloc(64 * 64 * 2)
+        for (let index = 0; index < 64 * 64; index++) {
+          const offset = index * 4
+          // NativeImage's bitmap uses premultiplied BGRA on our desktop platforms.
+          pixels.writeUInt16LE(((bitmap[offset + 2]! >> 3) << 11) | ((bitmap[offset + 1]! >> 2) << 5) | (bitmap[offset]! >> 3), index * 2)
+        }
+        return this.json(response, 200, { hash: artwork.hash, accent, pixels: pixels.toString("base64") })
+      }
       if (request.method === "GET" && request.url === "/v1/status") {
         // Touch needs a fast heartbeat and clock sync. DDC/CI reads are slow
         // and already run in the monitor's background queue; return its latest
@@ -516,10 +578,15 @@ export class LanController {
           : action === "cycle-mode"
             ? (state.musicSource === "netease" ? "cycle-play-mode" : "cycle-repeat")
             : action
-        if (!["play", "pause", "previous", "next", "cycle-play-mode", "cycle-repeat"].includes(requestAction)) {
+        if (!["play", "pause", "previous", "next", "cycle-play-mode", "cycle-repeat", "seek"].includes(requestAction)) {
           return this.json(response, 400, { ok: false, error: "unsupported music control" })
         }
-        await this.music.control({ action: requestAction } as MusicControlRequest)
+        if (requestAction === "seek" && (!state.musicCanSeek || typeof payload.positionMs !== "number" || !Number.isFinite(payload.positionMs) || payload.positionMs < 0)) {
+          return this.json(response, 400, { ok: false, error: "invalid or unsupported seek" })
+        }
+        await this.music.control(requestAction === "seek"
+          ? { action: "seek", positionMs: Math.min(payload.positionMs as number, Number(state.musicDurationMs)) }
+          : { action: requestAction } as MusicControlRequest)
         return this.json(response, 200, { accepted: true, ...this.music.touchStatus() })
       }
       if (request.method === "GET" && request.url === "/v1/wallpaper") {
@@ -542,13 +609,17 @@ export class LanController {
         const name = typeof payload.hostname === "string" ? payload.hostname : ""
         const firmware = typeof payload.firmware === "string" ? payload.firmware : ""
         const wallpaperHash = typeof payload.wallpaper_hash === "string" ? payload.wallpaper_hash : ""
+        const wallpaperStorage = ["tf", "flash", "unavailable"].includes(String(payload.wallpaper_storage))
+          ? payload.wallpaper_storage as LanDevice["wallpaperStorage"]
+          : undefined
+        const wallpaperLimit = typeof payload.wallpaper_limit === "number" ? payload.wallpaper_limit : undefined
         const address = typeof payload.address === "string" ? payload.address : ""
         if (!/^[0-9A-F]{12}$/i.test(id) || !/^azoria-touch-[a-z0-9-]{1,32}$/i.test(name) ||
             !firmware || firmware.length > 32 || address !== remote ||
             (wallpaperHash !== "" && !/^[0-9a-f]{64}$/.test(wallpaperHash))) {
           return this.json(response, 400, { ok: false, error: "invalid device registration" })
         }
-        this.rememberTouch(id, remote, { name, firmware, wallpaperHash })
+        this.rememberTouch(id, remote, { name, firmware, wallpaperHash, wallpaperStorage, wallpaperLimit })
         return this.json(response, 200, { ok: true })
       }
       return this.json(response, 404, { ok: false, error: "not found" })

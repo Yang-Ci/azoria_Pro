@@ -237,6 +237,7 @@ export default function App() {
     void connectBle(
       () => window.azoria.monitor.relayStatus(),
       (request, nonce, commandId) => window.azoria.monitor.relayControl(request, nonce, commandId),
+      (request) => window.azoria.music.control(request),
       () => { setBleName(""); setMessage("AZORIA Touch 蓝牙已断开") },
     ).then((name) => {
       setBleName(name)

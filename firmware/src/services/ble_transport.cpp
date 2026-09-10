@@ -486,7 +486,43 @@ bool decodeStatus(const String &wire, String &response) {
     response += ",\"wallpaperIdleMinutes\":" + field(wire, 13);
   }
   response += "}";
+  response.remove(response.length() - 1);
+  response += ",\"transport\":\"ble\"}";
   return true;
+}
+
+bool decodeMusicStatus(const String &wire, const String &page,
+                       String &response) {
+  if (field(wire, 3) != "M" || field(wire, 4) != page) return false;
+  if (page == "0" && fieldCount(wire) == 15) {
+    response =
+        "{\"musicAvailable\":" + String(field(wire, 5) == "1" ? "true" : "false") +
+        ",\"musicPlaying\":" + String(field(wire, 6) == "1" ? "true" : "false") +
+        ",\"musicCanSeek\":" + String(field(wire, 7) == "1" ? "true" : "false") +
+        ",\"musicPositionMs\":" + field(wire, 8) +
+        ",\"musicDurationMs\":" + field(wire, 9) +
+        ",\"musicMode\":\"" + field(wire, 10) + "\"" +
+        ",\"musicSource\":\"" + field(wire, 11) + "\"" +
+        ",\"musicTitle\":\"" + field(wire, 12) + "\"" +
+        ",\"musicArtist\":\"" + field(wire, 13) + "\"}";
+    return true;
+  }
+  if (page == "1" && fieldCount(wire) == 9) {
+    response =
+        "{\"musicLyricPrevious3\":\"" + field(wire, 5) + "\"" +
+        ",\"musicLyricPrevious2\":\"" + field(wire, 6) + "\"" +
+        ",\"musicLyricPrevious\":\"" + field(wire, 7) + "\"}";
+    return true;
+  }
+  if (page == "2" && fieldCount(wire) == 10) {
+    response =
+        "{\"musicLyricCurrent\":\"" + field(wire, 5) + "\"" +
+        ",\"musicLyricNext\":\"" + field(wire, 6) + "\"" +
+        ",\"musicLyricNext2\":\"" + field(wire, 7) + "\"" +
+        ",\"musicLyricNext3\":\"" + field(wire, 8) + "\"}";
+    return true;
+  }
+  return false;
 }
 
 bool decodeControl(const String &wire, const String &control,
@@ -508,6 +544,17 @@ bool decodeControl(const String &wire, const String &control,
       "{\"accepted\":" + String(field(wire, 4) == "1" ? "true" : "false") +
       ",\"confirmed\":" + String(field(wire, 5) == "1" ? "true" : "false") +
       ",\"value\":" + returned + "}";
+  return true;
+}
+
+bool decodeMusicControl(const String &wire, String &response) {
+  if (fieldCount(wire) == 6 && field(wire, 3) == "E") {
+    response = "{\"accepted\":false,\"error\":\"" + field(wire, 4) + "\"}";
+    return true;
+  }
+  if (fieldCount(wire) != 6 || field(wire, 3) != "U") return false;
+  response = "{\"accepted\":" +
+             String(field(wire, 4) == "1" ? "true" : "false") + "}";
   return true;
 }
 
@@ -613,6 +660,13 @@ bool bleTransportRequest(const char *method, const String &path,
     }
     return decodeStatus(wire, response);
   }
+  if (!strcmp(method, "GET") && path.startsWith("/v1/music/status/")) {
+    const String page = path.substring(path.length() - 1);
+    if (page != "0" && page != "1" && page != "2") return false;
+    unsigned_request += "|M|" + page;
+    if (!exchange(unsigned_request, request_id, wire, timeout_ms)) return false;
+    return decodeMusicStatus(wire, page, response);
+  }
   if (!strcmp(method, "POST") && path == "/v1/control" && body) {
     String control = jsonString(body, "control");
     if (control != "brightness" && control != "volume" &&
@@ -633,6 +687,18 @@ bool bleTransportRequest(const char *method, const String &path,
       return false;
     }
     return decodeControl(wire, control, response);
+  }
+  if (!strcmp(method, "POST") && path == "/v1/music/control" && body) {
+    const String action = jsonString(body, "action");
+    if (action != "previous" && action != "toggle-play" &&
+        action != "next" && action != "cycle-mode" && action != "seek") {
+      return false;
+    }
+    String position = jsonScalar(body, "positionMs");
+    if (position.isEmpty()) position = "0";
+    unsigned_request += "|U|" + action + "|" + position;
+    if (!exchange(unsigned_request, request_id, wire, timeout_ms)) return false;
+    return decodeMusicControl(wire, response);
   }
   return false;
 }

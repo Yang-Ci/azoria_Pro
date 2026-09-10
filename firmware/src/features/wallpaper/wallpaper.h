@@ -11,6 +11,8 @@ void show();
 void hide();
 bool active();
 String currentHash();
+const char *storageKind();
+size_t packageLimit();
 void refresh();
 bool sync(const String &host, uint16_t port, const String &sha256,
           size_t size);

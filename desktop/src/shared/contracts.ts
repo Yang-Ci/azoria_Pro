@@ -13,6 +13,22 @@ export interface MonitorStatus {
   wallpaperHash?: string
   wallpaperSize?: number
   wallpaperIdleMinutes?: WallpaperIdleMinutes
+  musicAvailable?: boolean
+  musicPlaying?: boolean
+  musicCanSeek?: boolean
+  musicTitle?: string
+  musicArtist?: string
+  musicMode?: string
+  musicSource?: MusicSource
+  musicPositionMs?: number
+  musicDurationMs?: number
+  musicLyricPrevious3?: string
+  musicLyricPrevious2?: string
+  musicLyricPrevious?: string
+  musicLyricCurrent?: string
+  musicLyricNext?: string
+  musicLyricNext2?: string
+  musicLyricNext3?: string
 }
 
 export interface ControlRequest {
@@ -97,6 +113,8 @@ export interface LanDevice {
   firmware: string
   paired: boolean
   wallpaperHash?: string
+  wallpaperStorage?: "tf" | "flash" | "unavailable"
+  wallpaperLimit?: number
 }
 
 export type WallpaperKind = "image" | "video"

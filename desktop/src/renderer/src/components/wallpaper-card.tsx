@@ -55,7 +55,13 @@ export function WallpaperCard({ devices, onMessage }: { devices: LanDevice[]; on
     setProcessing(true)
     onMessage(file.type.startsWith("video/") ? "正在生成 Touch 动态壁纸" : "正在处理 Touch 壁纸")
     try {
-      const input = await createWallpaperUpload(file)
+      const reportedLimits = devices
+        .map((device) => device.wallpaperLimit)
+        .filter((limit): limit is number => typeof limit === "number" && Number.isInteger(limit) && limit > 0)
+      const packageLimit = reportedLimits.length === devices.length && reportedLimits.length > 0
+        ? Math.min(...reportedLimits) - 64 * 1024
+        : 3_150_000
+      const input = await createWallpaperUpload(file, packageLimit)
       const info = await window.azoria.wallpaper.upload(input)
       setWallpaper(info)
       onMessage(devices.length > 0 ? "壁纸已保存，Touch 正在自动同步" : "壁纸已保存，Touch 联机后会自动同步")
@@ -67,6 +73,7 @@ export function WallpaperCard({ devices, onMessage }: { devices: LanDevice[]; on
     }
   }
   let syncedCount = 0
+  const tfCount = devices.filter((device) => device.wallpaperStorage === "tf").length
   if (wallpaper) {
     for (const device of devices) if (device.wallpaperHash === wallpaper.sha256) syncedCount++
   }
@@ -105,12 +112,18 @@ export function WallpaperCard({ devices, onMessage }: { devices: LanDevice[]; on
           <Badge variant="outline" className="shrink-0 border-white/10">{devices.length > 0 ? `${syncedCount}/${devices.length} 已同步` : "等待设备"}</Badge>
         </div>
       </div> : <div className="rounded-lg border border-dashed border-white/10 p-8 text-center text-sm text-zinc-500">尚未设置壁纸</div>}
+      {devices.length > 0 && <div className="flex items-center justify-between text-xs text-zinc-500">
+        <span>Touch 存储</span>
+        <Badge variant="outline" className="border-white/10">
+          {tfCount > 0 ? `TF 卡已就绪${devices.length > 1 ? ` ${tfCount}/${devices.length}` : ""}` : devices.every((device) => device.wallpaperStorage === "flash") ? "板载存储" : "等待设备上报"}
+        </Badge>
+      </div>}
       <input ref={inputRef} type="file" accept="image/*,video/*" className="sr-only" aria-label="选择图片或视频壁纸" onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} />
       <div className="grid grid-cols-2 gap-2">
         <Button variant="outline" disabled={processing} onClick={selectFile}><Upload />{processing ? "正在处理" : wallpaper ? "更换壁纸" : "上传壁纸"}</Button>
         <Button variant="outline" disabled={processing || !wallpaper} onClick={() => void remove()}><Trash2 />移除</Button>
       </div>
-      <p className="text-xs leading-5 text-zinc-500">第一版使用板载存储：动画最长约 12 秒、总大小不超过 3 MB；后续接入 TF 卡可扩展容量。</p>
+      <p className="text-xs leading-5 text-zinc-500">已插入 TF 卡时优先保存到卡中：动画最长约 20 秒、最多 120 帧、总大小不超过 24 MB；未插卡时自动使用板载存储，壁纸需小于 3 MB。</p>
     </CardContent>
   </Card>
 }

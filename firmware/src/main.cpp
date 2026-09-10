@@ -297,17 +297,21 @@ void setup() {
 
   saved_config = config;
   have_saved_config = !saved_config.ssid.isEmpty();
+  // Reserve Wi-Fi's latency-sensitive internal buffers before mounting the TF
+  // card or starting BLE. SDSPI and FATFS can then use the remaining memory
+  // without bringing back the low-memory sync failures fixed earlier.
+  if (have_saved_config) {
+    beginWiFi(saved_config);
+  }
   Wallpaper::begin();
   DisplayControl::showScreen();
-  // Let the Wi-Fi driver reserve its latency-sensitive internal DMA buffers
-  // before NimBLE starts. The BLE host is configured to use PSRAM for dynamic
-  // allocations, so both radios remain available without starving RGB DMA.
+  // The BLE host is configured to use PSRAM for dynamic allocations, so both
+  // radios remain available without starving RGB DMA.
   DisplayControl::startRemote(saved_config);
   remote_started = true;
   if (!have_saved_config) {
     Serial.println("BLE-only mode: waiting for Desktop connection");
   } else {
-    beginWiFi(saved_config);
     if (waitForWiFi()) {
       logMemory("network-ready");
     } else {

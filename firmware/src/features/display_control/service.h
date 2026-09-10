@@ -20,6 +20,10 @@ struct RemoteState {
   bool input_pending = false;
   bool music_available = false;
   bool music_playing = false;
+  bool music_can_seek = false;
+  bool music_has_artwork = false;
+  uint32_t music_artwork_revision = 0;
+  uint32_t music_artwork_accent = 0x168BFF;
   char music_title[96] = "No music";
   char music_artist[64] = "";
   char music_mode[12] = "unknown";
@@ -29,6 +33,7 @@ struct RemoteState {
   char music_lyric_previous[128] = "";
   char music_lyric_current[128] = "";
   char music_lyric_next[128] = "";
+  char music_lyric_extra[4][128]{};
   uint32_t revision = 0;
 };
 
@@ -38,6 +43,7 @@ RemoteState getRemoteState();
 bool queueNumericControl(const char *control, int value, bool final_value = true);
 bool queueBooleanControl(const char *control, bool value);
 bool queueStringControl(const char *control, const char *value);
-bool queueMusicControl(const char *action);
+bool queueMusicControl(const char *action, uint32_t position_ms = 0);
+void copyMusicArtwork(uint8_t *pixels, size_t size);
 
 }  // namespace DisplayControl
