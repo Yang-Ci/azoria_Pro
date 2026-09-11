@@ -35,12 +35,16 @@ Desktop 返回缓存结果以避免重复写入。Touch 不主动扫描局域网
 亮度改为控制笔记本内屏，音量和静音继续控制系统默认音频设备；选择外接输入源会切回
 外接显示器并发送对应的 DDC/CI 输入切换命令。
 
-壁纸由 Desktop 转换为 `AZW1` JPEG 帧包，经 TCP `8732` 下载到 LittleFS。固件会校验
+壁纸由 Desktop 转换为 `AZW1` JPEG 帧包，经 TCP `8732` 下载到存储设备。固件会校验
 包大小、帧结构和 SHA-256 后再启用。点击主界面 AZORIA 标志下方的电脑图标可立即进入；
 Desktop 可将无操作自动进入时间设为 1、5、10、30 分钟或关闭，设置会同步并保存在
-Touch 上；触摸壁纸返回控制界面。第一版使用板载 `spiffs`
-数据分区（LittleFS 文件系统），存储层保持独立，便于后续切换到 TF 卡。
+Touch 上；触摸壁纸返回控制界面。插入 TF 卡时优先使用 TF 卡，未插卡时回退到板载
+`spiffs` 数据分区（LittleFS 文件系统）。
 局域网协议不做身份认证，应仅在可信局域网中使用。
+
+音乐界面字体由 `DroidSansFallbackFull` 中文字体、Noto Sans 拉丁扩展字体和 LVGL
+Montserrat 后备字体组成。`azoria_font_latin_16.c` 与 `azoria_font_latin_28.c` 覆盖
+`U+00A0–U+024F`，用于罗马尼亚语等含重音字符的歌词；生成参数记录在各字体源文件头部。
 
 当前硬件验证：VIEWE UEDX48480040E-WB-A V1.3、480×480 GC9503、FT6336U、16MB
 Flash 和 8MB PSRAM。

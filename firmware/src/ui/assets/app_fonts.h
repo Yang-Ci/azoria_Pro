@@ -4,6 +4,8 @@
 
 extern const lv_font_t azoria_font_zh_16;
 extern const lv_font_t azoria_font_zh_28;
+extern const lv_font_t azoria_font_latin_16;
+extern const lv_font_t azoria_font_latin_28;
 extern const lv_font_t azoria_font_din_48;
 extern const lv_font_t azoria_font_din_condensed_48;
 extern const lv_font_t azoria_font_din_condensed_16;

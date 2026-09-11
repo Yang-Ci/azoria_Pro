@@ -11,7 +11,7 @@ compiled.paths = module.paths
 compiled._compile(transformSync(readFileSync(filename, 'utf8'), {
   loader: 'ts', format: 'cjs', target: 'node20',
 }).code, filename)
-const { lyricProviderOrder, matchScore, neteaseSongId, parseSyncedLyrics, selectMediaSession, sourceName } = compiled.exports
+const { artworkCacheKey, lyricProviderOrder, matchScore, neteaseSongId, parseSyncedLyrics, selectMediaSession, sourceName } = compiled.exports
 const { MusicManager } = compiled.exports
 
 test('lets NetEase cycle once from its own live player mode', async () => {
@@ -120,6 +120,18 @@ test('recognizes NetEase Cloud Music and QQ Music sessions', () => {
   assert.equal(sourceName('QQMusic.exe'), 'qqmusic')
   assert.equal(sourceName('cloudmusic.exe'), 'netease')
   assert.equal(sourceName('chrome.exe'), 'other')
+})
+
+test('does not reuse browser artwork when MPRIS keeps the same track ID', () => {
+  const browserTrackId = '/org/chromium/MediaPlayer2/TrackList/TrackA'
+  assert.notEqual(
+    artworkCacheKey(browserTrackId, 'other\0first song\0first artist'),
+    artworkCacheKey(browserTrackId, 'other\0second song\0second artist'),
+  )
+  assert.equal(
+    artworkCacheKey(browserTrackId, 'other\0first song\0first artist'),
+    artworkCacheKey(browserTrackId, 'other\0first song\0first artist'),
+  )
 })
 
 test('tries the currently playing source catalog first', () => {

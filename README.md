@@ -5,7 +5,7 @@
 **A local-first control center for modern desktop displays.**
 
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-2f80ed.svg)](LICENSE)
-[![CI](https://github.com/ayedaren/azoria/actions/workflows/ci.yml/badge.svg)](https://github.com/ayedaren/azoria/actions/workflows/ci.yml)
+[![CI](https://github.com/Yang-Ci/azoria_Pro/actions/workflows/ci.yml/badge.svg)](https://github.com/Yang-Ci/azoria_Pro/actions/workflows/ci.yml)
 [![Electron](https://img.shields.io/badge/Desktop-Electron-47848f.svg)](https://www.electronjs.org/)
 [![ESP32-S3](https://img.shields.io/badge/Touch-ESP32--S3-e7352c.svg)](https://www.espressif.com/en/products/socs/esp32-s3)
 
@@ -33,6 +33,13 @@ The optional Touch controller puts everyday display actions within reach while
 the Desktop app handles discovery, coordination, native DDC/CI access, and
 firmware management in the background.
 
+When a TF card is available, Touch stores wallpaper packages on the card and
+accepts converted videos up to about 20 seconds, 120 frames, and 24 MB. Without
+a card it falls back to the onboard data partition and a package limit near
+3 MB. For the enclosure, print `hardware/enclosure/azoria-touch-all-v3.stl` to
+produce the front, rear, and both stand designs on one plate without the fit
+test coupon.
+
 ## Why YangCi
 
 - **One control surface** for brightness, volume, mute, and input switching.
@@ -40,6 +47,8 @@ firmware management in the background.
 - **Multi-monitor targeting** across enumerated DDC/CI displays.
 - **Native hardware access** through a Rust sidecar for macOS, Windows, and Linux.
 - **Optional physical controller** with BLE and private-LAN connectivity.
+- **TF-card wallpapers** with still images and up to 20 seconds of converted video.
+- **Synchronized music view** with lyrics, playback controls, progress, and artwork from desktop or browser players.
 - **Resilient coordination** when multiple Desktop instances can reach the same display.
 - **Safe firmware workflow** with image type, version, device identity, size, and SHA-256 checks.
 - **Declarative monitor profiles** with validated, non-executable configuration.

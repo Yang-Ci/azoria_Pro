@@ -1,5 +1,7 @@
-azoria-display-control (0.1.0) unstable; urgency=medium
+azoria-display-control (1.0.0) unstable; urgency=medium
 
-  * Initial Linux package for YangCi.
+  * First stable YangCi release with AZORIA Touch support.
+  * Add TF-card wallpapers, dynamic video wallpapers, and synchronized lyrics.
+  * Add Linux browser artwork support through MPRIS.
 
- -- Yang-Ci <Yang-Ci@users.noreply.github.com>  Sun, 06 Sep 2026 18:00:00 +0800
+ -- Yang-Ci <Yang-Ci@users.noreply.github.com>  Fri, 11 Sep 2026 10:30:00 +0800

@@ -1,6 +1,6 @@
 [package]
 name = "azoria-ddc-sidecar"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
@@ -20,6 +20,7 @@ wmi = { version = "0.18.4", default-features = false }
 windows = { version = "0.62.2", features = ["Foundation", "Media", "Media_Control", "Storage_Streams", "Win32_Media_Audio_Endpoints", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Threading", "Win32_System_Variant", "Win32_UI_WindowsAndMessaging", "Win32_UI_Accessibility"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+base64 = "0.22.1"
 ddc-hi = { version = "0.4.1", default-features = false, features = ["ddc-i2c"] }
 
 [profile.release]

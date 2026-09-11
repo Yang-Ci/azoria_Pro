@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 16 px
  * Bpp: 2
- * Opts: --size 16 --bpp 2 --format lvgl --font /usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf --range 0x3000-0x303F,0x4E00-0x9FFF,0xFF00-0xFFEF --no-kerning --lv-include lvgl.h --lv-font-name azoria_font_zh_16 --lv-fallback lv_font_montserrat_14 -o firmware/src/ui/assets/azoria_font_zh_16.c
+ * Opts: --size 16 --bpp 2 --format lvgl --font /usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf --range 0x3000-0x303F,0x4E00-0x9FFF,0xFF00-0xFFEF --no-kerning --lv-include lvgl.h --lv-font-name azoria_font_zh_16 --lv-fallback azoria_font_latin_16 -o firmware/src/ui/assets/azoria_font_zh_16.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
@@ -211007,7 +211007,7 @@ static lv_font_fmt_txt_dsc_t font_dsc = {
 #endif
 };
 
-extern const lv_font_t lv_font_montserrat_14;
+extern const lv_font_t azoria_font_latin_16;
 
 
 /*-----------------
@@ -211033,7 +211033,7 @@ lv_font_t azoria_font_zh_16 = {
 #endif
     .dsc = &font_dsc,          /*The custom font data. Will be accessed by `get_glyph_bitmap/dsc` */
 #if LV_VERSION_CHECK(8, 2, 0) || LVGL_VERSION_MAJOR >= 9
-    .fallback = &lv_font_montserrat_14,
+    .fallback = &azoria_font_latin_16,
 #endif
     .user_data = NULL,
 };

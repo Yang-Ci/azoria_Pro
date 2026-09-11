@@ -1,6 +1,83 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
+use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const MAX_ARTWORK_BYTES: u64 = 6 * 1024 * 1024;
+
+fn hex(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn file_url_path(url: &str) -> Option<PathBuf> {
+    let encoded = url.strip_prefix("file://")?;
+    if !encoded.starts_with('/') {
+        return None;
+    }
+    let input = encoded.as_bytes();
+    let mut decoded = Vec::with_capacity(input.len());
+    let mut index = 0;
+    while index < input.len() {
+        if input[index] == b'%' {
+            let high = hex(*input.get(index + 1)?)?;
+            let low = hex(*input.get(index + 2)?)?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(input[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok().map(PathBuf::from)
+}
+
+fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if bytes.starts_with(b"BM") {
+        Some("image/bmp")
+    } else {
+        None
+    }
+}
+
+fn artwork_data_url(url: &str, include_artwork: bool) -> String {
+    if !include_artwork {
+        return String::new();
+    }
+    if url.starts_with("data:image/") && url.len() <= MAX_ARTWORK_BYTES as usize * 2 {
+        return url.to_string();
+    }
+    let Some(path) = file_url_path(url) else {
+        return String::new();
+    };
+    let Ok(metadata) = fs::metadata(&path) else {
+        return String::new();
+    };
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_ARTWORK_BYTES {
+        return String::new();
+    }
+    let Ok(bytes) = fs::read(path) else {
+        return String::new();
+    };
+    let Some(mime) = image_mime(&bytes) else {
+        return String::new();
+    };
+    format!("data:{mime};base64,{}", STANDARD.encode(bytes))
+}
 
 fn number(value: &str) -> Option<i64> {
     value
@@ -17,7 +94,7 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
-pub fn get(_include_artwork: bool) -> Result<Value, String> {
+pub fn get(include_artwork: bool) -> Result<Value, String> {
     let format = [
         "{{playerName}}",
         "{{status}}",
@@ -66,7 +143,7 @@ pub fn get(_include_artwork: bool) -> Result<Value, String> {
                 "title": title,
                 "artist": columns.get(5).unwrap_or(&"").trim(),
                 "album": columns.get(6).unwrap_or(&"").trim(),
-                "artworkUrl": columns.get(7).unwrap_or(&"").trim(),
+                "artworkUrl": artwork_data_url(columns.get(7).unwrap_or(&"").trim(), include_artwork),
                 "trackId": columns.get(8).unwrap_or(&"").trim(),
                 "sourceAppId": columns.first().unwrap_or(&"").trim(),
                 "status": status,
@@ -94,6 +171,28 @@ pub fn get(_include_artwork: bool) -> Result<Value, String> {
         .collect();
     sessions.sort_by_key(|session| if session["status"] == "playing" { 0 } else { 1 });
     Ok(json!({ "sessions": sessions, "warnings": [] }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_percent_encoded_file_urls() {
+        assert_eq!(
+            file_url_path("file:///tmp/cover%20art.png"),
+            Some(PathBuf::from("/tmp/cover art.png"))
+        );
+        assert_eq!(file_url_path("https://example.com/cover.png"), None);
+        assert_eq!(file_url_path("file://remote/cover.png"), None);
+    }
+
+    #[test]
+    fn recognizes_supported_image_signatures() {
+        assert_eq!(image_mime(b"\x89PNG\r\n\x1a\nrest"), Some("image/png"));
+        assert_eq!(image_mime(b"\xff\xd8\xffrest"), Some("image/jpeg"));
+        assert_eq!(image_mime(b"not an image"), None);
+    }
 }
 
 pub fn control(

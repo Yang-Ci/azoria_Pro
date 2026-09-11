@@ -6,7 +6,7 @@ import type { LyricLine, LyricsProvider, MusicControlRequest, MusicControls, Mus
 
 const run = promisify(execFile)
 const requestHeaders = {
-  "User-Agent": "YangCi/0.2.0 (https://github.com/Yang-Ci/azoria_Pro)",
+  "User-Agent": "YangCi/1.0.0 (https://github.com/Yang-Ci/azoria_Pro)",
   Referer: "https://music.163.com/",
 }
 
@@ -67,6 +67,12 @@ export function parseSyncedLyrics(raw: string): LyricLine[] {
 
 function normalized(value: string): string {
   return value.toLowerCase().replace(/[\s·・,，.。!！?？'"“”‘’\-_/]/g, "")
+}
+
+export function artworkCacheKey(trackId: string, identityKey: string): string {
+  // Chromium can reuse one MPRIS track ID for the lifetime of a browser tab.
+  // Keep title and artist in the key so a browser track change fetches new art.
+  return `${trackId || "unknown"}\u0000${identityKey}`
 }
 
 function coreTitle(value: string): string {
@@ -329,7 +335,7 @@ export class MusicManager {
     const sourceAppId = text(value.sourceAppId)
     const key = `${sourceName(sourceAppId)}\u0000${normalized(title)}\u0000${normalized(text(value.artist))}`
     const trackId = text(value.trackId)
-    const artworkKey = trackId || key
+    const artworkKey = artworkCacheKey(trackId, key)
     let artwork = this.artwork.get(artworkKey)
     if (!artwork || (!artwork.url && Date.now() - artwork.checkedAt > 30_000)) {
       try {
