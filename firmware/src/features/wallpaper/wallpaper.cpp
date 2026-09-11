@@ -64,7 +64,8 @@ uint16_t frame_index = 0;
 bool is_active = false;
 bool filesystem_ready = false;
 bool using_sd = false;
-TaskHandle_t storage_task_handle = nullptr;
+volatile bool sd_command_trace = false;
+uint32_t sd_command_trace_sample = 0;
 
 size_t maxPackageSize() {
   return using_sd ? kSdMaxPackageSize : kFlashMaxPackageSize;
@@ -365,6 +366,21 @@ bool initializeSdSpiBus() {
   return true;
 }
 
+esp_err_t traceSdCommand(int slot, sdmmc_command_t *cmd) {
+  const esp_err_t ret = sdspi_host_do_transaction(slot, cmd);
+  if (!sd_command_trace) return ret;
+
+  const uint32_t opcode = cmd->opcode;
+  const bool initialization_poll = opcode == 55 || opcode == 41;
+  const bool sampled = (sd_command_trace_sample++ % 100) == 0;
+  if (!initialization_poll || ret != ESP_OK || sampled) {
+    Serial.printf("TF CMD%lu: err=0x%x rsp=0x%08lx\n",
+                  static_cast<unsigned long>(opcode), ret,
+                  static_cast<unsigned long>(cmd->response[0]));
+  }
+  return ret;
+}
+
 bool releaseSdSpiBus() {
   if (!sd_spi_bus_ready) return true;
   const esp_err_t ret = spi_bus_free(SPI2_HOST);
@@ -378,6 +394,7 @@ bool mountSdAtFrequency(uint32_t frequency) {
   sdmmc_host_t host = SDSPI_HOST_DEFAULT();
   host.slot = SPI2_HOST;
   host.max_freq_khz = frequency / 1000;
+  host.do_transaction = &traceSdCommand;
 
   sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
   slot_config.host_id = SPI2_HOST;
@@ -395,8 +412,11 @@ bool mountSdAtFrequency(uint32_t frequency) {
   Serial.printf("TF mount attempt: %lu Hz\n",
                 static_cast<unsigned long>(frequency));
   sdmmc_card_t *card = nullptr;
+  sd_command_trace_sample = 0;
+  sd_command_trace = true;
   const esp_err_t ret = esp_vfs_fat_sdspi_mount(
       kSdMountPoint, &host, &slot_config, &mount_config, &card);
+  sd_command_trace = false;
   if (ret != ESP_OK || card == nullptr) {
     Serial.printf("TF mount failed: %s\n", esp_err_to_name(ret));
     if (card != nullptr) esp_vfs_fat_sdcard_unmount(kSdMountPoint, card);
@@ -475,16 +495,6 @@ bool tryMountSd() {
   return false;
 }
 
-void storagePollTask(void *) {
-  for (;;) {
-    delay(2000);
-    if (tryMountSd()) {
-      storage_task_handle = nullptr;
-      vTaskDelete(nullptr);
-    }
-  }
-}
-
 }  // namespace
 
 bool begin() {
@@ -502,11 +512,7 @@ bool begin() {
     storage = &LittleFS;
     Serial.printf("Wallpaper storage: LittleFS, size=%u KB\n",
                   static_cast<unsigned>(LittleFS.totalBytes() / 1024));
-    if (xTaskCreatePinnedToCore(storagePollTask, "tf-storage", 4096, nullptr,
-                                1, &storage_task_handle, 0) != pdPASS) {
-      storage_task_handle = nullptr;
-      Serial.println("TF hot-plug monitor unavailable");
-    }
+    Serial.println("TF card not detected; power-cycle with the card inserted");
   }
   filesystem_ready = true;
   File hash_file = storage->open(kHashPath, "r");

@@ -93,7 +93,7 @@ bool beginVieweFT6336U() {
 
 namespace Board {
 
-bool begin() {
+bool beginDisplay() {
   hardware = new (std::nothrow) esp_panel::board::Board();
   if (!hardware) {
     Serial.println("VIEWE board allocation failed");
@@ -130,12 +130,7 @@ bool begin() {
     Serial.println("VIEWE board begin failed");
     return false;
   }
-  if (!beginVieweFT6336U()) {
-    Serial.println("VIEWE FT6336U settings failed");
-    return false;
-  }
-
-  setBacklight(220);
+  setBacklight(0);
   Serial.printf("RGB profile: %d Hz, bounce %d\n",
                 AZORIA_RGB_CLOCK_HZ, AZORIA_RGB_BOUNCE_BUFFER_SIZE);
   Serial.printf(
@@ -167,8 +162,23 @@ bool begin() {
       0
 #endif
   );
+  Serial.println("VIEWE display ready");
+  return true;
+}
+
+bool beginTouch() {
+  if (!beginVieweFT6336U()) {
+    Serial.println("VIEWE FT6336U settings failed");
+    return false;
+  }
+
+  setBacklight(220);
   Serial.println("VIEWE UEDX48480040E-WB-A ready");
   return true;
+}
+
+bool begin() {
+  return beginDisplay() && beginTouch();
 }
 
 bool readTouch(uint16_t &x, uint16_t &y) {

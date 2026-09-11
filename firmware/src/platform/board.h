@@ -29,6 +29,8 @@ struct TouchSnapshot {
   int count;
 };
 
+bool beginDisplay();
+bool beginTouch();
 bool begin();
 // Returns the number of valid points, 0 for a successful no-touch read, and
 // -1 for an I2C/protocol/argument error.

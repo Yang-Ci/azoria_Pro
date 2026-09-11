@@ -282,20 +282,21 @@ void setup() {
   delay(300);
   Serial.println("\nAzoria Display Controller");
 
-  if (!Board::begin()) {
+  if (!Board::beginDisplay()) {
     Serial.println("Fatal display initialization error");
     return;
   }
-  // Match the known-working VIEWE sequence: mount the TF card immediately
-  // after panel initialization, with the backlight off and before other tasks.
+  // Match the official VIEWE sequence: mount the TF card after LCD
+  // initialization, but before LVGL and the touch controller take the bus.
   Board::setBacklight(0);
-  // GPIO47 was just released from the LCD 3-wire bus. VIEWE leaves the same
-  // settling window before SDSPI claims the pin as TF-card CS.
   delay(150);
   Wallpaper::begin();
-  Board::setBacklight(220);
   if (!initLvgl()) {
     Serial.println("Fatal display initialization error");
+    return;
+  }
+  if (!Board::beginTouch()) {
+    Serial.println("Fatal touch initialization error");
     return;
   }
   logMemory("display-ready");
