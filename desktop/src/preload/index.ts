@@ -42,6 +42,10 @@ const api: DesktopApi = {
     upload: (input) => ipcRenderer.invoke("wallpaper:upload", input),
     remove: () => ipcRenderer.invoke("wallpaper:remove"),
   },
+  touchSleep: {
+    settings: () => ipcRenderer.invoke("touch-sleep:settings"),
+    update: (input) => ipcRenderer.invoke("touch-sleep:update", input),
+  },
   security: {
     sign: (message: string) => ipcRenderer.invoke("security:sign", message),
   },

@@ -60,6 +60,7 @@ bool controls_enabled = false;
 int current_backlight_percent = 86;
 uint32_t last_interaction_at = 0;
 bool wallpaper_exit_requested = false;
+bool touch_sleep_applied = false;
 lv_obj_t *music_view = nullptr;
 lv_obj_t *music_title = nullptr;
 lv_obj_t *music_artist = nullptr;
@@ -166,6 +167,32 @@ void applyBacklight(int value) {
   current_backlight_percent = constrain(value, kMinBacklightPercent, 100);
   const int scaled = (current_backlight_percent * 255 + 50) / 100;
   Board::setBacklight(static_cast<uint8_t>(scaled));
+}
+
+void applyTouchSleep(bool active) {
+  if (touch_sleep_applied == active) return;
+  touch_sleep_applied = active;
+  if (active) Board::setBacklight(0);
+  else applyBacklight(current_backlight_percent);
+}
+
+bool touchSleepActive(const RemoteState &state) {
+  if (!state.touch_sleep_enabled ||
+      state.touch_sleep_start_minutes == state.touch_sleep_end_minutes) {
+    return false;
+  }
+  time_t now = time(nullptr);
+  struct tm local_time;
+  localtime_r(&now, &local_time);
+  if (local_time.tm_year < 120) return state.touch_sleep_active;
+  const uint16_t current_minutes =
+      static_cast<uint16_t>(local_time.tm_hour * 60 + local_time.tm_min);
+  if (state.touch_sleep_start_minutes < state.touch_sleep_end_minutes) {
+    return current_minutes >= state.touch_sleep_start_minutes &&
+           current_minutes < state.touch_sleep_end_minutes;
+  }
+  return current_minutes >= state.touch_sleep_start_minutes ||
+         current_minutes < state.touch_sleep_end_minutes;
 }
 
 void disableScrolling(lv_obj_t *object) {
@@ -676,17 +703,16 @@ void showImmersiveLyrics(lv_event_t *) {
 }
 
 lv_obj_t *musicButton(lv_obj_t *parent, int x, const char *text,
-                      const char *action, lv_obj_t **button_label = nullptr,
-                      bool accent = false) {
+                      const char *action, lv_obj_t **button_label = nullptr) {
   lv_obj_t *button = lv_btn_create(parent);
   lv_obj_set_pos(button, x, 370);
   lv_obj_set_size(button, 92, 92);
-  lv_obj_set_style_bg_color(button, color(accent ? 0x0A1A2E : 0x111113), 0);
+  lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_bg_color(button, color(0x0A1A2E), LV_STATE_PRESSED);
+  lv_obj_set_style_bg_opa(button, LV_OPA_COVER, LV_STATE_PRESSED);
   lv_obj_set_style_shadow_width(button, 0, 0);
   lv_obj_set_style_radius(button, 16, 0);
-  lv_obj_set_style_border_width(button, 1, 0);
-  lv_obj_set_style_border_color(button,
-                                color(accent ? 0x168BFF : 0x2A2A2E), 0);
+  lv_obj_set_style_border_width(button, 0, 0);
   lv_obj_set_style_pad_all(button, 0, 0);
   disableScrolling(button);
   lv_obj_add_event_cb(button, musicControlClicked, LV_EVENT_CLICKED,
@@ -695,8 +721,7 @@ lv_obj_t *musicButton(lv_obj_t *parent, int x, const char *text,
   lv_obj_set_width(caption, 92);
   lv_obj_set_style_text_align(caption, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_line_space(caption, 8, 0);
-  lv_obj_set_style_text_color(caption,
-                              color(accent ? 0x168BFF : 0xF8FAFC), 0);
+  lv_obj_set_style_text_color(caption, color(0xF8FAFC), 0);
   lv_obj_center(caption);
   if (button_label) *button_label = caption;
   return button;
@@ -833,7 +858,7 @@ void createMusicView(lv_obj_t *parent) {
                                  LV_SYMBOL_PREV "\n上一首", "previous");
   music_buttons[1] = musicButton(music_view, 142,
                                  LV_SYMBOL_PLAY "\n播放", "toggle-play",
-                                 &music_play_label, true);
+                                 &music_play_label);
   music_buttons[2] = musicButton(music_view, 246,
                                  LV_SYMBOL_NEXT "\n下一首", "next");
   music_buttons[3] = musicButton(music_view, 350,
@@ -1217,10 +1242,14 @@ void showScreen() {
   setControlsEnabled(false);
   last_interaction_at = millis();
   wallpaper_exit_requested = false;
+  touch_sleep_applied = false;
 }
 
 void refresh() {
   if (!controls || !brightness_slider) return;
+  RemoteState state = getRemoteState();
+  applyTouchSleep(touchSleepActive(state));
+  if (touch_sleep_applied) return;
   if (wallpaper_exit_requested) {
     wallpaper_exit_requested = false;
     Wallpaper::hide();
@@ -1241,7 +1270,6 @@ void refresh() {
     updateClock();
     next_clock_update = millis() + 1000;
   }
-  RemoteState state = getRemoteState();
   bool brightness_needs_reconcile =
       !brightness_dragging && !state.brightness_pending &&
       lv_slider_get_value(brightness_slider) != state.brightness;
@@ -1388,8 +1416,8 @@ void refresh() {
   }
   for (lv_obj_t *button : music_buttons) {
     if (!button) continue;
-    if (state.music_available) lv_obj_clear_state(button, LV_STATE_DISABLED);
-    else lv_obj_add_state(button, LV_STATE_DISABLED);
+    if (state.music_available) lv_obj_clear_flag(button, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(button, LV_OBJ_FLAG_HIDDEN);
   }
 
   const char *message = localizedMessage(state.message);
@@ -1412,6 +1440,10 @@ bool takeFullRedrawRequest() {
 void noteInteraction() {
   last_interaction_at = millis();
   if (Wallpaper::active()) wallpaper_exit_requested = true;
+}
+
+bool screenSleeping() {
+  return touch_sleep_applied;
 }
 
 void setWallpaperIdleMinutes(uint16_t minutes) {

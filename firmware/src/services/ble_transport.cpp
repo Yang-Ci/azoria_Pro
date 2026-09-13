@@ -468,7 +468,8 @@ bool exchange(const String &unsigned_request, uint32_t request_id,
 
 bool decodeStatus(const String &wire, String &response) {
   const int count = fieldCount(wire);
-  if ((count != 12 && count != 14 && count != 15) ||
+  if ((count != 12 && count != 14 && count != 15 && count != 16 &&
+       count != 19) ||
       field(wire, 3) != "S") return false;
   response =
       "{\"brightness\":" + field(wire, 4) +
@@ -478,12 +479,24 @@ bool decodeStatus(const String &wire, String &response) {
       ",\"available\":" + (field(wire, 8) == "1" ? "true" : "false") +
       ",\"unixTime\":" + field(wire, 9) +
       ",\"timezoneOffsetMinutes\":" + field(wire, 10);
-  if (count == 14 || count == 15) {
+  if (count >= 14) {
     response += ",\"wallpaperHash\":\"" + field(wire, 11) +
                 "\",\"wallpaperSize\":" + field(wire, 12);
   }
-  if (count == 15) {
+  if (count >= 15) {
     response += ",\"wallpaperIdleMinutes\":" + field(wire, 13);
+  }
+  if (count == 16) {
+    response += ",\"touchSleepActive\":" +
+                String(field(wire, 14) == "1" ? "true" : "false");
+  }
+  if (count == 19) {
+    response += ",\"touchSleepEnabled\":" +
+                String(field(wire, 14) == "1" ? "true" : "false") +
+                ",\"touchSleepStartMinutes\":" + field(wire, 15) +
+                ",\"touchSleepEndMinutes\":" + field(wire, 16) +
+                ",\"touchSleepActive\":" +
+                String(field(wire, 17) == "1" ? "true" : "false");
   }
   response += "}";
   response.remove(response.length() - 1);

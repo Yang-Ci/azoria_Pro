@@ -123,7 +123,7 @@ export function WallpaperCard({ devices, onMessage }: { devices: LanDevice[]; on
         <Button variant="outline" disabled={processing} onClick={selectFile}><Upload />{processing ? "正在处理" : wallpaper ? "更换壁纸" : "上传壁纸"}</Button>
         <Button variant="outline" disabled={processing || !wallpaper} onClick={() => void remove()}><Trash2 />移除</Button>
       </div>
-      <p className="text-xs leading-5 text-zinc-500">已插入 TF 卡时优先保存到卡中：动画最长约 20 秒、最多 120 帧、总大小不超过 24 MB；未插卡时自动使用板载存储，壁纸需小于 3 MB。</p>
+      <p className="text-xs leading-5 text-zinc-500">已插入 TF 卡时优先保存到卡中：动画最长 10 秒、目标 25 帧、总大小不超过 24 MB；未插卡时自动使用板载存储，壁纸需小于 3 MB。</p>
     </CardContent>
   </Card>
 }

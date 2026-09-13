@@ -18,6 +18,7 @@ namespace {
 esp_panel::board::Board *hardware = nullptr;
 esp_panel::drivers::LCD *lcd = nullptr;
 esp_panel::drivers::Backlight *backlight = nullptr;
+void *current_frame_buffer = nullptr;
 esp_panel::drivers::BusI2C *touch_bus = nullptr;
 esp_lcd_panel_io_handle_t touch_io = nullptr;
 
@@ -130,6 +131,7 @@ bool beginDisplay() {
     Serial.println("VIEWE board begin failed");
     return false;
   }
+  current_frame_buffer = lcd->getFrameBufferByIndex(0);
   setBacklight(0);
   Serial.printf("RGB profile: %d Hz, bounce %d\n",
                 AZORIA_RGB_CLOCK_HZ, AZORIA_RGB_BOUNCE_BUFFER_SIZE);
@@ -324,8 +326,14 @@ void *frameBuffer(uint8_t index) {
   return lcd ? lcd->getFrameBufferByIndex(index) : nullptr;
 }
 
+void *currentFrameBuffer() {
+  return current_frame_buffer;
+}
+
 bool switchFrameBuffer(void *buffer) {
-  return lcd && buffer && lcd->switchFrameBufferTo(buffer);
+  if (!lcd || !buffer || !lcd->switchFrameBufferTo(buffer)) return false;
+  current_frame_buffer = buffer;
+  return true;
 }
 
 bool restartRgbScan() {

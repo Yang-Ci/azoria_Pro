@@ -6,7 +6,7 @@ import type { LyricLine, LyricsProvider, MusicControlRequest, MusicControls, Mus
 
 const run = promisify(execFile)
 const requestHeaders = {
-  "User-Agent": "YangCi/1.0.0 (https://github.com/Yang-Ci/azoria_Pro)",
+  "User-Agent": "YangCi/1.0.1 (https://github.com/Yang-Ci/azoria_Pro)",
   Referer: "https://music.163.com/",
 }
 
@@ -63,6 +63,21 @@ export function parseSyncedLyrics(raw: string): LyricLine[] {
     }
   }
   return lines.sort((left, right) => left.timeMs - right.timeMs)
+}
+
+export function estimatePlainLyrics(plainText: string, durationMs: number): LyricLine[] {
+  const textLines = plainText
+    .replace(/\r/g, "")
+    .split("\n")
+    .map(displayText)
+    .filter(Boolean)
+  if (!textLines.length) return []
+  const estimatedDuration = durationMs > 0 ? durationMs : textLines.length * 5000
+  const lineDuration = estimatedDuration / textLines.length
+  return textLines.map((line, index) => ({
+    timeMs: Math.floor(index * lineDuration),
+    text: line,
+  }))
 }
 
 function normalized(value: string): string {
@@ -274,7 +289,9 @@ export class MusicManager {
         break
       }
     }
-    const lyrics = this.latestSnapshot.lines
+    const lyrics = this.latestSnapshot.lines.length
+      ? this.latestSnapshot.lines
+      : estimatePlainLyrics(this.latestSnapshot.plainText, track?.durationMs ?? 0)
     return {
       musicAvailable: Boolean(track),
       musicCanSeek: Boolean(track?.controls?.seek && track.durationMs > 0),
@@ -415,13 +432,17 @@ export class MusicManager {
     const key = `${track.trackId || "unknown"}\u0000${normalized(track.title)}\u0000${normalized(track.artist)}`
     if (this.cache.has(key)) return this.cache.get(key) ?? null
     const providers = { netease: fromNetease, qqmusic: fromQqMusic, lrclib: fromLrclib }
+    let plainFallback: CachedLyrics | null = null
     for (const providerId of lyricProviderOrder(track.source)) {
       try {
         const lyrics = await providers[providerId](track)
-        if (lyrics) { this.cache.set(key, lyrics); return lyrics }
+        if (!lyrics) continue
+        if (lyrics.lines.length) { this.cache.set(key, lyrics); return lyrics }
+        plainFallback ??= lyrics
       } catch { /* Try the next provider. */ }
     }
-    return null
+    if (plainFallback) this.cache.set(key, plainFallback)
+    return plainFallback
   }
 
   async calibrate(positionMs: number): Promise<MusicSnapshot> {

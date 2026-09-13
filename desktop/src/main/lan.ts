@@ -7,6 +7,7 @@ import type { ControlRequest, LanDevice, MonitorStatus, MusicControlRequest } fr
 import type { MonitorController } from "./monitor"
 import type { WallpaperManager } from "./wallpaper"
 import type { MusicManager } from "./music"
+import type { TouchSleepManager } from "./touch-sleep"
 
 const controlPort = 8732
 const discoveryPort = 8733
@@ -118,6 +119,7 @@ export class LanController {
     private readonly monitor: MonitorController,
     private readonly wallpaper?: WallpaperManager,
     private readonly music?: MusicManager,
+    private readonly touchSleep?: TouchSleepManager,
   ) {
     activeControllers.add(this)
   }
@@ -408,12 +410,17 @@ export class LanController {
       // regular Desktop probe keeps this snapshot current; control writes still
       // perform their own targeted readback before acknowledgement.
       const wallpaper = this.wallpaper?.info()
+      const touchSleep = this.touchSleep?.settings()
       return {
         ...this.monitor.snapshot(),
         available: this.reachable,
         wallpaperHash: wallpaper?.sha256 || "",
         wallpaperSize: wallpaper?.size || 0,
         wallpaperIdleMinutes: this.wallpaper?.settings().idleMinutes ?? 5,
+        touchSleepEnabled: touchSleep?.enabled ?? false,
+        touchSleepStartMinutes: touchSleep?.startMinutes ?? 0,
+        touchSleepEndMinutes: touchSleep?.endMinutes ?? 0,
+        touchSleepActive: touchSleep?.active ?? false,
         ...this.music?.touchStatus(),
       }
     }
@@ -557,6 +564,7 @@ export class LanController {
         // and already run in the monitor's background queue; return its latest
         // snapshot immediately so this endpoint never times out behind them.
         const wallpaper = this.wallpaper?.info()
+        const touchSleep = this.touchSleep?.settings()
         return this.json(response, 200, {
           ...this.monitor.snapshot(),
           available: this.monitor.hasStatus(),
@@ -566,6 +574,10 @@ export class LanController {
           wallpaperKind: wallpaper?.kind || "",
           ...this.music?.touchStatus(),
           wallpaperIdleMinutes: this.wallpaper?.settings().idleMinutes ?? 5,
+          touchSleepEnabled: touchSleep?.enabled ?? false,
+          touchSleepStartMinutes: touchSleep?.startMinutes ?? 0,
+          touchSleepEndMinutes: touchSleep?.endMinutes ?? 0,
+          touchSleepActive: touchSleep?.active ?? false,
         })
       }
       if (request.method === "POST" && request.url === "/v1/music/control") {

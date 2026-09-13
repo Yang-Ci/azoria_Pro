@@ -34,11 +34,11 @@ the Desktop app handles discovery, coordination, native DDC/CI access, and
 firmware management in the background.
 
 When a TF card is available, Touch stores wallpaper packages on the card and
-accepts converted videos up to about 20 seconds, 120 frames, and 24 MB. Without
-a card it falls back to the onboard data partition and a package limit near
-3 MB. For the enclosure, print `hardware/enclosure/azoria-touch-all-v3.stl` to
-produce the front, rear, and both stand designs on one plate without the fit
-test coupon.
+accepts Desktop-generated videos up to 10 seconds, targeting 25 frames, and
+24 MB. Without a card it falls back to the onboard data partition and a package
+limit near 3 MB. For the enclosure, print
+`hardware/enclosure/azoria-touch-all-v3.stl` to produce the front, rear, and both
+stand designs on one plate without the fit test coupon.
 
 ## Why YangCi
 
@@ -47,7 +47,7 @@ test coupon.
 - **Multi-monitor targeting** across enumerated DDC/CI displays.
 - **Native hardware access** through a Rust sidecar for macOS, Windows, and Linux.
 - **Optional physical controller** with BLE and private-LAN connectivity.
-- **TF-card wallpapers** with still images and up to 20 seconds of converted video.
+- **TF-card wallpapers** with still images and up to 10 seconds of Desktop-converted video.
 - **Synchronized music view** with lyrics, playback controls, progress, and artwork from desktop or browser players.
 - **Resilient coordination** when multiple Desktop instances can reach the same display.
 - **Safe firmware workflow** with image type, version, device identity, size, and SHA-256 checks.

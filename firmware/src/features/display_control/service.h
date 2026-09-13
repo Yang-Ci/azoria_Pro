@@ -18,6 +18,10 @@ struct RemoteState {
   bool volume_pending = false;
   bool mute_pending = false;
   bool input_pending = false;
+  bool touch_sleep_enabled = false;
+  uint16_t touch_sleep_start_minutes = 0;
+  uint16_t touch_sleep_end_minutes = 0;
+  bool touch_sleep_active = false;
   bool music_available = false;
   bool music_playing = false;
   bool music_can_seek = false;

@@ -10,6 +10,7 @@ import { LocalLogger } from "./logger"
 import { MonitorController } from "./monitor"
 import { WallpaperManager } from "./wallpaper"
 import { MusicManager } from "./music"
+import { TouchSleepManager } from "./touch-sleep"
 
 const isDevelopment = !app.isPackaged
 
@@ -119,13 +120,15 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   monitor.startBackgroundStatus()
   const wallpaper = new WallpaperManager(app.getPath("userData"))
   await wallpaper.initialize()
+  const touchSleep = new TouchSleepManager(app.getPath("userData"))
+  await touchSleep.initialize()
   const music = new MusicManager(
     isDevelopment
       ? path.resolve(app.getAppPath(), "sidecar/target/release", process.platform === "win32" ? "azoria-ddc-sidecar.exe" : "azoria-ddc-sidecar")
       : path.join(process.resourcesPath, "sidecar", process.platform === "win32" ? "azoria-ddc-sidecar.exe" : "azoria-ddc-sidecar"),
   )
   music.startPolling()
-  const lan = new LanController(config.desktopId, monitor, wallpaper, music)
+  const lan = new LanController(config.desktopId, monitor, wallpaper, music, touchSleep)
   await lan.start()
   const devices = new TouchManager(config.token)
   const diagnostics = new DiagnosticsController(logger, monitor, lan)
@@ -183,6 +186,8 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   ipcMain.handle("wallpaper:set-idle-minutes", (_event, minutes: number) => wallpaper.setIdleMinutes(minutes))
   ipcMain.handle("wallpaper:upload", (_event, input) => wallpaper.upload(input))
   ipcMain.handle("wallpaper:remove", () => wallpaper.remove())
+  ipcMain.handle("touch-sleep:settings", () => touchSleep.settings())
+  ipcMain.handle("touch-sleep:update", (_event, input) => touchSleep.update(input))
   ipcMain.handle("security:sign", (_event, message: string) => {
     if (typeof message !== "string" || message.length > 512) throw new Error("签名消息无效")
     return createHmac("sha256", config.token).update(message).digest("hex").slice(0, 16)

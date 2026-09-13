@@ -160,7 +160,7 @@ async function handleRequest(
     if (fields[3] === "S" && fields.length === 5) {
       const current = await status()
       const now = new Date()
-      payload = `S|${current.brightness}|${current.volume}|${current.mute ? 1 : 0}|${current.input}|${current.available === false ? 0 : 1}|${Math.floor(now.getTime() / 1000)}|${-now.getTimezoneOffset()}|${current.wallpaperHash || ""}|${current.wallpaperSize || 0}|${current.wallpaperIdleMinutes ?? 5}`
+      payload = `S|${current.brightness}|${current.volume}|${current.mute ? 1 : 0}|${current.input}|${current.available === false ? 0 : 1}|${Math.floor(now.getTime() / 1000)}|${-now.getTimezoneOffset()}|${current.wallpaperHash || ""}|${current.wallpaperSize || 0}|${current.wallpaperIdleMinutes ?? 5}|${current.touchSleepEnabled ? 1 : 0}|${current.touchSleepStartMinutes ?? 0}|${current.touchSleepEndMinutes ?? 0}|${current.touchSleepActive ? 1 : 0}`
     } else if (fields[3] === "M" && fields.length === 6) {
       const current = await status()
       const page = fields[4]

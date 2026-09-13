@@ -151,6 +151,13 @@ void logMemory(const char *stage) {
 void touchRead(lv_indev_drv_t *, lv_indev_data_t *data) {
   Board::TouchPoint point{};
   const int count = Board::readTouches(&point, 1);
+  if (DisplayControl::screenSleeping()) {
+    touch_press_samples = 0;
+    touch_release_samples = 0;
+    touch_is_pressed = false;
+    data->state = LV_INDEV_STATE_REL;
+    return;
+  }
   if (count > 0) {
     last_touch_point = point;
     touch_release_samples = 0;

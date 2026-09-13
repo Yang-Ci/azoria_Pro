@@ -13,6 +13,10 @@ export interface MonitorStatus {
   wallpaperHash?: string
   wallpaperSize?: number
   wallpaperIdleMinutes?: WallpaperIdleMinutes
+  touchSleepEnabled?: boolean
+  touchSleepStartMinutes?: number
+  touchSleepEndMinutes?: number
+  touchSleepActive?: boolean
   musicAvailable?: boolean
   musicPlaying?: boolean
   musicCanSeek?: boolean
@@ -122,6 +126,19 @@ export type WallpaperIdleMinutes = 0 | 1 | 5 | 10 | 30
 
 export interface WallpaperSettings {
   idleMinutes: WallpaperIdleMinutes
+}
+
+export interface TouchSleepSettings {
+  enabled: boolean
+  startMinutes: number
+  endMinutes: number
+  active: boolean
+}
+
+export interface TouchSleepUpdate {
+  enabled: boolean
+  startMinutes: number
+  endMinutes: number
 }
 
 export interface WallpaperInfo {
@@ -289,6 +306,10 @@ export interface DesktopApi {
     setIdleMinutes(minutes: WallpaperIdleMinutes): Promise<WallpaperSettings>
     upload(input: WallpaperUpload): Promise<WallpaperInfo>
     remove(): Promise<void>
+  }
+  touchSleep: {
+    settings(): Promise<TouchSleepSettings>
+    update(input: TouchSleepUpdate): Promise<TouchSleepSettings>
   }
   security: {
     sign(message: string): Promise<string>

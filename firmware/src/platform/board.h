@@ -41,6 +41,7 @@ bool readTouchSnapshot(TouchSnapshot &snapshot);
 void printTouchSnapshot(const TouchSnapshot &snapshot);
 void setBacklight(uint8_t value);
 void *frameBuffer(uint8_t index);
+void *currentFrameBuffer();
 bool switchFrameBuffer(void *buffer);
 bool restartRgbScan();
 bool attachRefreshFinishCallback(RefreshFinishCallback callback, void *user_data);

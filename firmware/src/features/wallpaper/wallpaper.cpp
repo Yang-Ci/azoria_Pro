@@ -19,6 +19,8 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include "platform/board.h"
+
 namespace Wallpaper {
 namespace {
 
@@ -31,6 +33,10 @@ constexpr size_t kSdMaxPackageSize = 24 * 1024 * 1024;
 constexpr size_t kMaxFrameSize = 600000;
 constexpr uint16_t kWidth = 480;
 constexpr uint16_t kHeight = 480;
+constexpr uint16_t kLegacyAnimationWidth = 240;
+constexpr uint16_t kLegacyAnimationHeight = 240;
+constexpr uint16_t kAnimationWidth = 320;
+constexpr uint16_t kAnimationHeight = 320;
 constexpr size_t kPixelBufferSize = kWidth * kHeight * sizeof(lv_color_t);
 constexpr int kSdSck = 45;
 constexpr int kSdMiso = 46;
@@ -46,6 +52,7 @@ constexpr uint16_t kSdRetryFrequencyDelayMs = 50;
 SemaphoreHandle_t storage_mutex = nullptr;
 fs::FS *storage = nullptr;
 fs::FS *sd_storage = nullptr;
+File playback_file;
 bool sd_spi_bus_ready = false;
 lv_obj_t *view = nullptr;
 lv_obj_t *image = nullptr;
@@ -53,14 +60,21 @@ lv_obj_t *empty_label = nullptr;
 lv_img_dsc_t descriptor{};
 uint8_t *pixels = nullptr;
 uint8_t *compressed = nullptr;
+size_t compressed_capacity = 0;
 String installed_hash;
 std::atomic<uint32_t> asset_revision{0};
+std::atomic<bool> sync_in_progress{false};
 uint32_t shown_asset_revision = UINT32_MAX;
 uint32_t next_frame_due = 0;
 uint32_t next_frame_offset = kHeaderSize;
 uint16_t frame_count = 0;
 uint16_t frame_delay_ms = 0;
 uint16_t frame_index = 0;
+uint16_t animation_source_width = kWidth;
+uint32_t playback_decode_total_ms = 0;
+uint32_t playback_decode_max_ms = 0;
+uint16_t playback_decode_samples = 0;
+uint32_t last_recovery_log = 0;
 bool is_active = false;
 bool filesystem_ready = false;
 bool using_sd = false;
@@ -111,16 +125,33 @@ bool validHash(const String &hash) {
   return true;
 }
 
-bool readHeader(File &file, uint16_t &frames, uint16_t &delay) {
+bool readHeader(File &file, uint16_t &frames, uint16_t &delay,
+                uint16_t &source_width) {
   uint8_t header[kHeaderSize]{};
   if (!file || file.size() < kHeaderSize + 8 ||
-      file.read(header, sizeof(header)) != sizeof(header) ||
-      memcmp(header, "AZW1", 4) || readU16(header + 4) != kWidth ||
-      readU16(header + 6) != kHeight) return false;
+      file.read(header, sizeof(header)) != sizeof(header)) return false;
+  const bool full_resolution = memcmp(header, "AZW1", 4) == 0 &&
+                               readU16(header + 4) == kWidth &&
+                               readU16(header + 6) == kHeight;
+  const bool legacy_animation = memcmp(header, "AZW2", 4) == 0 &&
+                                readU16(header + 4) == kLegacyAnimationWidth &&
+                                readU16(header + 6) == kLegacyAnimationHeight;
+  const bool optimized_animation = memcmp(header, "AZW3", 4) == 0 &&
+                                   readU16(header + 4) == kAnimationWidth &&
+                                   readU16(header + 6) == kAnimationHeight;
+  const bool stable_full_animation = memcmp(header, "AZW4", 4) == 0 &&
+                                     readU16(header + 4) == kWidth &&
+                                     readU16(header + 6) == kHeight;
+  if (!full_resolution && !legacy_animation && !optimized_animation &&
+      !stable_full_animation) return false;
+  source_width = full_resolution || stable_full_animation ? kWidth
+                                 : legacy_animation ? kLegacyAnimationWidth
+                                                    : kAnimationWidth;
   frames = readU16(header + 8);
   delay = readU16(header + 10);
   const uint32_t payload_size = readU32(header + 12);
   return frames >= 1 && frames <= 120 &&
+         !(!full_resolution && frames == 1) &&
          ((frames == 1 && delay == 0) ||
           (frames > 1 && delay >= 100 && delay <= 2000)) &&
          payload_size == file.size() - kHeaderSize;
@@ -130,7 +161,8 @@ bool validatePackage(fs::FS &filesystem, const char *path) {
   File file = filesystem.open(path, "r");
   uint16_t frames = 0;
   uint16_t delay = 0;
-  if (!readHeader(file, frames, delay)) {
+  uint16_t source_width = 0;
+  if (!readHeader(file, frames, delay, source_width)) {
     file.close();
     return false;
   }
@@ -160,45 +192,108 @@ bool validatePackage(fs::FS &filesystem, const char *path) {
   return exact;
 }
 
-bool decodeFrame(File &file) {
+void upscaleAnimationFrame(uint8_t *buffer, uint16_t source_width,
+                           uint16_t source_height) {
+  auto *colors = reinterpret_cast<uint16_t *>(buffer);
+  uint16_t expanded_row[kWidth];
+  // Expand backwards so the decoder output and 480x480 display image
+  // can safely share one PSRAM buffer. Build each row in internal memory and
+  // copy it to PSRAM in two contiguous writes; individual PSRAM pixel writes
+  // are substantially slower on this board.
+  for (int destination_y = kHeight - 1; destination_y >= 0; --destination_y) {
+    const uint16_t source_y = static_cast<uint16_t>(
+        static_cast<uint32_t>(destination_y) * source_height / kHeight);
+    const size_t source_row = static_cast<size_t>(source_y) * source_width;
+    for (uint16_t destination_x = 0; destination_x < kWidth;
+         ++destination_x) {
+      const uint16_t source_x = static_cast<uint16_t>(
+          static_cast<uint32_t>(destination_x) * source_width / kWidth);
+      expanded_row[destination_x] = colors[source_row + source_x];
+    }
+    memcpy(colors + static_cast<size_t>(destination_y) * kWidth,
+           expanded_row, sizeof(expanded_row));
+    if ((destination_y & 31) == 0) delay(1);
+  }
+}
+
+bool ensureCompressedCapacity(size_t size) {
+  if (compressed && compressed_capacity >= size) return true;
+  const size_t capacity = (size + 4095) & ~static_cast<size_t>(4095);
+  auto *replacement = static_cast<uint8_t *>(heap_caps_realloc(
+      compressed, capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!replacement) return false;
+  compressed = replacement;
+  compressed_capacity = capacity;
+  return true;
+}
+
+bool decodeFrame(File &file, bool animation, uint16_t source_width,
+                 uint8_t *output_override = nullptr) {
   uint8_t size_bytes[4]{};
   if (file.read(size_bytes, sizeof(size_bytes)) != sizeof(size_bytes)) return false;
   const uint32_t size = readU32(size_bytes);
   if (size < 128 || size > kMaxFrameSize ||
       static_cast<size_t>(file.position()) + size > file.size() ||
+      !ensureCompressedCapacity(size) ||
       file.read(compressed, size) != size) return false;
+  uint8_t *output_pixels = output_override ? output_override : pixels;
+  if (!output_pixels) return false;
   esp_jpeg_image_cfg_t config{};
   config.indata = compressed;
   config.indata_size = size;
-  config.outbuf = pixels;
+  config.outbuf = output_pixels;
   config.outbuf_size = kPixelBufferSize;
   config.out_format = JPEG_IMAGE_FORMAT_RGB565;
   config.out_scale = JPEG_IMAGE_SCALE_0;
   config.flags.swap_color_bytes = 0;
   esp_jpeg_image_output_t output{};
+  const uint16_t expected_width = source_width;
+  const uint16_t expected_height = expected_width;
+  const size_t expected_size = static_cast<size_t>(expected_width) *
+                               expected_height * sizeof(lv_color_t);
   if (esp_jpeg_decode(&config, &output) != ESP_OK ||
-      output.width != kWidth || output.height != kHeight ||
-      output.output_len != kPixelBufferSize) return false;
+      output.width != expected_width || output.height != expected_height ||
+      output.output_len != expected_size) return false;
+  if (animation && expected_width < kWidth) {
+    upscaleAnimationFrame(output_pixels, expected_width, expected_height);
+  }
+  if (!output_override) {
+    lv_img_cache_invalidate_src(&descriptor);
+    descriptor.data = pixels;
+    lv_img_set_src(image, &descriptor);
+    lv_obj_invalidate(image);
+  }
   next_frame_offset = file.position();
-  lv_img_cache_invalidate_src(&descriptor);
-  lv_img_set_src(image, &descriptor);
-  lv_obj_invalidate(image);
   return true;
 }
 
+void closePlaybackFileLocked() {
+  playback_file.close();
+  playback_file = File();
+}
+
 bool loadFirstFrame() {
-  if (!filesystem_ready || !pixels || !compressed || currentHash().isEmpty()) return false;
+  if (!filesystem_ready || !pixels || currentHash().isEmpty()) return false;
   xSemaphoreTake(storage_mutex, portMAX_DELAY);
-  File file = storage->open(kPackagePath, "r");
+  closePlaybackFileLocked();
+  playback_file = storage->open(kPackagePath, "r");
   uint16_t frames = 0;
   uint16_t delay = 0;
-  bool loaded = readHeader(file, frames, delay) && decodeFrame(file);
-  file.close();
+  uint16_t source_width = 0;
+  const bool header_loaded = readHeader(playback_file, frames, delay,
+                                        source_width);
+  const bool loaded = header_loaded &&
+                      decodeFrame(playback_file, frames > 1, source_width);
+  if (!loaded) closePlaybackFileLocked();
   xSemaphoreGive(storage_mutex);
   if (!loaded) return false;
   frame_count = frames;
   frame_delay_ms = delay;
   frame_index = 0;
+  animation_source_width = source_width;
+  playback_decode_total_ms = 0;
+  playback_decode_max_ms = 0;
+  playback_decode_samples = 0;
   next_frame_due = millis() + frame_delay_ms;
   return true;
 }
@@ -531,8 +626,6 @@ bool begin() {
 void createView(lv_obj_t *parent, lv_event_cb_t exit_callback) {
   pixels = static_cast<uint8_t *>(heap_caps_malloc(
       kPixelBufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  compressed = static_cast<uint8_t *>(heap_caps_malloc(
-      kMaxFrameSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   descriptor.header.always_zero = 0;
   descriptor.header.w = kWidth;
   descriptor.header.h = kHeight;
@@ -573,6 +666,9 @@ void show() {
 void hide() {
   if (!view || !is_active) return;
   is_active = false;
+  xSemaphoreTake(storage_mutex, portMAX_DELAY);
+  closePlaybackFileLocked();
+  xSemaphoreGive(storage_mutex);
   lv_obj_add_flag(view, LV_OBJ_FLAG_HIDDEN);
   lv_obj_invalidate(lv_scr_act());
 }
@@ -599,7 +695,7 @@ size_t packageLimit() {
 }
 
 void refresh() {
-  if (!is_active || !view) return;
+  if (!is_active || !view || sync_in_progress.load()) return;
   const uint32_t current_revision = asset_revision.load();
   if (shown_asset_revision != current_revision) {
     shown_asset_revision = current_revision;
@@ -608,31 +704,97 @@ void refresh() {
   }
   if (frame_count < 2 || frame_delay_ms == 0 ||
       static_cast<int32_t>(millis() - next_frame_due) < 0) return;
+
+  const uint32_t scheduled_due = next_frame_due;
+  const uint16_t next_index = static_cast<uint16_t>(
+      frame_index + 1 >= frame_count ? 0 : frame_index + 1);
+  const bool wrapped = next_index == 0;
+  const uint32_t decode_started = millis();
+  void *current_frame_buffer = Board::currentFrameBuffer();
+  void *frame_buffer_0 = Board::frameBuffer(0);
+  void *frame_buffer_1 = Board::frameBuffer(1);
+  const bool frame_buffers_ready = current_frame_buffer && frame_buffer_0 &&
+                                   frame_buffer_1;
+  auto *target_frame_buffer = static_cast<uint8_t *>(
+      !frame_buffers_ready ? nullptr
+      : current_frame_buffer == frame_buffer_0 ? frame_buffer_1
+                                               : frame_buffer_0);
   xSemaphoreTake(storage_mutex, portMAX_DELAY);
-  File file = storage->open(kPackagePath, "r");
-  bool loaded = file && file.seek(next_frame_offset) && decodeFrame(file);
-  file.close();
+  const bool revision_unchanged = shown_asset_revision == asset_revision.load();
+  const bool playback_allowed = !sync_in_progress.load() &&
+                                revision_unchanged;
+  const bool positioned = playback_allowed && target_frame_buffer &&
+                          playback_file &&
+                          (!wrapped || playback_file.seek(kHeaderSize));
+  const bool loaded = positioned &&
+                      decodeFrame(playback_file, true,
+                                  animation_source_width,
+                                  target_frame_buffer);
   xSemaphoreGive(storage_mutex);
-  if (!loaded) {
-    updateEmptyState(false);
+  // sync() may have started after the fast check at the top of refresh(). In
+  // that case it owns the storage transition; leave the last completed frame
+  // visible and let the asset revision reload the new file after commit.
+  if (sync_in_progress.load() || !revision_unchanged) return;
+  if (!loaded || !target_frame_buffer ||
+      !Board::switchFrameBuffer(target_frame_buffer)) {
+    const uint32_t now = millis();
+    if (now - last_recovery_log >= 2000) {
+      Serial.printf(
+          "WALLPAPER_PLAYBACK,recover=1,frame=%u,offset=%lu,storage=%s\n",
+          static_cast<unsigned>(next_index),
+          static_cast<unsigned long>(next_frame_offset), storageKind());
+      last_recovery_log = now;
+    }
+    if (loadFirstFrame()) {
+      updateEmptyState(true);
+    } else {
+      next_frame_due = now + 500;
+    }
     return;
   }
-  frame_index = static_cast<uint16_t>((frame_index + 1) % frame_count);
-  if (frame_index == 0) next_frame_offset = kHeaderSize;
-  next_frame_due = millis() + frame_delay_ms;
+  frame_index = next_index;
+
+  const uint32_t decode_ms = millis() - decode_started;
+  playback_decode_total_ms += decode_ms;
+  playback_decode_max_ms = max(playback_decode_max_ms, decode_ms);
+  playback_decode_samples++;
+
+  // Keep the animation on its original clock. Decode and flash I/O time should
+  // consume the current frame's budget instead of being added to every frame.
+  next_frame_due = scheduled_due + frame_delay_ms;
+  const uint32_t now = millis();
+  if (static_cast<int32_t>(now - next_frame_due) >= 0) {
+    next_frame_due = now + 1;
+  }
+
+  if (wrapped && playback_decode_samples > 0) {
+    Serial.printf(
+        "WALLPAPER_PLAYBACK,loop=1,frames=%u,delay=%u,decode_avg_ms=%lu,decode_max_ms=%lu,storage=%s\n",
+        static_cast<unsigned>(frame_count),
+        static_cast<unsigned>(frame_delay_ms),
+        static_cast<unsigned long>(playback_decode_total_ms /
+                                   playback_decode_samples),
+        static_cast<unsigned long>(playback_decode_max_ms), storageKind());
+    playback_decode_total_ms = 0;
+    playback_decode_max_ms = 0;
+    playback_decode_samples = 0;
+  }
 }
 
 bool sync(const String &host, uint16_t port, const String &sha256,
           size_t size) {
   if (!filesystem_ready || host.isEmpty()) return false;
   if (sha256.isEmpty() || size == 0) {
-    if (installed_hash.isEmpty()) return true;
+    if (currentHash().isEmpty()) return true;
+    if (sync_in_progress.exchange(true)) return false;
     xSemaphoreTake(storage_mutex, portMAX_DELAY);
+    closePlaybackFileLocked();
     storage->remove(kPackagePath);
     storage->remove(kHashPath);
     installed_hash = "";
     asset_revision.fetch_add(1);
     xSemaphoreGive(storage_mutex);
+    sync_in_progress.store(false);
     return true;
   }
   if (!validHash(sha256) || size < kHeaderSize + 8 ||
@@ -642,12 +804,31 @@ bool sync(const String &host, uint16_t port, const String &sha256,
                   static_cast<unsigned>(maxPackageSize()), storageKind());
     return false;
   }
-  if (installed_hash == sha256) return true;
+  if (currentHash() == sha256) return true;
+  if (sync_in_progress.exchange(true)) return false;
+
+  // LittleFS reads become unreliable when a long-lived playback handle and a
+  // package download/validation run concurrently. Pause on the last complete
+  // frame and close the handle until the replacement is committed.
+  xSemaphoreTake(storage_mutex, portMAX_DELAY);
+  closePlaybackFileLocked();
+  xSemaphoreGive(storage_mutex);
+
+  const auto fail = [&]() {
+    xSemaphoreTake(storage_mutex, portMAX_DELAY);
+    storage->remove(kTemporaryPath);
+    asset_revision.fetch_add(1);
+    xSemaphoreGive(storage_mutex);
+    sync_in_progress.store(false);
+    return false;
+  };
+
   storage->remove(kTemporaryPath);
   // Preserve the old package when there is room for an atomic replacement;
   // otherwise release it before downloading the new version.
   if (storageTotalBytes() - storageUsedBytes() < size + 4096) {
     xSemaphoreTake(storage_mutex, portMAX_DELAY);
+    closePlaybackFileLocked();
     storage->remove(kPackagePath);
     storage->remove(kHashPath);
     installed_hash = "";
@@ -659,14 +840,14 @@ bool sync(const String &host, uint16_t port, const String &sha256,
                   static_cast<unsigned>(size),
                   static_cast<unsigned long long>(storageTotalBytes() - storageUsedBytes()),
                   storageKind());
-    return false;
+    return fail();
   }
   if (!download(host, port, sha256, size) ||
       !validatePackage(*storage, kTemporaryPath)) {
-    storage->remove(kTemporaryPath);
-    return false;
+    return fail();
   }
   xSemaphoreTake(storage_mutex, portMAX_DELAY);
+  closePlaybackFileLocked();
   storage->remove(kPackagePath);
   const bool renamed = storage->rename(kTemporaryPath, kPackagePath);
   bool committed = false;
@@ -676,14 +857,21 @@ bool sync(const String &host, uint16_t port, const String &sha256,
       hash_file.print(sha256);
       hash_file.close();
       installed_hash = sha256;
-      asset_revision.fetch_add(1);
       committed = true;
     }
   }
+  if (!committed) {
+    storage->remove(kTemporaryPath);
+    storage->remove(kPackagePath);
+    storage->remove(kHashPath);
+    installed_hash = "";
+  }
+  asset_revision.fetch_add(1);
   xSemaphoreGive(storage_mutex);
   Serial.printf("WALLPAPER_SYNC,ok=%d,size=%u,storage=%s\n",
                 committed ? 1 : 0, static_cast<unsigned>(size),
                 using_sd ? "tf" : "flash");
+  sync_in_progress.store(false);
   return committed;
 }
 

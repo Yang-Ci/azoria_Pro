@@ -55,7 +55,7 @@ constexpr uint32_t kRegistrationIntervalMs = 30000;
 constexpr uint32_t kBleHealthIntervalMs = 5000;
 constexpr uint32_t kIdleStatusIntervalMs = 750;
 #ifndef AZORIA_FIRMWARE_VERSION
-#define AZORIA_FIRMWARE_VERSION "1.0.0"
+#define AZORIA_FIRMWARE_VERSION "1.0.1"
 #endif
 constexpr char kFirmwareVersion[] = AZORIA_FIRMWARE_VERSION;
 Command latest_commands[static_cast<size_t>(ControlKind::Count)]{};
@@ -659,6 +659,16 @@ bool readStatus() {
   bool muted = jsonBool(response, "mute", remote_state.muted);
   String input = jsonString(response, "input", remote_state.input);
   bool ddc_available = jsonBool(response, "available", true);
+  bool touch_sleep_enabled =
+      jsonBool(response, "touchSleepEnabled", remote_state.touch_sleep_enabled);
+  int touch_sleep_start_minutes = constrain(
+      jsonInt(response, "touchSleepStartMinutes",
+              remote_state.touch_sleep_start_minutes), 0, 1439);
+  int touch_sleep_end_minutes = constrain(
+      jsonInt(response, "touchSleepEndMinutes",
+              remote_state.touch_sleep_end_minutes), 0, 1439);
+  bool touch_sleep_active =
+      jsonBool(response, "touchSleepActive", remote_state.touch_sleep_active);
   bool music_available = jsonBool(response, "musicAvailable", remote_state.music_available);
   bool music_playing = jsonBool(response, "musicPlaying", remote_state.music_playing);
   bool music_can_seek = jsonBool(response, "musicCanSeek", remote_state.music_can_seek);
@@ -699,6 +709,12 @@ bool readStatus() {
                  (volume_writable && remote_state.volume != volume) ||
                  (mute_writable && remote_state.muted != muted) ||
                  (input_writable && strcmp(remote_state.input, input.c_str())) ||
+                 remote_state.touch_sleep_enabled != touch_sleep_enabled ||
+                 remote_state.touch_sleep_start_minutes !=
+                     touch_sleep_start_minutes ||
+                 remote_state.touch_sleep_end_minutes !=
+                     touch_sleep_end_minutes ||
+                 remote_state.touch_sleep_active != touch_sleep_active ||
                  remote_state.music_available != music_available ||
                  remote_state.music_playing != music_playing ||
                  remote_state.music_can_seek != music_can_seek ||
@@ -725,6 +741,12 @@ bool readStatus() {
     if (input_writable) {
       strlcpy(remote_state.input, input.c_str(), sizeof(remote_state.input));
     }
+    remote_state.touch_sleep_enabled = touch_sleep_enabled;
+    remote_state.touch_sleep_start_minutes =
+        static_cast<uint16_t>(touch_sleep_start_minutes);
+    remote_state.touch_sleep_end_minutes =
+        static_cast<uint16_t>(touch_sleep_end_minutes);
+    remote_state.touch_sleep_active = touch_sleep_active;
     remote_state.music_available = music_available;
     remote_state.music_playing = music_playing;
     remote_state.music_can_seek = music_can_seek;

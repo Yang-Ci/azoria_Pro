@@ -1,12 +1,15 @@
 import type { WallpaperKind, WallpaperUpload } from "../../shared/contracts"
 
-const width = 480
-const height = 480
+const displayWidth = 480
+const displayHeight = 480
+const animationWidth = 480
+const animationHeight = 480
 const headerSize = 20
 const flashPackageSize = 3_150_000
 const tfPackageSize = 24 * 1024 * 1024 - 64 * 1024
-const maxVideoDurationSeconds = 20
-const targetFrameCount = 120
+const maxVideoDurationSeconds = 10
+const targetFrameCount = 25
+const minimumVideoFrameDelayMs = 400
 const videoExtensions = new Set(["mp4", "mov", "m4v", "webm", "avi", "mkv"])
 const imageExtensions = new Set(["jpg", "jpeg", "png", "webp", "gif", "bmp"])
 
@@ -27,12 +30,14 @@ function waitFor(target: EventTarget, event: string): Promise<void> {
 }
 
 function drawCover(context: CanvasRenderingContext2D, source: CanvasImageSource, sourceWidth: number, sourceHeight: number): void {
-  const scale = Math.max(width / sourceWidth, height / sourceHeight)
+  const targetWidth = context.canvas.width
+  const targetHeight = context.canvas.height
+  const scale = Math.max(targetWidth / sourceWidth, targetHeight / sourceHeight)
   const drawnWidth = sourceWidth * scale
   const drawnHeight = sourceHeight * scale
   context.fillStyle = "#000"
-  context.fillRect(0, 0, width, height)
-  context.drawImage(source, (width - drawnWidth) / 2, (height - drawnHeight) / 2, drawnWidth, drawnHeight)
+  context.fillRect(0, 0, targetWidth, targetHeight)
+  context.drawImage(source, (targetWidth - drawnWidth) / 2, (targetHeight - drawnHeight) / 2, drawnWidth, drawnHeight)
 }
 
 function canvasJpeg(canvas: HTMLCanvasElement, quality: number): Promise<Uint8Array> {
@@ -42,13 +47,15 @@ function canvasJpeg(canvas: HTMLCanvasElement, quality: number): Promise<Uint8Ar
   }, "image/jpeg", quality))
 }
 
-function buildPackage(frames: Uint8Array[], frameDelayMs: number): Uint8Array {
+function buildPackage(frames: Uint8Array[], frameDelayMs: number, sourceWidth: number, sourceHeight: number): Uint8Array {
   const payloadSize = frames.reduce((total, frame) => total + 4 + frame.byteLength, 0)
   const output = new Uint8Array(headerSize + payloadSize)
-  output.set([0x41, 0x5a, 0x57, 0x31])
+  output.set(frameDelayMs > 0
+    ? [0x41, 0x5a, 0x57, 0x34]
+    : [0x41, 0x5a, 0x57, 0x31])
   const view = new DataView(output.buffer)
-  view.setUint16(4, width, true)
-  view.setUint16(6, height, true)
+  view.setUint16(4, sourceWidth, true)
+  view.setUint16(6, sourceHeight, true)
   view.setUint16(8, frames.length, true)
   view.setUint16(10, frameDelayMs, true)
   view.setUint32(12, payloadSize, true)
@@ -92,13 +99,15 @@ async function encodeVideo(file: File, canvas: HTMLCanvasElement, context: Canva
       throw new Error("视频时长或尺寸无效")
     }
     const duration = Math.min(video.duration, maxVideoDurationSeconds)
-    const delay = Math.max(160, Math.ceil((duration * 1000) / targetFrameCount))
+    const delay = Math.max(minimumVideoFrameDelayMs, Math.ceil((duration * 1000) / targetFrameCount))
+    const frameCount = Math.min(targetFrameCount, Math.max(2, Math.round((duration * 1000) / delay)))
     const frames: Uint8Array[] = []
     let packageSize = headerSize
-    for (let time = 0; time < duration && frames.length < targetFrameCount; time += delay / 1000) {
+    for (let index = 0; index < frameCount; index += 1) {
+      const time = (index * delay) / 1000
       await seek(video, Math.min(time, Math.max(0, video.duration - 0.02)))
       drawCover(context, video, video.videoWidth, video.videoHeight)
-      const frame = await canvasJpeg(canvas, 0.64)
+      const frame = await canvasJpeg(canvas, 0.78)
       if (packageSize + 4 + frame.byteLength > packageLimit) break
       frames.push(frame)
       packageSize += 4 + frame.byteLength
@@ -121,14 +130,14 @@ export async function createWallpaperUpload(file: File, packageLimit = flashPack
       ? "image"
       : (() => { throw new Error("请选择图片或视频文件") })()
   const canvas = document.createElement("canvas")
-  canvas.width = width
-  canvas.height = height
+  canvas.width = kind === "video" ? animationWidth : displayWidth
+  canvas.height = kind === "video" ? animationHeight : displayHeight
   const context = canvas.getContext("2d", { alpha: false })
   if (!context) throw new Error("当前系统无法处理壁纸")
   if (kind === "image") {
     const frames = await encodeImage(file, canvas, context)
-    return { name: file.name, kind, data: buildPackage(frames, 0) }
+    return { name: file.name, kind, data: buildPackage(frames, 0, displayWidth, displayHeight) }
   }
   const { frames, delay } = await encodeVideo(file, canvas, context, safePackageLimit)
-  return { name: file.name, kind, data: buildPackage(frames, delay) }
+  return { name: file.name, kind, data: buildPackage(frames, delay, animationWidth, animationHeight) }
 }

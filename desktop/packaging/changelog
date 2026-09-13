@@ -1,3 +1,11 @@
+azoria-display-control (1.0.1) unstable; urgency=medium
+
+  * Add scheduled AZORIA Touch screen sleep with overnight time ranges.
+  * Improve animated wallpaper playback, buffering, and sync recovery.
+  * Fall back to estimated timing for plain lyrics without timestamps.
+
+ -- Yang-Ci <Yang-Ci@users.noreply.github.com>  Sun, 13 Sep 2026 00:00:00 +0800
+
 azoria-display-control (1.0.0) unstable; urgency=medium
 
   * First stable YangCi release with AZORIA Touch support.
