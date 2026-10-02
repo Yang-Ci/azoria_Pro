@@ -21,46 +21,83 @@ YangCi brings display controls into one desktop experience. It combines an
 Electron control center, a native Rust DDC/CI sidecar, and an optional 480×480
 ESP32-S3 touch controller called **AZORIA Touch**.
 
-The project is designed to run locally. Display control, Touch discovery, and
-coordination stay on the host or trusted private network; no cloud service is
-required for normal operation.
+The desktop app works independently; add Touch to keep display controls, music,
+lyrics, and wallpapers within reach. Display control and device communication
+stay on the host or trusted private network. Online lyric matching and artwork
+lookup contact the corresponding music services and require internet access.
+
+## Desktop app
+
+### Display controls
+
+![YangCi desktop: display selection, brightness, audio, input targets, and mute](docs/images/yangci-desktop-control.jpg)
+
+Choose a display, adjust brightness and audio, toggle mute, and select
+DisplayPort, HDMI 1, HDMI 2, USB-C, or the laptop's internal panel target. YangCi
+probes video-link DDC/CI and vendor USB HID routes and supports built-in or
+imported monitor profiles. External-monitor audio and input support depend on
+the monitor. For Windows / Linux internal-panel targets, volume and mute control
+the system's default playback device, including headphones.
+
+### Music and lyrics
+
+![YangCi desktop: artwork, track information, playback controls, and synchronized lyrics](docs/images/yangci-desktop-music.jpg)
+
+Read track, artist, album, artwork, and playback progress from system media
+sessions, with support for NetEase Cloud Music, QQ Music, and other desktop or
+browser players that expose media sessions. Match lyrics through NetEase, QQ
+Music, or LRCLIB and highlight the current line as playback advances.
+
+Control previous / next, play / pause, seeking, and playback modes where the
+player exposes those capabilities. Click a lyric line to seek; when seeking is
+unavailable, clicking can calibrate lyric timing. Connected Touch devices receive
+track information, lyrics, and playback state.
+
+### Touch setup, wallpaper, and scheduled sleep
+
+![YangCi desktop: Touch connection, Wi-Fi setup, scheduled sleep, and wallpaper](docs/images/yangci-desktop-touch.jpg)
+
+| Feature | What it does |
+| --- | --- |
+| Device setup | Identify Touch over USB, prepare Bluetooth and connect through BLE; optionally scan and configure 2.4 GHz Wi-Fi over USB for automatic LAN discovery. |
+| Still / video wallpaper | Center-crop media to 480×480 and convert it into a Touch-compatible package for LAN synchronization. TF storage takes priority: videos up to 10 seconds, targeting 25 frames, with a 24 MB package limit; without a card, keep packages under 3 MB. |
+| Idle wallpaper | Enter wallpaper after 1, 5, 10, or 30 idle minutes, or disable automatic entry. Tap the wallpaper to return. |
+| Scheduled sleep | Configure a backlight-off interval, including overnight schedules; backlight resumes when the interval ends. Disabled by default, with a preset of 23:00–07:00. |
+| Diagnostics | View control success rate, average / P95 latency, route failures, readback mismatches, and recent events. |
+| Profiles and development | Use the profile wizard or import a profile in Settings. Enable the normally hidden Developer page to select an application firmware image, verify device identity and file hash, and flash over USB. |
 
 ## AZORIA Touch interface
 
-![AZORIA Touch: Music entry, music volume panel, and immersive lyrics volume panel](docs/images/azoria-touch-ui-overview.png)
+![AZORIA Touch normal views: display controls, music, and immersive lyrics](docs/images/azoria-touch-ui-overview.png)
 
-| Music: swipe down for volume | Immersive lyrics: swipe down for volume |
+| View | Features and gestures |
 | --- | --- |
-| ![Music view with the system volume panel open](docs/images/azoria-touch-music-volume.png) | ![Immersive lyrics with the system volume panel open](docs/images/azoria-touch-immersive-volume.png) |
+| Home | Time and connection status, display brightness, audio, mute, and input targets. Swipe down from the top to adjust the small screen's backlight. |
+| Music | Tap the **Music** wordmark to see artwork, track information, lyrics, progress, and playback controls. |
+| Immersive lyrics | Tap the current lyric to enter a large-text lyric view; tap the page to return to Music. |
+| Volume gesture | Swipe down from the top of either music view to adjust volume, synchronized with Home and Desktop. Swipe up or tap × to close and stay on the current page. Home's backlight panel also closes with a swipe up. |
+| Wallpaper | Tap the computer icon below Music or wait for the configured idle interval. Tap once to return. |
 
-Current 480×480 UI rendered directly with LVGL using sample music data. Tap the
-Music wordmark to enter music; swipe down from the top of either music view to
-adjust system volume, then swipe up or tap × to close the panel and stay on that
-page. The home screen's backlight panel also supports swipe-up dismissal.
+BLE works independently for everyday controls, track information, and lyrics.
+**Artwork and wallpaper synchronization require Touch and Desktop on the same
+LAN.** Live playback uses artwork from the player or supported music service;
+the documentation's demo cover does not replace live track artwork.
 
-The optional Touch controller puts everyday display actions within reach while
-the Desktop app handles discovery, coordination, native DDC/CI access, and
-firmware management in the background.
+Desktop screenshots render the current React components; Touch screenshots
+render the current 480×480 LVGL implementation. Device status, the fictional
+track “星夜 / YangCi Demo,” and lyrics are demonstration data, with original demo
+artwork. See [screenshot and asset notes](docs/images/README.md).
 
-When a TF card is available, Touch stores wallpaper packages on the card and
-accepts Desktop-generated videos up to 10 seconds, targeting 25 frames, and
-24 MB. Without a card it falls back to the onboard data partition and a package
-limit near 3 MB. For the enclosure, print
-`hardware/enclosure/azoria-touch-all-v3.stl` to produce the front, rear, and both
-stand designs on one plate without the fit test coupon.
+For the enclosure, print `hardware/enclosure/azoria-touch-all-v3.stl` to produce
+the front, rear, and both stand designs on one plate without the fit test coupon.
 
-## Why YangCi
+## Architecture and device capabilities
 
-- **One control surface** for brightness, volume, mute, and input switching.
-- **Real transport probing** across video-link DDC/CI and vendor USB HID paths.
-- **Multi-monitor targeting** across enumerated DDC/CI displays.
-- **Native hardware access** through a Rust sidecar for macOS, Windows, and Linux.
-- **Optional physical controller** with BLE and private-LAN connectivity.
-- **TF-card wallpapers** with still images and up to 10 seconds of Desktop-converted video.
-- **Synchronized music view** with lyrics, playback controls, progress, and artwork from desktop or browser players.
-- **Resilient coordination** when multiple Desktop instances can reach the same display.
-- **Safe firmware workflow** with image type, version, device identity, size, and SHA-256 checks.
-- **Declarative monitor profiles** with validated, non-executable configuration.
+- Electron + React desktop UI with allowlisted IPC into local services.
+- Native Rust sidecar for DDC/CI, LG USB HID/DDC, and supported internal-panel controls.
+- Optional Touch controller with independent BLE and private-LAN connections.
+- Coordinated command execution across multiple Desktop instances, including duplicate-command suppression.
+- Firmware BLE OTA service with size and SHA-256 checks; Desktop provides USB application-image flashing.
 
 ## How it fits together
 
@@ -149,7 +186,8 @@ Select this `firmware.bin` from the **Developer** page in YangCi. Do not
 select `bootloader.bin` or `partitions.bin`; those files are not accepted by the
 Desktop flashing workflow.
 
-To upload directly with PlatformIO:
+To upload directly with PlatformIO (replace the port with your device's port;
+for example, `COM7` on Windows):
 
 ```bash
 cd firmware
@@ -225,10 +263,6 @@ schema and the validated LG 32UQ85R mapping.
 ## Connectivity and security
 
 - BLE and Wi-Fi can independently connect AZORIA Touch to YangCi.
-- Tap the Music wordmark on Touch to view the current track and control previous,
-  play/pause, next, and playback mode through the local network.
-- Swipe down from the top of either music or immersive lyrics view to open the
-  system volume panel. Swipe up or tap × to dismiss it without leaving the current view.
 - LAN coordination uses TCP `8732`, UDP `8733`, and UDP `8734`.
 - Network services reject public-source traffic and are intended only for a
   trusted private network.
