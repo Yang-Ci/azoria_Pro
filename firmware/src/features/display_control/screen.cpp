@@ -28,6 +28,10 @@ lv_obj_t *brightness_slider = nullptr;
 lv_obj_t *brightness_value = nullptr;
 lv_obj_t *volume_slider = nullptr;
 lv_obj_t *volume_value = nullptr;
+lv_obj_t *music_volume_panel = nullptr;
+lv_obj_t *music_volume_slider = nullptr;
+lv_obj_t *music_volume_value = nullptr;
+bool music_volume_swipe_from_top = false;
 lv_obj_t *mute_button = nullptr;
 lv_obj_t *mute_icon = nullptr;
 lv_obj_t *clock_label = nullptr;
@@ -423,14 +427,21 @@ void brightnessReleased(lv_event_t *) {
   scheduleFullRedraw();
 }
 
+void updateVolumeVisual(int value) {
+  if (volume_slider) lv_slider_set_value(volume_slider, value, LV_ANIM_OFF);
+  if (volume_value) lv_label_set_text_fmt(volume_value, "%d", value);
+  if (music_volume_slider) lv_slider_set_value(music_volume_slider, value, LV_ANIM_OFF);
+  if (music_volume_value) lv_label_set_text_fmt(music_volume_value, "%d%%", value);
+}
+
 void volumePressed(lv_event_t *) {
   volume_dragging = true;
   post_interaction_redraw_due = 0;
 }
 
-void volumeChanged(lv_event_t *) {
-  int value = lv_slider_get_value(volume_slider);
-  if (volume_value) lv_label_set_text_fmt(volume_value, "%d", value);
+void volumeChanged(lv_event_t *event) {
+  int value = lv_slider_get_value(lv_event_get_target(event));
+  updateVolumeVisual(value);
   if (volume_dragging &&
       millis() - volume_last_sent >= kDragSendIntervalMs) {
     if (!queueNumericControl("volume", value, false)) {
@@ -440,10 +451,10 @@ void volumeChanged(lv_event_t *) {
   }
 }
 
-void volumeReleased(lv_event_t *) {
+void volumeReleased(lv_event_t *event) {
   if (!volume_dragging) return;
   volume_dragging = false;
-  int value = lv_slider_get_value(volume_slider);
+  int value = lv_slider_get_value(lv_event_get_target(event));
   if (!queueNumericControl("volume", value, true)) {
     setFooter("音量失败");
   }
@@ -531,6 +542,18 @@ void showBacklightPanel() {
 void hideBacklightPanel() {
   if (!backlight_panel) return;
   lv_obj_add_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN);
+  scheduleFullRedraw();
+}
+
+void panelSwipeToClose(lv_event_t *event) {
+  lv_indev_t *input = lv_indev_get_act();
+  if (!input || lv_indev_get_gesture_dir(input) != LV_DIR_TOP) return;
+  auto *panel = static_cast<lv_obj_t *>(lv_event_get_user_data(event));
+  if (!panel) return;
+  lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+  if (panel == music_volume_panel) music_volume_swipe_from_top = false;
+  // Consume this gesture so releasing cannot click controls underneath.
+  lv_indev_wait_release(input);
   scheduleFullRedraw();
 }
 
@@ -668,8 +691,48 @@ void musicControlClicked(lv_event_t *event) {
   scheduleFullRedraw();
 }
 
+void hideMusicVolume(lv_event_t * = nullptr) {
+  if (music_volume_panel) lv_obj_add_flag(music_volume_panel, LV_OBJ_FLAG_HIDDEN);
+  music_volume_swipe_from_top = false;
+  scheduleFullRedraw();
+}
+
+void musicVolumePressed(lv_event_t *) {
+  lv_indev_t *input = lv_indev_get_act();
+  if (!input) return;
+  lv_point_t point;
+  lv_indev_get_point(input, &point);
+  music_volume_swipe_from_top = point.y <= 100;
+}
+
+void musicVolumeGesture(lv_event_t *) {
+  lv_indev_t *input = lv_indev_get_act();
+  if (!input || !music_volume_panel || !music_volume_swipe_from_top ||
+      lv_indev_get_gesture_dir(input) != LV_DIR_BOTTOM) return;
+  music_volume_swipe_from_top = false;
+  lv_obj_clear_flag(music_volume_panel, LV_OBJ_FLAG_HIDDEN);
+  // The panel is shared by both views and sits above the immersive exit layer.
+  lv_obj_move_foreground(music_volume_panel);
+  last_interaction_at = millis();
+  lv_indev_wait_release(input);
+  scheduleFullRedraw();
+}
+
+void installMusicVolumeGesture(lv_obj_t *object) {
+  if (object == music_progress_bar) {
+    lv_obj_clear_flag(object, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    return;
+  }
+  lv_obj_add_flag(object, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(object, musicVolumePressed, LV_EVENT_PRESSED, nullptr);
+  for (uint32_t index = 0; index < lv_obj_get_child_cnt(object); ++index) {
+    installMusicVolumeGesture(lv_obj_get_child(object, index));
+  }
+}
+
 void hideMusicView(lv_event_t *) {
   if (!music_view) return;
+  hideMusicVolume();
   if (music_immersive_view) {
     lv_obj_add_flag(music_immersive_view, LV_OBJ_FLAG_HIDDEN);
   }
@@ -690,12 +753,14 @@ void showMusicView(lv_event_t *) {
 
 void hideImmersiveLyrics(lv_event_t *) {
   if (!music_immersive_view) return;
+  hideMusicVolume();
   lv_obj_add_flag(music_immersive_view, LV_OBJ_FLAG_HIDDEN);
   scheduleFullRedraw();
 }
 
 void showImmersiveLyrics(lv_event_t *) {
   if (!music_immersive_view) return;
+  hideMusicVolume();
   lv_obj_clear_flag(music_immersive_view, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(music_immersive_view);
   last_interaction_at = millis();
@@ -725,6 +790,48 @@ lv_obj_t *musicButton(lv_obj_t *parent, int x, const char *text,
   lv_obj_center(caption);
   if (button_label) *button_label = caption;
   return button;
+}
+
+void createMusicVolume(lv_obj_t *parent) {
+  music_volume_panel = card(parent, 13, 13, 454, 154);
+  lv_obj_set_style_bg_color(music_volume_panel, color(0x111827), 0);
+  lv_obj_set_style_border_width(music_volume_panel, 1, 0);
+  lv_obj_set_style_border_color(music_volume_panel, color(0x334155), 0);
+  lv_obj_clear_flag(music_volume_panel, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(music_volume_panel, panelSwipeToClose,
+                      LV_EVENT_GESTURE, music_volume_panel);
+  lv_obj_add_flag(music_volume_panel, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_t *title = staticLabel(music_volume_panel, "VOLUME", 20, 18,
+                                &lv_font_montserrat_16, 0xF8FAFC);
+  lv_obj_set_style_text_opa(title, LV_OPA_70, 0);
+  music_volume_value = staticLabel(music_volume_panel, "20%", 340, 14,
+                                   &lv_font_montserrat_28, 0xF8FAFC);
+  lv_obj_set_width(music_volume_value, 102);
+  lv_obj_set_style_text_align(music_volume_value, LV_TEXT_ALIGN_RIGHT, 0);
+
+  music_volume_slider = lv_slider_create(music_volume_panel);
+  lv_obj_set_pos(music_volume_slider, 20, 66);
+  styleSlider(music_volume_slider, 410, 0xA9D2FF);
+  lv_slider_set_range(music_volume_slider, 0, 100);
+  lv_obj_clear_flag(music_volume_slider, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(music_volume_slider, volumePressed, LV_EVENT_PRESSED, nullptr);
+  lv_obj_add_event_cb(music_volume_slider, volumeChanged, LV_EVENT_VALUE_CHANGED, nullptr);
+  lv_obj_add_event_cb(music_volume_slider, volumeReleased, LV_EVENT_RELEASED, nullptr);
+  lv_obj_add_event_cb(music_volume_slider, volumeReleased, LV_EVENT_PRESS_LOST, nullptr);
+  updateVolumeVisual(lv_slider_get_value(volume_slider));
+
+  staticLabel(music_volume_panel, "系统音量", 20, 114, &azoria_font_zh_16, 0x94A3B8);
+  lv_obj_t *close = lv_btn_create(music_volume_panel);
+  lv_obj_set_pos(close, 398, 104);
+  lv_obj_set_size(close, 38, 38);
+  lv_obj_set_style_bg_color(close, color(0x1D1D1D), 0);
+  lv_obj_set_style_shadow_width(close, 0, 0);
+  lv_obj_set_style_radius(close, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_pad_all(close, 0, 0);
+  disableScrolling(close);
+  lv_obj_add_event_cb(close, hideMusicVolume, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *caption = staticLabel(close, "X", 0, 0, &lv_font_montserrat_16, 0xF8FAFC);
+  lv_obj_center(caption);
 }
 
 // Center the measured text inside a fixed slot, including wrapped lines.
@@ -945,6 +1052,11 @@ void createMusicView(lv_obj_t *parent) {
   disableScrolling(immersive_exit);
   lv_obj_add_event_cb(immersive_exit, hideImmersiveLyrics, LV_EVENT_CLICKED,
                       nullptr);
+  installMusicVolumeGesture(music_view);
+  // Stop music gestures here so they cannot open the home backlight panel.
+  lv_obj_clear_flag(music_view, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(music_view, musicVolumeGesture, LV_EVENT_GESTURE, nullptr);
+  createMusicVolume(music_view);
   lv_obj_add_flag(music_immersive_view, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(music_view, LV_OBJ_FLAG_HIDDEN);
 }
@@ -954,6 +1066,9 @@ void createBacklightPanel(lv_obj_t *parent) {
   lv_obj_set_style_bg_color(backlight_panel, color(0x111827), 0);
   lv_obj_set_style_border_width(backlight_panel, 1, 0);
   lv_obj_set_style_border_color(backlight_panel, color(0x334155), 0);
+  lv_obj_clear_flag(backlight_panel, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(backlight_panel, panelSwipeToClose,
+                      LV_EVENT_GESTURE, backlight_panel);
   lv_obj_add_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN);
 
   lv_obj_t *title = staticLabel(
@@ -974,6 +1089,7 @@ void createBacklightPanel(lv_obj_t *parent) {
   lv_slider_set_range(backlight_slider, kMinBacklightPercent, 100);
   lv_slider_set_value(backlight_slider, current_backlight_percent, LV_ANIM_OFF);
   styleSlider(backlight_slider, 410, 0xA9D2FF);
+  lv_obj_clear_flag(backlight_slider, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_add_event_cb(
       backlight_slider, backlightChanged, LV_EVENT_VALUE_CHANGED, nullptr);
   lv_obj_add_event_cb(
@@ -1059,6 +1175,7 @@ void setControlsEnabled(bool enabled) {
   controls_enabled = enabled;
   lv_obj_t *interactive[] = {
       brightness_slider, volume_slider,
+      music_volume_slider,
   };
   for (lv_obj_t *object : interactive) {
     if (!object) continue;
@@ -1089,17 +1206,20 @@ void showScreen() {
   lv_obj_add_event_cb(
       controls, screenGesture, LV_EVENT_GESTURE, nullptr);
 
-  createUiImage(controls, &icon_azoria_logo_80, 28, 24,
-                   color(0xF8FAFC));
   lv_obj_t *music_open_button = lv_btn_create(controls);
-  lv_obj_set_pos(music_open_button, 20, 16);
-  lv_obj_set_size(music_open_button, 96, 96);
+  lv_obj_set_pos(music_open_button, 20, 14);
+  lv_obj_set_size(music_open_button, 118, 46);
   lv_obj_set_style_bg_opa(music_open_button, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_width(music_open_button, 0, 0);
   lv_obj_set_style_border_width(music_open_button, 0, 0);
   lv_obj_set_style_pad_all(music_open_button, 0, 0);
   disableScrolling(music_open_button);
   lv_obj_add_event_cb(music_open_button, showMusicView, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *music_wordmark = label(music_open_button, "Music", 0, 0,
+                                  &azoria_font_music_38);
+  lv_obj_set_style_text_color(music_wordmark, color(0xF8FAFC), 0);
+  lv_obj_clear_flag(music_wordmark, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_center(music_wordmark);
   lv_obj_t *wallpaper_button = DisplayBadge::create(controls);
   lv_obj_add_flag(wallpaper_button, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(
@@ -1306,8 +1426,7 @@ void refresh() {
     updateBrightnessSegments(state.brightness);
   }
   if (volume_needs_reconcile) {
-    lv_slider_set_value(volume_slider, state.volume, LV_ANIM_OFF);
-    if (volume_value) lv_label_set_text_fmt(volume_value, "%d", state.volume);
+    updateVolumeVisual(state.volume);
   }
   if (mute_needs_reconcile) {
     local_muted = state.muted;
@@ -1342,6 +1461,7 @@ void refresh() {
     lv_obj_set_style_bg_color(music_progress_bar, accent, LV_PART_KNOB);
     lv_obj_set_style_text_color(music_status, accent, 0);
     lv_obj_set_style_bg_color(music_immersive_indicator, accent, 0);
+    lv_obj_set_style_bg_color(music_volume_slider, accent, LV_PART_INDICATOR);
     for (auto *cover : {music_cover, immersive_cover}) {
       lv_obj_t *frame = lv_obj_get_parent(cover);
       lv_obj_set_style_shadow_color(frame, accent, 0);

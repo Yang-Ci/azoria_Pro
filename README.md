@@ -1,5 +1,9 @@
 # YangCi
 
+> Origin and thanks: this project started from [ayedaren/azoria](https://github.com/ayedaren/azoria)
+> and has since evolved through substantial changes to the desktop app, hardware
+> control, and Touch firmware.
+
 <div align="center">
 
 **A local-first control center for modern desktop displays.**
@@ -21,13 +25,18 @@ The project is designed to run locally. Display control, Touch discovery, and
 coordination stay on the host or trusted private network; no cloud service is
 required for normal operation.
 
-## AZORIA Touch
+## AZORIA Touch interface
 
-![AZORIA Touch on a desktop control dock](docs/images/azoria-touch-desktop-rec709.jpg)
+![AZORIA Touch: Music entry, music volume panel, and immersive lyrics volume panel](docs/images/azoria-touch-ui-overview.png)
 
-| Direct touch control | ESP32-S3 prototype hardware |
+| Music: swipe down for volume | Immersive lyrics: swipe down for volume |
 | --- | --- |
-| ![Adjusting display brightness on AZORIA Touch](docs/images/azoria-touch-interaction-rec709.jpg) | ![AZORIA Touch ESP32-S3 controller board](docs/images/azoria-touch-hardware-rec709.jpg) |
+| ![Music view with the system volume panel open](docs/images/azoria-touch-music-volume.png) | ![Immersive lyrics with the system volume panel open](docs/images/azoria-touch-immersive-volume.png) |
+
+Current 480×480 UI rendered directly with LVGL using sample music data. Tap the
+Music wordmark to enter music; swipe down from the top of either music view to
+adjust system volume, then swipe up or tap × to close the panel and stay on that
+page. The home screen's backlight panel also supports swipe-up dismissal.
 
 The optional Touch controller puts everyday display actions within reach while
 the Desktop app handles discovery, coordination, native DDC/CI access, and
@@ -216,8 +225,10 @@ schema and the validated LG 32UQ85R mapping.
 ## Connectivity and security
 
 - BLE and Wi-Fi can independently connect AZORIA Touch to YangCi.
-- Tap the AZORIA logo on Touch to view the current track and control previous,
+- Tap the Music wordmark on Touch to view the current track and control previous,
   play/pause, next, and playback mode through the local network.
+- Swipe down from the top of either music or immersive lyrics view to open the
+  system volume panel. Swipe up or tap × to dismiss it without leaving the current view.
 - LAN coordination uses TCP `8732`, UDP `8733`, and UDP `8734`.
 - Network services reject public-source traffic and are intended only for a
   trusted private network.

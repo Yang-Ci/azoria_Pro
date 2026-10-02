@@ -1,5 +1,8 @@
 # YangCi
 
+> 来源与致谢：本项目最初基于 [ayedaren/azoria](https://github.com/ayedaren/azoria)，
+> 此后持续重构和扩展桌面端、硬件控制与 Touch 固件。
+
 <div align="center">
 
 **中文** · [English](README.md)
@@ -9,13 +12,17 @@
 一个本地运行的桌面显示器控制项目。YangCi 是主控制端，AZORIA Touch
 是可选的 480×480 ESP32-S3 实体输入终端。
 
-## AZORIA Touch 实机
+## AZORIA Touch 界面
 
-![桌面控制底座上的 AZORIA Touch](docs/images/azoria-touch-desktop-rec709.jpg)
+![AZORIA Touch：Music 入口、普通音乐页音量面板、沉浸式歌词音量面板](docs/images/azoria-touch-ui-overview.png)
 
-| 触屏直接调节 | ESP32-S3 原型硬件 |
+| 普通音乐页：下滑调节音量 | 沉浸式歌词：下滑调节音量 |
 | --- | --- |
-| ![通过 AZORIA Touch 调节显示器亮度](docs/images/azoria-touch-interaction-rec709.jpg) | ![AZORIA Touch ESP32-S3 控制板](docs/images/azoria-touch-hardware-rec709.jpg) |
+| ![普通音乐页打开系统音量面板](docs/images/azoria-touch-music-volume.png) | ![沉浸式歌词页打开系统音量面板](docs/images/azoria-touch-immersive-volume.png) |
+
+以上为当前 480×480 界面的 LVGL 直接渲染预览，音乐内容使用示例数据。
+点击 Music 字标进入音乐页；普通音乐页和沉浸式歌词页均可从顶部下滑调节系统音量，
+向上滑动或点击 × 收起面板后仍停留在当前页面。首页的屏幕亮度面板也支持上滑收起。
 
 Touch 负责把常用的显示器操作放在手边，Desktop 则在后台完成设备发现、协调、原生
 DDC/CI 访问和固件管理。
@@ -82,12 +89,14 @@ AZORIA Touch 是可选的实体输入终端。首次使用时通过 USB 点击�
 Touch 通过 Wi‑Fi 或 BLE 建立连接后，由 Desktop 状态响应同步当前 Unix 时间和主机时区
 偏移，因此屏幕时间跟随当前 Desktop，不依赖固定时区或单独的公网 NTP 服务。
 
-点击 Touch 控制页左上角的 AZORIA 标志可打开音乐页。音乐页显示 Desktop 当前识别的
+点击 Touch 控制页左上角的 Music 字标可打开音乐页。音乐页显示 Desktop 当前识别的
 歌曲、歌手和播放模式，并可通过局域网执行上一首、播放/暂停、下一首和模式切换。
+在音乐页或沉浸式歌词页顶部向下滑动，可打开系统音量面板；调节后向上滑动或点击 × 收起，
+无需返回控制页。音量会与控制页及 Desktop 同步。
 
 在 Desktop 的“AZORIA Touch”页可上传图片或视频。桌面端会把媒体居中裁切为 480×480，
-视频转换为适合 ESP32-S3 播放的循环 JPEG 帧包，并通过局域网同步。点击 Touch 上 AZORIA
-标志下方的电脑图标可立即进入壁纸模式；Desktop 可将无操作自动进入时间设置为 1、5、
+视频转换为适合 ESP32-S3 播放的循环 JPEG 帧包，并通过局域网同步。点击 Touch 上 Music
+字标下方的电脑图标可立即进入壁纸模式；Desktop 可将无操作自动进入时间设置为 1、5、
 10、30 分钟或关闭，设置会同步并保存在 Touch 上；触摸壁纸一次即可返回控制页。插入
 TF 卡时优先使用卡内存储，桌面端生成的动态壁纸最长 10 秒、目标 25 帧、总大小不超过 24 MB；
 未插卡时自动使用板载数据分区，壁纸包需小于 3 MB。
