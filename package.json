@@ -16,6 +16,7 @@
     "package:linux": "npm run typecheck && npm run build && electron-builder --linux deb --x64 --publish never",
     "sidecar:build": "cargo build --manifest-path sidecar/Cargo.toml --release",
     "sidecar:test": "cargo test --manifest-path sidecar/Cargo.toml",
+    "usage:test": "node scripts/test-usage.cjs",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p desktop/tsconfig.json"
   },

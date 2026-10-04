@@ -1,6 +1,8 @@
 #include "platform/board.h"
 
 #include <Arduino.h>
+#include <driver/gpio.h>
+#include <esp32-hal-rmt.h>
 #include <esp_display_panel.hpp>
 #include <esp_lcd_panel_rgb.h>
 #include <new>
@@ -93,6 +95,21 @@ bool beginVieweFT6336U() {
 }  // namespace
 
 namespace Board {
+
+void flashStatusLed() {
+  constexpr uint8_t kStatusLedPin = 42;
+  // D3 is a WS2812B, not the hardwired D5 power indicator. Release RMT
+  // after the boot pulse so the TF-card SPI bus can own this shared pin.
+  rgbLedWrite(kStatusLedPin, 0, 16, 0);
+  delay(150);
+  rgbLedWrite(kStatusLedPin, 0, 0, 0);
+  delayMicroseconds(300);
+  rmtDeinit(kStatusLedPin);
+  gpio_reset_pin(static_cast<gpio_num_t>(kStatusLedPin));
+  gpio_set_direction(static_cast<gpio_num_t>(kStatusLedPin), GPIO_MODE_OUTPUT);
+  gpio_set_level(static_cast<gpio_num_t>(kStatusLedPin), 0);
+  Serial.println("RGB D3: boot pulse complete, LED off");
+}
 
 bool beginDisplay() {
   hardware = new (std::nothrow) esp_panel::board::Board();

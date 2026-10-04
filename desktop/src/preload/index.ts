@@ -1,7 +1,17 @@
 import { contextBridge, ipcRenderer } from "electron"
 import type { ControlRequest, DesktopApi, MusicControlRequest } from "../shared/contracts"
+import type { ApiProviderInput } from "../shared/usage"
 
 const api: DesktopApi = {
+  usage: {
+    touch: (index?: number) => ipcRenderer.invoke("usage:touch", index),
+    codex: () => ipcRenderer.invoke("usage:codex"),
+    providers: () => ipcRenderer.invoke("usage:providers"),
+    saveProvider: (input: ApiProviderInput) => ipcRenderer.invoke("usage:save-provider", input),
+    deleteProvider: (id: string) => ipcRenderer.invoke("usage:delete-provider", id),
+    refreshProvider: (id: string) => ipcRenderer.invoke("usage:refresh-provider", id),
+    testProvider: (input: ApiProviderInput) => ipcRenderer.invoke("usage:test-provider", input),
+  },
   music: {
     snapshot: () => ipcRenderer.invoke("music:snapshot"),
     calibrate: (positionMs: number) => ipcRenderer.invoke("music:calibrate", positionMs),

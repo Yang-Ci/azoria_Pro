@@ -10,3 +10,5 @@ extern const lv_font_t azoria_font_din_48;
 extern const lv_font_t azoria_font_din_condensed_48;
 extern const lv_font_t azoria_font_din_condensed_16;
 extern const lv_font_t azoria_font_music_38;
+extern const lv_font_t azoria_font_usage_80;
+extern const lv_font_t azoria_font_usage_110;

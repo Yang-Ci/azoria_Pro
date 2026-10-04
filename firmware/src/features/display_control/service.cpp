@@ -82,6 +82,8 @@ String music_artwork_hash;
 uint32_t music_artwork_retry_at = 0;
 uint8_t music_command_head = 0;
 uint8_t music_command_count = 0;
+uint8_t usage_provider_index = 0;
+bool usage_sync_requested = true;
 
 bool isPrivateIpv4(const IPAddress &address) {
   const uint8_t first = address[0];
@@ -586,6 +588,73 @@ void registerDevice() {
   }
 }
 
+void readUsage() {
+  uint8_t index;
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  index = usage_provider_index;
+  usage_sync_requested = false;
+  xSemaphoreGive(state_mutex);
+  String response;
+  bool accepted = WiFi.status() == WL_CONNECTED && !remote_config.host.isEmpty() &&
+      wifiRequest("GET", String("/v1/usage/status?index=") + index,
+                  nullptr, response, 2000);
+  if (!accepted && bleTransportValidated()) {
+    response = "{";
+    accepted = true;
+    for (int page = 0; page < 3; ++page) {
+      String part;
+      if (!bleTransportRequest("GET", String("/v1/usage/status/") + page +
+                               "?index=" + index, nullptr, part, 1500)) {
+        accepted = false;
+        break;
+      }
+      if (page) response += ",";
+      response += part.substring(1, part.length() - 1);
+    }
+    response += "}";
+  }
+  if (!accepted || !jsonBool(response, "usageSupported", false)) return;
+  UsageState next;
+  next.supported = true;
+  next.codex_available = jsonBool(response, "usageCodexAvailable", false);
+  next.codex_stale = jsonBool(response, "usageCodexStale", false);
+  strlcpy(next.codex_plan, jsonString(response, "usageCodexPlan", "").c_str(), sizeof(next.codex_plan));
+  next.primary_minutes = max(0, jsonInt(response, "usagePrimaryMinutes", 0));
+  next.primary_remaining = constrain(jsonInt(response, "usagePrimaryRemaining", -1), -1, 1000);
+  next.primary_resets_at = max(0, jsonInt(response, "usagePrimaryResetsAt", 0));
+  next.secondary_minutes = max(0, jsonInt(response, "usageSecondaryMinutes", 0));
+  next.secondary_remaining = constrain(jsonInt(response, "usageSecondaryRemaining", -1), -1, 1000);
+  next.secondary_resets_at = max(0, jsonInt(response, "usageSecondaryResetsAt", 0));
+  next.codex_sampled_at = max(0, jsonInt(response, "usageCodexSampledAt", 0));
+  next.provider_count = constrain(jsonInt(response, "usageProviderCount", 0), 0, 20);
+  next.provider_index = constrain(jsonInt(response, "usageProviderIndex", 0), 0, 19);
+  next.api_available = jsonBool(response, "usageApiAvailable", false);
+  next.api_stale = jsonBool(response, "usageApiStale", false);
+  next.api_paused = jsonBool(response, "usageApiPaused", false);
+  next.api_error = jsonBool(response, "usageApiError", false);
+  struct TextField { const char *key; char *out; size_t size; };
+  TextField fields[] = {
+    {"usageApiName", next.api_name, sizeof(next.api_name)},
+    {"usageApiUnit", next.api_unit, sizeof(next.api_unit)},
+    {"usageApiRemaining", next.api_remaining, sizeof(next.api_remaining)},
+    {"usageApiCompact", next.api_compact, sizeof(next.api_compact)},
+    {"usageApiScale", next.api_scale, sizeof(next.api_scale)},
+    {"usageApiUsed", next.api_used, sizeof(next.api_used)},
+    {"usageApiRecent", next.api_recent, sizeof(next.api_recent)},
+    {"usageApiRequests", next.api_requests, sizeof(next.api_requests)},
+  };
+  for (const auto &field : fields) strlcpy(field.out, jsonString(response, field.key, "--").c_str(), field.size);
+  next.api_sampled_at = max(0, jsonInt(response, "usageApiSampledAt", 0));
+  next.received_at_ms = millis();
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  if (index == usage_provider_index) {
+    next.revision = remote_state.usage.revision + 1;
+    remote_state.usage = next;
+    usage_provider_index = next.provider_index;
+  }
+  xSemaphoreGive(state_mutex);
+}
+
 bool readStatus() {
   String response;
   if (!request("GET", "/v1/status", nullptr, response,
@@ -1071,6 +1140,7 @@ CommandResult runCommand(const Command &command) {
 
 void remoteTask(void *) {
   uint32_t last_status = 0;
+  uint32_t last_usage = 0;
   uint32_t last_registration = 0;
   bool desktop_verified = false;
   uint8_t consecutive_status_failures = 0;
@@ -1135,6 +1205,13 @@ void remoteTask(void *) {
         consecutive_status_failures = 0;
       }
       last_status = millis();
+    }
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+    const bool sync_usage = usage_sync_requested;
+    xSemaphoreGive(state_mutex);
+    if (desktop_verified && (sync_usage || millis() - last_usage >= 15000)) {
+      readUsage();
+      last_usage = millis();
     }
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(60));
   }
@@ -1204,6 +1281,30 @@ RemoteState getRemoteState() {
   copy = remote_state;
   xSemaphoreGive(state_mutex);
   return copy;
+}
+
+void selectUsageProvider(uint8_t index) {
+  if (!state_mutex) return;
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  usage_provider_index = min(static_cast<uint8_t>(19), index);
+  // Hide the previous account immediately while the new account is loading.
+  remote_state.usage.api_available = false;
+  remote_state.usage.api_error = false;
+  remote_state.usage.api_stale = false;
+  remote_state.usage.provider_index = usage_provider_index;
+  strlcpy(remote_state.usage.api_name, "Loading", sizeof(remote_state.usage.api_name));
+  ++remote_state.usage.revision;
+  usage_sync_requested = true;
+  xSemaphoreGive(state_mutex);
+  wakeRemoteTask();
+}
+
+void requestUsageSync() {
+  if (!state_mutex) return;
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  usage_sync_requested = true;
+  xSemaphoreGive(state_mutex);
+  wakeRemoteTask();
 }
 
 bool queueNumericControl(const char *control, int value, bool final_value) {

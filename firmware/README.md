@@ -12,6 +12,11 @@ pio device monitor --port /dev/cu.usbmodemXXXX --baud 115200
 
 应用固件输出到 `.pio/build/viewe_uedx48480040e_wb_a/firmware.bin`。
 
+手动调用 esptool 刷入时，应保留镜像中的启动参数（`--flash-mode keep`）。
+当前 ESP32-S3 启动镜像使用 DIO，不能按 `board_build.flash_mode = qio` 强制改写
+启动镜像头，否则会在 ROM 加载阶段反复重启。PlatformIO 上传会自动处理此区别。
+说明见 [Espressif 启动模式文档](https://docs.espressif.com/projects/esptool/en/latest/esp32s3/advanced-topics/boot-mode-selection.html)。
+
 ## 目录
 
 - `assets/icons/`：生成 LVGL 图标所使用的 SVG 源文件；
@@ -42,16 +47,50 @@ Touch 上；触摸壁纸返回控制界面。插入 TF 卡时优先使用 TF 卡
 `spiffs` 数据分区（LittleFS 文件系统）。
 局域网协议不做身份认证，应仅在可信局域网中使用。
 
-主界面左上角的 `Music` 字标使用 38 px 连笔字体，点击进入音乐页。
+主界面保留原有入口布局；左上角的 Music 字标使用 38 px 连笔字体。
+Linux 图标从 SVG 直接生成原生 40 px 图像，使用 `node scripts/generate_linux_icon.cjs`
+（在 firmware 目录）重新生成，避免放大较小的位图。
 普通音乐页与沉浸式歌词页均可从顶部向下滑出系统音量面板，向上滑动或点击 × 收起；
 音量调节沿用控制页的预览节流、最终值提交和状态同步，拖动不会退出沉浸式歌词。
+背光与音乐音量浮层使用相同的细刻度、醒目数值、圆形滑块和收起把手布局；
+背光使用暖金色，音乐音量跟随封面主题色。
+背光浮层标注“Touch 屏幕亮度”，与首页的显示器亮度区分。
+浮层以短距离滑入和淡入展开，滑块按下时轻微放大，离开音乐页会取消浮层动效。
 字标字体来源和生成命令见 `assets/fonts/README.md`。
 
 音乐界面字体由 `DroidSansFallbackFull` 中文字体、Noto Sans 拉丁扩展字体和 LVGL
 Montserrat 后备字体组成。`azoria_font_latin_16.c` 与 `azoria_font_latin_28.c` 覆盖
 `U+00A0–U+024F`，用于罗马尼亚语等含重音字符的歌词；生成参数记录在各字体源文件头部。
 
+主界面顶部的 `Codex / API` 打开额度仪表：采用精密刻度布局，主额度使用青绿刻度、
+第二周期使用淡紫色条形刻度。套餐文字显示在顶部 CODEX 标题右侧。
+周期标题使用“5 小时额度”“周额度”等名称；周额度数字左侧同一行显示
+“周额度 / 重置倒计时”，右下角显示同步时间。主额度的 100% 和小数使用紧凑字号
+并保持垂直居中，避免碰到圆弧刻度。
+识别到 Codex Pro 套餐后自动使用黑金周额度仪表：金色细刻度和居中的大数字显示
+周额度，下方显示重置倒计时，顶部显示 PRO 铭牌。按周期长度识别实际周窗口，
+不显示五小时窗口；缺少周窗口时显示等待额度数据。Plus 沿用青绿和淡紫色的原版仪表。
+打开额度页时刻度依次点亮一次；额度变化时刻度平滑增减，数字立即显示真实值。
+按钮带轻微提亮反馈，切页使用短距离滑入和淡入，完整余额弹窗淡入并轻微上移。
+动效结束后保持静止，离开额度页会停止动效；空数据和已结束周期不播放额度动画。
+底部按钮或左右滑动切换 Codex / API 两页，点击返回箭头回到首页。
+API 页隐藏服务名称，显示账户序号，点击账户余额
+标题循环切换桌面端已配置的账户。余额自动缩写为万 / 亿，点击余额查看完整金额。
+Touch 每 15 秒获取桌面缓存；桌面在后台检查 Codex 额度并按服务刷新间隔查询 API，
+无需一直打开桌面额度标签。支持 Wi-Fi 和分页蓝牙同步，API 查询凭据只保存在电脑。
+离线、暂停、查询失败和过期采样会保留或标明已有数据，重置后等待下一次真实采样。
+
+可使用 `python scripts/preview_usage.py`（在 firmware 目录，需要 GCC/G++ 和 Pillow）
+渲染实际 LVGL 页面并验证额度边界、小数、空状态、隐藏服务名称、切页、完整金额、
+切账户、离线及周期结束交互。USB 调试
+命令 `AZORIA_USAGE 0` / `AZORIA_USAGE 1` 打开对应页，配合 `AZORIA_SCREENSHOT` 抓图。
+
 当前硬件验证：VIEWE UEDX48480040E-WB-A V1.3、480×480 GC9503、FT6336U、16MB
 Flash 和 8MB PSRAM。
+
+背部方形 D3 是 WS2812B RGB 状态灯。启动时以低亮度绿光亮 150 ms，随后熄灭。
+它与 TF 卡 MOSI 共用 GPIO42；每次 TF 卡命令结束后，固件在卡片未选中时发送
+熄灯数据，避免探测或低速通信误点亮 RGB 灯。D5 是硬接 3.3V 的供电指示灯，
+无法通过固件控制。硬件接线见 [VIEWE V1.3 原理图](https://github.com/VIEWESMART/UEDX48480040ESP32-4inch-Touch-Display/blob/main/Schematic/UEDX48480040E-WB-A%20V1.3.SCH_00.png)。
 
 代码遵循根目录 GPL-3.0-or-later；板卡、显示器、平台标识和第三方组件仍受各自许可约束。

@@ -1,3 +1,5 @@
+import type { UsageApi } from "./usage"
+
 export type InputSource = "dp1" | "hdmi1" | "hdmi2" | "usbc"
 export type ControlTarget = InputSource | "internal"
 export type ControlName = "brightness" | "volume" | "mute" | "input"
@@ -270,6 +272,7 @@ export interface DiagnosticsReport {
 }
 
 export interface DesktopApi {
+  usage: UsageApi
   music: {
     snapshot(): Promise<MusicSnapshot>
     calibrate(positionMs: number): Promise<MusicSnapshot>

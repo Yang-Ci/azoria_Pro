@@ -289,6 +289,7 @@ void setup() {
   delay(300);
   Serial.println("\nAzoria Display Controller");
 
+  Board::flashStatusLed();
   if (!Board::beginDisplay()) {
     Serial.println("Fatal display initialization error");
     return;

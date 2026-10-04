@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Disc3, ListEnd, Music2, Pause, Play, RefreshCw, Repeat1, Repeat2, Shuffle, SkipBack, SkipForward } from "lucide-react"
 import type { MusicControlRequest, MusicSnapshot, MusicSource, MusicTrack } from "../../../shared/contracts"
+import { currentLyricIndex, projectedMusicPosition } from "../../../shared/music-timing"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -44,20 +45,12 @@ function neteasePlaybackModeLabel(track: MusicTrack) {
   return "未同步，点击切换"
 }
 
-function projectedPosition(track: MusicTrack, now: number) {
-  const elapsed = track.status === "playing" && track.sampledAt > 0
-    ? Math.max(0, now - track.sampledAt) * track.playbackRate
-    : 0
-  const position = track.positionMs + elapsed
-  return track.durationMs > 0 ? Math.min(position, track.durationMs) : position
-}
-
 export function optimisticMusicControl(snapshot: MusicSnapshot, request: MusicControlRequest): MusicSnapshot {
   if (!snapshot.track) return snapshot
   const track = { ...snapshot.track }
   const now = Date.now()
-  if (request.action === "play") { track.status = "playing"; track.sampledAt = now }
-  if (request.action === "pause") { track.positionMs = projectedPosition(track, now); track.status = "paused"; track.sampledAt = now }
+  if (request.action === "play") { track.positionMs = projectedMusicPosition(track, now); track.status = "playing"; track.sampledAt = now }
+  if (request.action === "pause") { track.positionMs = projectedMusicPosition(track, now); track.status = "paused"; track.sampledAt = now }
   if (request.action === "seek") { track.positionMs = request.positionMs; track.sampledAt = now }
   if (request.action === "set-shuffle") track.shuffleActive = request.enabled
   if (request.action === "set-repeat") track.repeatMode = request.repeatMode
@@ -137,6 +130,7 @@ export function MusicLyricsCard() {
   const [controlError, setControlError] = useState("")
   const [seekingMs, setSeekingMs] = useState<number | null>(null)
   const currentRef = useRef<HTMLButtonElement>(null)
+  const lyricsRef = useRef<HTMLDivElement>(null)
   const refreshingRef = useRef(false)
   const controlCooldownRef = useRef(false)
   const controlRequestRef = useRef(0)
@@ -145,8 +139,14 @@ export function MusicLyricsCard() {
   const refresh = useCallback(async () => {
     if (refreshingRef.current || controlInFlightRef.current > 0) return
     refreshingRef.current = true
-    try { setSnapshot(await window.azoria.music.snapshot()) }
-    catch (error) { setSnapshot({ ...empty, message: error instanceof Error ? error.message : "音乐检测失败" }) }
+    const requestId = controlRequestRef.current
+    try {
+      const next = await window.azoria.music.snapshot()
+      if (requestId === controlRequestRef.current) setSnapshot(next)
+    }
+    catch (error) {
+      if (requestId === controlRequestRef.current) setSnapshot({ ...empty, message: error instanceof Error ? error.message : "音乐检测失败" })
+    }
     finally { refreshingRef.current = false; setLoading(false) }
   }, [])
 
@@ -158,21 +158,52 @@ export function MusicLyricsCard() {
 
   const track = snapshot.track
   useEffect(() => {
-    setPlaybackNow(Date.now())
+    const now = Date.now()
+    setPlaybackNow(now)
     if (track?.status !== "playing") return
-    const timer = window.setInterval(() => setPlaybackNow(Date.now()), 100)
-    return () => window.clearInterval(timer)
-  }, [track?.status, track?.title, track?.artist])
-  const positionMs = seekingMs ?? (track ? projectedPosition(track, playbackNow) : 0)
-  const currentIndex = useMemo(() => {
-    if (!track || positionMs <= 0) return -1
-    for (let index = snapshot.lines.length - 1; index >= 0; index--) {
-      if ((snapshot.lines[index]?.timeMs ?? Number.MAX_SAFE_INTEGER) <= positionMs) return index
+    let lastPublishedAt = now
+    let lastIndex = currentLyricIndex(snapshot.lines, seekingMs ?? projectedMusicPosition(track, now))
+    let frame: number
+    const update = () => {
+      const nextNow = Date.now()
+      const nextIndex = currentLyricIndex(snapshot.lines, seekingMs ?? projectedMusicPosition(track, nextNow))
+      // Check lyric boundaries every frame, while painting the progress bar at 10 Hz.
+      if (nextIndex !== lastIndex || nextNow - lastPublishedAt >= 100) {
+        lastIndex = nextIndex
+        lastPublishedAt = nextNow
+        setPlaybackNow(nextNow)
+      }
+      frame = window.requestAnimationFrame(update)
     }
-    return -1
-  }, [snapshot.lines, track, positionMs])
+    frame = window.requestAnimationFrame(update)
+    return () => window.cancelAnimationFrame(frame)
+  }, [track, snapshot.lines, seekingMs])
+  const positionMs = seekingMs ?? (track ? projectedMusicPosition(track, playbackNow) : 0)
+  const currentIndex = useMemo(() => track ? currentLyricIndex(snapshot.lines, positionMs) : -1, [snapshot.lines, track, positionMs])
 
-  useEffect(() => { currentRef.current?.scrollIntoView({ block: "center", behavior: "smooth" }) }, [currentIndex])
+  useLayoutEffect(() => {
+    const container = lyricsRef.current
+    const line = currentRef.current
+    if (!container || !line) return
+    const target = Math.max(0, Math.min(container.scrollHeight - container.clientHeight,
+      line.offsetTop - (container.clientHeight - line.offsetHeight) / 2))
+    const start = container.scrollTop
+    const distance = target - start
+    // Seeking and track changes should land directly on the current line.
+    if (Math.abs(distance) > container.clientHeight || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      container.scrollTop = target
+      return
+    }
+    const startedAt = performance.now()
+    let frame: number
+    const scroll = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / 120)
+      container.scrollTop = start + distance * (1 - (1 - progress) ** 3)
+      if (progress < 1) frame = window.requestAnimationFrame(scroll)
+    }
+    frame = window.requestAnimationFrame(scroll)
+    return () => window.cancelAnimationFrame(frame)
+  }, [currentIndex, track?.title, track?.artist])
   useEffect(() => { setSeekingMs(null) }, [track?.title, track?.artist])
 
   const runControl = useCallback((request: MusicControlRequest) => {
@@ -254,8 +285,8 @@ export function MusicLyricsCard() {
           {track.positionSource === "manual" && <p className="text-xs leading-5 text-zinc-500">已手动校准；若之后拖动了播放器进度，可再次点击实际歌词重新校准。</p>}
           {snapshot.matchedTitle && <div className="border-t border-white/10 pt-4 text-xs text-zinc-500">匹配：{snapshot.matchedTitle}{snapshot.matchedArtist ? ` · ${snapshot.matchedArtist}` : ""}</div>}
         </div>
-        <div className="h-[440px] overflow-y-auto rounded-lg border border-white/10 bg-zinc-950/60 px-6 py-8 text-center">
-          {snapshot.lines.map((line, index) => <button type="button" key={`${line.timeMs}-${index}`} ref={index === currentIndex ? currentRef : undefined} title={track.controls.seek ? "点击跳转到这句歌词" : "点击将歌词进度校准到这句"} onClick={() => void seekOrCalibrate(line.timeMs)} className={`block w-full py-2 text-center transition-all hover:text-zinc-200 ${index === currentIndex ? "scale-105 text-base font-semibold text-white" : "text-sm text-zinc-500"}`}>{line.text}</button>)}
+        <div ref={lyricsRef} role="region" aria-label="同步歌词" className="relative h-[440px] overflow-y-auto rounded-lg border border-white/10 bg-zinc-950/60 px-6 py-8 text-center">
+          {snapshot.lines.map((line, index) => <button type="button" key={`${line.timeMs}-${index}`} ref={index === currentIndex ? currentRef : undefined} aria-current={index === currentIndex ? true : undefined} title={track.controls.seek ? "点击跳转到这句歌词" : "点击将歌词进度校准到这句"} onClick={() => void seekOrCalibrate(line.timeMs)} className={`block w-full py-2 text-center transition-[color,transform] duration-100 hover:text-zinc-200 ${index === currentIndex ? "scale-105 text-base font-semibold text-white" : "text-sm text-zinc-500"}`}>{line.text}</button>)}
           {!snapshot.lines.length && snapshot.plainText && <p className="whitespace-pre-line text-sm leading-8 text-zinc-300">{snapshot.plainText}</p>}
           {!snapshot.lines.length && !snapshot.plainText && <div className="flex h-full items-center justify-center text-sm text-zinc-500">暂时没有可显示的歌词</div>}
         </div>

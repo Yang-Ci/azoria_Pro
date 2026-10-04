@@ -1,8 +1,11 @@
 import type { ControlRequest, MonitorStatus, MusicControlRequest } from "../../shared/contracts"
+import { touchUsageBlePage } from "../../shared/touch-usage"
+import type { TouchUsageStatus } from "../../shared/touch-usage"
 
 const SERVICE = "7a6f0001-4e6d-4a9b-8f41-3c41588fee68"
 const REQUEST = "7a6f0002-4e6d-4a9b-8f41-3c41588fee68"
 const RESPONSE = "7a6f0003-4e6d-4a9b-8f41-3c41588fee68"
+let usageBleSnapshot: { nonce: string; index: number; at: number; status: TouchUsageStatus } | undefined
 
 type Characteristic = {
   readValue(): Promise<DataView>
@@ -161,6 +164,13 @@ async function handleRequest(
       const current = await status()
       const now = new Date()
       payload = `S|${current.brightness}|${current.volume}|${current.mute ? 1 : 0}|${current.input}|${current.available === false ? 0 : 1}|${Math.floor(now.getTime() / 1000)}|${-now.getTimezoneOffset()}|${current.wallpaperHash || ""}|${current.wallpaperSize || 0}|${current.wallpaperIdleMinutes ?? 5}|${current.touchSleepEnabled ? 1 : 0}|${current.touchSleepStartMinutes ?? 0}|${current.touchSleepEndMinutes ?? 0}|${current.touchSleepActive ? 1 : 0}`
+    } else if (fields[3] === "V" && fields.length === 7) {
+      const page = Number(fields[4])
+      const index = Number(fields[5])
+      if (!Number.isInteger(page) || page < 0 || page > 2 || !Number.isInteger(index) || index < 0 || index >= 20) throw new Error("unsupported")
+      if (page === 0) usageBleSnapshot = { nonce, index, at: Date.now(), status: await window.azoria.usage.touch(index) }
+      if (!usageBleSnapshot || usageBleSnapshot.nonce !== nonce || usageBleSnapshot.index !== index || Date.now() - usageBleSnapshot.at > 10_000) throw new Error("usage snapshot expired")
+      payload = touchUsageBlePage(usageBleSnapshot.status, page)
     } else if (fields[3] === "M" && fields.length === 6) {
       const current = await status()
       const page = fields[4]

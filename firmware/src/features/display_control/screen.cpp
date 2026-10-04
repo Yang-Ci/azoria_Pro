@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include "features/display_control/service.h"
+#include "features/display_control/usage_view.h"
 #include "features/wallpaper/wallpaper.h"
 #include "platform/board.h"
 #include "ui/display_badge.h"
@@ -31,6 +32,7 @@ lv_obj_t *volume_value = nullptr;
 lv_obj_t *music_volume_panel = nullptr;
 lv_obj_t *music_volume_slider = nullptr;
 lv_obj_t *music_volume_value = nullptr;
+lv_obj_t *music_volume_icon = nullptr;
 bool music_volume_swipe_from_top = false;
 lv_obj_t *mute_button = nullptr;
 lv_obj_t *mute_icon = nullptr;
@@ -112,6 +114,8 @@ constexpr uint16_t kDefaultWallpaperIdleMinutes = 5;
 constexpr uint32_t kDragSendIntervalMs = 400;
 constexpr uint32_t kPostInteractionRedrawDelayMs = 2000;
 constexpr int kBrightnessSegmentCount = 40;
+constexpr uint32_t kLightAccent = 0xE8C58A;
+constexpr uint32_t kSoundAccent = 0xA9D2FF;
 constexpr const char *kInputValues[] = {
     "dp1", "hdmi1", "hdmi2", "usbc", "internal",
 };
@@ -306,6 +310,133 @@ void styleSlider(lv_obj_t *slider, int width, uint32_t accent) {
   lv_obj_set_style_width(slider, 22, LV_PART_KNOB);
   lv_obj_set_style_height(slider, 22, LV_PART_KNOB);
   lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
+}
+
+void styleAdjustmentSlider(lv_obj_t *slider, int width, uint32_t accent) {
+  const lv_style_selector_t pressed_knob = static_cast<lv_style_selector_t>(LV_PART_KNOB) |
+                                           static_cast<lv_style_selector_t>(LV_STATE_PRESSED);
+  lv_obj_set_size(slider, width, 8);
+  lv_obj_set_ext_click_area(slider, 18);
+  lv_obj_set_style_pad_all(slider, 0, LV_PART_MAIN);
+  lv_obj_set_style_border_width(slider, 0, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(slider, color(0x303035), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(slider, color(accent), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_INDICATOR);
+  lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(slider, color(0xF6F1E9), LV_PART_KNOB);
+  lv_obj_set_style_pad_all(slider, 9, LV_PART_KNOB);
+  lv_obj_set_style_pad_all(slider, 12, pressed_knob);
+  lv_obj_set_style_border_width(slider, 2, LV_PART_KNOB);
+  lv_obj_set_style_border_color(slider, color(accent), LV_PART_KNOB);
+  lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
+  lv_obj_set_style_shadow_color(slider, color(accent), LV_PART_KNOB);
+  lv_obj_set_style_shadow_width(slider, 0, LV_PART_KNOB);
+  lv_obj_set_style_shadow_width(slider, 14, pressed_knob);
+  lv_obj_set_style_shadow_opa(slider, LV_OPA_30, LV_PART_KNOB);
+  static const lv_style_prop_t properties[] = {
+      LV_STYLE_PAD_TOP, LV_STYLE_PAD_BOTTOM, LV_STYLE_PAD_LEFT,
+      LV_STYLE_PAD_RIGHT, LV_STYLE_SHADOW_WIDTH, LV_STYLE_PROP_INV};
+  static lv_style_transition_dsc_t transition;
+  lv_style_transition_dsc_init(&transition, properties, lv_anim_path_ease_out, 90, 0, nullptr);
+  lv_obj_set_style_transition(slider, &transition, LV_PART_KNOB);
+  lv_obj_set_style_transition(slider, &transition, pressed_knob);
+}
+
+void adjustmentPanelMotion(void *target, int32_t progress) {
+  auto *panel = static_cast<lv_obj_t *>(target);
+  lv_obj_set_style_translate_y(panel, -18 * (255 - progress) / 255, 0);
+  lv_obj_set_style_opa(panel, progress, 0);
+}
+
+void adjustmentPanelClosed(lv_anim_t *animation) {
+  auto *panel = static_cast<lv_obj_t *>(animation->var);
+  lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+  adjustmentPanelMotion(panel, 255);
+}
+
+void animateAdjustmentPanel(lv_obj_t *panel, bool opening) {
+  if (!panel) return;
+  lv_anim_del(panel, adjustmentPanelMotion);
+  const int from = lv_obj_has_flag(panel, LV_OBJ_FLAG_HIDDEN) ? 0 : lv_obj_get_style_opa(panel, 0);
+  if (opening) {
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(panel);
+  } else if (lv_obj_has_flag(panel, LV_OBJ_FLAG_HIDDEN)) return;
+  lv_anim_t animation;
+  lv_anim_init(&animation);
+  lv_anim_set_var(&animation, panel);
+  lv_anim_set_values(&animation, from, opening ? 255 : 0);
+  lv_anim_set_time(&animation, opening ? 180 : 130);
+  lv_anim_set_path_cb(&animation, lv_anim_path_ease_out);
+  lv_anim_set_exec_cb(&animation, adjustmentPanelMotion);
+  if (!opening) lv_anim_set_ready_cb(&animation, adjustmentPanelClosed);
+  lv_anim_start(&animation);
+}
+
+void hideAdjustmentPanel(lv_obj_t *panel) {
+  if (!panel) return;
+  lv_anim_del(panel, adjustmentPanelMotion);
+  lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+  adjustmentPanelMotion(panel, 255);
+}
+
+lv_obj_t *adjustmentPanel(lv_obj_t *parent, const char *title, const char *subtitle,
+                          const lv_img_dsc_t *icon, uint32_t accent,
+                          lv_obj_t **value, lv_obj_t **slider, lv_event_cb_t close_callback,
+                          int minimum = 0, lv_obj_t **panel_icon = nullptr) {
+  lv_obj_t *panel = card(parent, 13, 13, 454, 180);
+  lv_obj_set_style_bg_color(panel, color(0x151518), 0);
+  lv_obj_set_style_border_width(panel, 1, 0);
+  lv_obj_set_style_border_color(panel, lv_color_mix(color(accent), color(0x242428), 35), 0);
+  lv_obj_set_style_radius(panel, 20, 0);
+  lv_obj_clear_flag(panel, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_t *handle = card(panel, 202, 9, 50, 4);
+  lv_obj_set_style_bg_color(handle, color(0x4A4A50), 0);
+  lv_obj_clear_flag(handle, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(handle, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_t *image = createUiImage(panel, icon, 26, 35, color(accent));
+  if (panel_icon) *panel_icon = image;
+  lv_obj_add_flag(image, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_t *caption = staticLabel(panel, title, 52, 33, &lv_font_montserrat_16, 0xB0B0B8);
+  lv_obj_set_style_text_letter_space(caption, 2, 0);
+  *value = staticLabel(panel, "--%", 248, 20, &azoria_font_din_condensed_48, 0xF6F1E9);
+  lv_obj_set_width(*value, 124);
+  lv_obj_set_style_text_align(*value, LV_TEXT_ALIGN_RIGHT, 0);
+  *slider = lv_slider_create(panel);
+  lv_obj_set_pos(*slider, 28, 88);
+  styleAdjustmentSlider(*slider, 398, accent);
+  lv_obj_clear_flag(*slider, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  for (int index = 0; index <= 20; ++index) {
+    lv_obj_t *tick = card(panel, 28 + index * 398 / 20, 110, 1, index % 5 == 0 ? 7 : 3);
+    lv_obj_set_style_bg_color(tick, color(0x4A4A50), 0);
+    lv_obj_clear_flag(tick, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(tick, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  }
+  lv_obj_t *minimum_label = staticLabel(panel, "0", 28, 138, &lv_font_montserrat_14, 0x74747E);
+  lv_label_set_text_fmt(minimum_label, "%d", minimum);
+  lv_obj_t *maximum = staticLabel(panel, "100", 394, 138, &lv_font_montserrat_14, 0x74747E);
+  lv_obj_set_width(maximum, 32);
+  lv_obj_set_style_text_align(maximum, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_obj_t *hint = staticLabel(panel, subtitle, 100, 138, &azoria_font_zh_16, 0x92929C);
+  lv_obj_set_width(hint, 254);
+  lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_t *close = lv_btn_create(panel);
+  lv_obj_set_pos(close, 388, 24);
+  lv_obj_set_size(close, 44, 44);
+  lv_obj_set_style_bg_color(close, color(0x242428), 0);
+  lv_obj_set_style_bg_color(close, color(0x3A3A40), LV_STATE_PRESSED);
+  lv_obj_set_style_border_width(close, 0, 0);
+  lv_obj_set_style_shadow_width(close, 0, 0);
+  lv_obj_set_style_radius(close, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_pad_all(close, 0, 0);
+  disableScrolling(close);
+  lv_obj_add_event_cb(close, close_callback, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *close_label = staticLabel(close, LV_SYMBOL_CLOSE, 0, 0, &lv_font_montserrat_16, 0xB0B0B8);
+  lv_obj_center(close_label);
+  return panel;
 }
 
 void setFooter(const char *text) {
@@ -534,14 +665,13 @@ void inputStripScrolled(lv_event_t *) {
 
 void showBacklightPanel() {
   if (!backlight_panel) return;
-  lv_obj_clear_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_move_foreground(backlight_panel);
+  animateAdjustmentPanel(backlight_panel, true);
   scheduleFullRedraw();
 }
 
 void hideBacklightPanel() {
   if (!backlight_panel) return;
-  lv_obj_add_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN);
+  hideAdjustmentPanel(backlight_panel);
   scheduleFullRedraw();
 }
 
@@ -550,7 +680,7 @@ void panelSwipeToClose(lv_event_t *event) {
   if (!input || lv_indev_get_gesture_dir(input) != LV_DIR_TOP) return;
   auto *panel = static_cast<lv_obj_t *>(lv_event_get_user_data(event));
   if (!panel) return;
-  lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+  animateAdjustmentPanel(panel, false);
   if (panel == music_volume_panel) music_volume_swipe_from_top = false;
   // Consume this gesture so releasing cannot click controls underneath.
   lv_indev_wait_release(input);
@@ -571,7 +701,8 @@ void backlightReleased(lv_event_t *) {
 }
 
 void closeBacklightPanel(lv_event_t *) {
-  hideBacklightPanel();
+  animateAdjustmentPanel(backlight_panel, false);
+  scheduleFullRedraw();
 }
 
 void screenGesture(lv_event_t *) {
@@ -691,8 +822,9 @@ void musicControlClicked(lv_event_t *event) {
   scheduleFullRedraw();
 }
 
-void hideMusicVolume(lv_event_t * = nullptr) {
-  if (music_volume_panel) lv_obj_add_flag(music_volume_panel, LV_OBJ_FLAG_HIDDEN);
+void hideMusicVolume(lv_event_t *event = nullptr) {
+  if (event) animateAdjustmentPanel(music_volume_panel, false);
+  else hideAdjustmentPanel(music_volume_panel);
   music_volume_swipe_from_top = false;
   scheduleFullRedraw();
 }
@@ -710,9 +842,8 @@ void musicVolumeGesture(lv_event_t *) {
   if (!input || !music_volume_panel || !music_volume_swipe_from_top ||
       lv_indev_get_gesture_dir(input) != LV_DIR_BOTTOM) return;
   music_volume_swipe_from_top = false;
-  lv_obj_clear_flag(music_volume_panel, LV_OBJ_FLAG_HIDDEN);
   // The panel is shared by both views and sits above the immersive exit layer.
-  lv_obj_move_foreground(music_volume_panel);
+  animateAdjustmentPanel(music_volume_panel, true);
   last_interaction_at = millis();
   lv_indev_wait_release(input);
   scheduleFullRedraw();
@@ -744,9 +875,17 @@ void hideMusicView(lv_event_t *) {
 void showMusicView(lv_event_t *) {
   if (!music_view) return;
   hideBacklightPanel();
+  UsageView::hide();
   music_view_active = true;
   lv_obj_clear_flag(music_view, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(music_view);
+  last_interaction_at = millis();
+  scheduleFullRedraw();
+}
+
+void showUsageView(lv_event_t *) {
+  hideBacklightPanel();
+  UsageView::show();
   last_interaction_at = millis();
   scheduleFullRedraw();
 }
@@ -793,25 +932,12 @@ lv_obj_t *musicButton(lv_obj_t *parent, int x, const char *text,
 }
 
 void createMusicVolume(lv_obj_t *parent) {
-  music_volume_panel = card(parent, 13, 13, 454, 154);
-  lv_obj_set_style_bg_color(music_volume_panel, color(0x111827), 0);
-  lv_obj_set_style_border_width(music_volume_panel, 1, 0);
-  lv_obj_set_style_border_color(music_volume_panel, color(0x334155), 0);
-  lv_obj_clear_flag(music_volume_panel, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  music_volume_panel = adjustmentPanel(parent, "VOLUME", "系统音量", &icon_sound_16,
+                                       kSoundAccent, &music_volume_value,
+                                       &music_volume_slider, hideMusicVolume, 0,
+                                       &music_volume_icon);
   lv_obj_add_event_cb(music_volume_panel, panelSwipeToClose,
                       LV_EVENT_GESTURE, music_volume_panel);
-  lv_obj_add_flag(music_volume_panel, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_t *title = staticLabel(music_volume_panel, "VOLUME", 20, 18,
-                                &lv_font_montserrat_16, 0xF8FAFC);
-  lv_obj_set_style_text_opa(title, LV_OPA_70, 0);
-  music_volume_value = staticLabel(music_volume_panel, "20%", 340, 14,
-                                   &lv_font_montserrat_28, 0xF8FAFC);
-  lv_obj_set_width(music_volume_value, 102);
-  lv_obj_set_style_text_align(music_volume_value, LV_TEXT_ALIGN_RIGHT, 0);
-
-  music_volume_slider = lv_slider_create(music_volume_panel);
-  lv_obj_set_pos(music_volume_slider, 20, 66);
-  styleSlider(music_volume_slider, 410, 0xA9D2FF);
   lv_slider_set_range(music_volume_slider, 0, 100);
   lv_obj_clear_flag(music_volume_slider, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_add_event_cb(music_volume_slider, volumePressed, LV_EVENT_PRESSED, nullptr);
@@ -819,19 +945,6 @@ void createMusicVolume(lv_obj_t *parent) {
   lv_obj_add_event_cb(music_volume_slider, volumeReleased, LV_EVENT_RELEASED, nullptr);
   lv_obj_add_event_cb(music_volume_slider, volumeReleased, LV_EVENT_PRESS_LOST, nullptr);
   updateVolumeVisual(lv_slider_get_value(volume_slider));
-
-  staticLabel(music_volume_panel, "系统音量", 20, 114, &azoria_font_zh_16, 0x94A3B8);
-  lv_obj_t *close = lv_btn_create(music_volume_panel);
-  lv_obj_set_pos(close, 398, 104);
-  lv_obj_set_size(close, 38, 38);
-  lv_obj_set_style_bg_color(close, color(0x1D1D1D), 0);
-  lv_obj_set_style_shadow_width(close, 0, 0);
-  lv_obj_set_style_radius(close, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_pad_all(close, 0, 0);
-  disableScrolling(close);
-  lv_obj_add_event_cb(close, hideMusicVolume, LV_EVENT_CLICKED, nullptr);
-  lv_obj_t *caption = staticLabel(close, "X", 0, 0, &lv_font_montserrat_16, 0xF8FAFC);
-  lv_obj_center(caption);
 }
 
 // Center the measured text inside a fixed slot, including wrapped lines.
@@ -1062,33 +1175,15 @@ void createMusicView(lv_obj_t *parent) {
 }
 
 void createBacklightPanel(lv_obj_t *parent) {
-  backlight_panel = card(parent, 13, 13, 454, 154);
-  lv_obj_set_style_bg_color(backlight_panel, color(0x111827), 0);
-  lv_obj_set_style_border_width(backlight_panel, 1, 0);
-  lv_obj_set_style_border_color(backlight_panel, color(0x334155), 0);
-  lv_obj_clear_flag(backlight_panel, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  backlight_panel = adjustmentPanel(parent, "TOUCH LIGHT", "Touch 屏幕亮度", &icon_sun_16,
+                                    kLightAccent, &backlight_value,
+                                    &backlight_slider, closeBacklightPanel,
+                                    kMinBacklightPercent);
   lv_obj_add_event_cb(backlight_panel, panelSwipeToClose,
                       LV_EVENT_GESTURE, backlight_panel);
-  lv_obj_add_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN);
-
-  lv_obj_t *title = staticLabel(
-      backlight_panel, "SCREEN LIGHT", 20, 18,
-      &lv_font_montserrat_16, 0xF8FAFC);
-  lv_obj_set_style_text_opa(title, LV_OPA_70, 0);
-  backlight_value = label(backlight_panel, "86%", 340, 14,
-                           &lv_font_montserrat_28);
-  lv_obj_set_width(backlight_value, 102);
-  lv_label_set_long_mode(backlight_value, LV_LABEL_LONG_CLIP);
-  lv_obj_set_style_text_align(backlight_value, LV_TEXT_ALIGN_RIGHT, 0);
-  lv_obj_set_style_text_color(backlight_value, color(0xF8FAFC), 0);
-  lv_obj_set_style_text_opa(backlight_value, LV_OPA_COVER, 0);
-
-  backlight_slider = lv_slider_create(backlight_panel);
-  lv_obj_set_pos(backlight_slider, 20, 66);
-  lv_obj_set_size(backlight_slider, 410, 22);
+  lv_label_set_text_fmt(backlight_value, "%d%%", current_backlight_percent);
   lv_slider_set_range(backlight_slider, kMinBacklightPercent, 100);
   lv_slider_set_value(backlight_slider, current_backlight_percent, LV_ANIM_OFF);
-  styleSlider(backlight_slider, 410, 0xA9D2FF);
   lv_obj_clear_flag(backlight_slider, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_add_event_cb(
       backlight_slider, backlightChanged, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -1097,19 +1192,6 @@ void createBacklightPanel(lv_obj_t *parent) {
   lv_obj_add_event_cb(
       backlight_slider, backlightReleased, LV_EVENT_PRESS_LOST, nullptr);
 
-  lv_obj_t *close_button = lv_btn_create(backlight_panel);
-  lv_obj_set_pos(close_button, 398, 104);
-  lv_obj_set_size(close_button, 38, 38);
-  lv_obj_set_style_bg_color(close_button, color(0x1D1D1D), 0);
-  lv_obj_set_style_shadow_width(close_button, 0, 0);
-  lv_obj_set_style_radius(close_button, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_pad_all(close_button, 0, 0);
-  disableScrolling(close_button);
-  lv_obj_add_event_cb(close_button, closeBacklightPanel, LV_EVENT_CLICKED, nullptr);
-  lv_obj_t *close_label = label(close_button, "X", 0, 0,
-                                 &lv_font_montserrat_16);
-  lv_obj_set_style_text_color(close_label, color(0xF8FAFC), 0);
-  lv_obj_center(close_label);
 }
 
 lv_obj_t *createInputButton(lv_obj_t *parent, int index, int slot) {
@@ -1156,8 +1238,8 @@ lv_obj_t *createInputButton(lv_obj_t *parent, int index, int slot) {
                                           kInputIconX, 23,
                                           color(selected ? 0x050505 : 0xEBF4FF));
   } else {
-    input_icons[index] = createUiImage(button, &icon_linux_36,
-                                          kInputIconX, 23,
+    input_icons[index] = createUiImage(button, &icon_linux_40,
+                                          kInputIconX - 2, 20,
                                           color(selected ? 0x050505 : 0xEBF4FF));
   }
   lv_obj_t *caption =
@@ -1222,8 +1304,18 @@ void showScreen() {
   lv_obj_center(music_wordmark);
   lv_obj_t *wallpaper_button = DisplayBadge::create(controls);
   lv_obj_add_flag(wallpaper_button, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(
-      wallpaper_button, wallpaperButtonClicked, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(wallpaper_button, wallpaperButtonClicked, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *usage_open_button = lv_btn_create(controls);
+  lv_obj_set_pos(usage_open_button, 155, 18);
+  lv_obj_set_size(usage_open_button, 130, 44);
+  lv_obj_set_style_bg_color(usage_open_button, color(0x211C12), 0);
+  lv_obj_set_style_border_width(usage_open_button, 0, 0);
+  lv_obj_set_style_shadow_width(usage_open_button, 0, 0);
+  lv_obj_set_style_radius(usage_open_button, 8, 0);
+  disableScrolling(usage_open_button);
+  lv_obj_add_event_cb(usage_open_button, showUsageView, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *usage_open_label = staticLabel(usage_open_button, "Codex / API", 0, 0, &lv_font_montserrat_16, 0xFFC166);
+  lv_obj_center(usage_open_label);
 
   status_dot = lv_obj_create(controls);
   lv_obj_set_pos(status_dot, 446, 20);
@@ -1245,11 +1337,9 @@ void showScreen() {
   lv_obj_t *brightness_card = card(controls, 13, 166, 458, 102);
   lv_obj_set_style_bg_color(brightness_card, color(0x1D1D1D), 0);
   lv_obj_add_flag(brightness_card, LV_OBJ_FLAG_GESTURE_BUBBLE);
-  createUiImage(brightness_card, &icon_sun_16, 18, 27,
-                   color(0xEBF4FF));
+  createUiImage(brightness_card, &icon_sun_16, 18, 27, color(0xEBF4FF));
   lv_obj_t *brightness_title =
-      staticLabel(brightness_card, "LIGHT", 41, 24, &lv_font_montserrat_16,
-                  0xF8FAFC);
+      staticLabel(brightness_card, "LIGHT", 41, 24, &lv_font_montserrat_16, 0xF8FAFC);
   lv_obj_set_style_text_opa(brightness_title, LV_OPA_50, 0);
   brightness_value = label(brightness_card, "50%", 374, 34,
                             &azoria_font_din_condensed_48);
@@ -1290,11 +1380,9 @@ void showScreen() {
   lv_obj_t *volume_card = card(controls, 13, 274, 374, 77);
   lv_obj_set_style_bg_color(volume_card, color(0x1D1D1D), 0);
   lv_obj_add_flag(volume_card, LV_OBJ_FLAG_GESTURE_BUBBLE);
-  createUiImage(volume_card, &icon_sound_16, 15, 20,
-                   color(0xEBF4FF));
+  createUiImage(volume_card, &icon_sound_16, 15, 20, color(0xEBF4FF));
   lv_obj_t *volume_title =
-      staticLabel(volume_card, "SOUND", 39, 17, &lv_font_montserrat_16,
-                  0xF8FAFC);
+      staticLabel(volume_card, "SOUND", 39, 17, &lv_font_montserrat_16, 0xF8FAFC);
   lv_obj_set_style_text_opa(volume_title, LV_OPA_50, 0);
   volume_slider = lv_slider_create(volume_card);
   lv_obj_add_flag(volume_slider, LV_OBJ_FLAG_GESTURE_BUBBLE);
@@ -1354,6 +1442,7 @@ void showScreen() {
   createBacklightPanel(controls);
   Wallpaper::createView(controls, wallpaperClicked);
   createMusicView(controls);
+  UsageView::create(controls);
   updateInputButtons();
   updateMuteVisual();
   updateBrightnessSegments(50);
@@ -1375,7 +1464,7 @@ void refresh() {
     Wallpaper::hide();
     scheduleFullRedraw();
   }
-  if (!Wallpaper::active() && !music_view_active &&
+  if (!Wallpaper::active() && !music_view_active && !UsageView::active() &&
       wallpaper_idle_minutes > 0 &&
       millis() - last_interaction_at >=
           static_cast<uint32_t>(wallpaper_idle_minutes) * 60UL * 1000UL) {
@@ -1386,6 +1475,7 @@ void refresh() {
     Wallpaper::refresh();
     return;
   }
+  UsageView::refresh(state);
   if (static_cast<int32_t>(millis() - next_clock_update) >= 0) {
     updateClock();
     next_clock_update = millis() + 1000;
@@ -1462,6 +1552,10 @@ void refresh() {
     lv_obj_set_style_text_color(music_status, accent, 0);
     lv_obj_set_style_bg_color(music_immersive_indicator, accent, 0);
     lv_obj_set_style_bg_color(music_volume_slider, accent, LV_PART_INDICATOR);
+    lv_obj_set_style_border_color(music_volume_slider, accent, LV_PART_KNOB);
+    lv_obj_set_style_shadow_color(music_volume_slider, accent, LV_PART_KNOB);
+    lv_obj_set_style_img_recolor(music_volume_icon, accent, 0);
+    lv_obj_set_style_border_color(music_volume_panel, lv_color_mix(accent, color(0x242428), 35), 0);
     for (auto *cover : {music_cover, immersive_cover}) {
       lv_obj_t *frame = lv_obj_get_parent(cover);
       lv_obj_set_style_shadow_color(frame, accent, 0);

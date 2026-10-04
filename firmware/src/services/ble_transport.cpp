@@ -538,6 +538,30 @@ bool decodeMusicStatus(const String &wire, const String &page,
   return false;
 }
 
+bool decodeUsageStatus(const String &wire, const String &page, String &response) {
+  if (field(wire, 3) != "V" || field(wire, 4) != page) return false;
+  const char *keys0[] = {"usageSupported", "usageCodexAvailable", "usageCodexPlan", "usageCodexStale", "usagePrimaryMinutes", "usagePrimaryRemaining", "usagePrimaryResetsAt", "usageSecondaryMinutes", "usageSecondaryRemaining", "usageSecondaryResetsAt", "usageCodexSampledAt"};
+  const char *keys1[] = {"usageProviderCount", "usageProviderIndex", "usageApiName", "usageApiAvailable", "usageApiStale", "usageApiPaused", "usageApiError", "usageApiUnit", "usageApiCompact", "usageApiScale", "usageApiSampledAt"};
+  const char *keys2[] = {"usageApiRemaining", "usageApiUsed", "usageApiRecent", "usageApiRequests"};
+  const int count = page == "2" ? 4 : 11;
+  if (fieldCount(wire) != count + 6) return false;
+  const char **keys = page == "0" ? keys0 : page == "1" ? keys1 : keys2;
+  response = "{";
+  for (int index = 0; index < count; ++index) {
+    if (index) response += ",";
+    response += "\"" + String(keys[index]) + "\":";
+    const String value = field(wire, index + 5);
+    const bool boolean = (page == "0" && (index == 0 || index == 1 || index == 3)) ||
+                         (page == "1" && index >= 3 && index <= 6);
+    const bool text = page == "2" || (page == "0" && index == 2) ||
+                      (page == "1" && (index == 2 || index == 7 || index == 8 || index == 9));
+    response += boolean ? String(value == "1" ? "true" : "false") :
+                text ? "\"" + value + "\"" : value;
+  }
+  response += "}";
+  return true;
+}
+
 bool decodeControl(const String &wire, const String &control,
                    String &response) {
   if (fieldCount(wire) == 6 && field(wire, 3) == "E") {
@@ -679,6 +703,16 @@ bool bleTransportRequest(const char *method, const String &path,
     unsigned_request += "|M|" + page;
     if (!exchange(unsigned_request, request_id, wire, timeout_ms)) return false;
     return decodeMusicStatus(wire, page, response);
+  }
+  if (!strcmp(method, "GET") && path.startsWith("/v1/usage/status/")) {
+    const int query = path.indexOf("?index=");
+    if (query < 0) return false;
+    const String page = path.substring(query - 1, query);
+    const int index = path.substring(query + 7).toInt();
+    if ((page != "0" && page != "1" && page != "2") || index < 0 || index >= 20) return false;
+    unsigned_request += "|V|" + page + "|" + String(index);
+    if (!exchange(unsigned_request, request_id, wire, timeout_ms)) return false;
+    return decodeUsageStatus(wire, page, response);
   }
   if (!strcmp(method, "POST") && path == "/v1/control" && body) {
     String control = jsonString(body, "control");

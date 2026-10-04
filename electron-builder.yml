@@ -4,7 +4,9 @@ directories:
   output: release
   buildResources: desktop/assets
 files:
-  - out/**/*
+  - out/main/**/*
+  - out/preload/**/*
+  - out/renderer/**/*
   - desktop/profiles/*.json
   - desktop/assets/icon.png
   - package.json

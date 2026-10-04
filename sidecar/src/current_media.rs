@@ -274,9 +274,12 @@ fn media_sessions(include_artwork: bool) -> Result<Vec<Value>, String> {
             .as_ref()
             .and_then(|value| value.LastUpdatedTime().ok())
             .map(|value| value.UniversalTime / 10_000 - 11_644_473_600_000);
+        // Keep the projected position and its timestamp from the same instant.
+        // Reading artwork below can block; stamping afterwards loses that time.
+        let sampled_at = now_ms();
         let position_ms = raw_position.map(|position| {
             let age = updated_at
-                .map(|value| (now_ms() - value).max(0))
+                .map(|value| (sampled_at - value).max(0))
                 .unwrap_or(0);
             let estimated = if status == "playing" {
                 position + (age as f64 * rate) as i64
@@ -311,7 +314,7 @@ fn media_sessions(include_artwork: bool) -> Result<Vec<Value>, String> {
             },
             "positionSource": if position_ms.is_some() { "system" } else { "unavailable" },
             "detectedBy": "smtc",
-            "sampledAt": now_ms(),
+            "sampledAt": sampled_at,
         }));
     }
     Ok(tracks)

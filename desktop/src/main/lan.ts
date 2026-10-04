@@ -8,6 +8,7 @@ import type { MonitorController } from "./monitor"
 import type { WallpaperManager } from "./wallpaper"
 import type { MusicManager } from "./music"
 import type { TouchSleepManager } from "./touch-sleep"
+import type { TouchUsageService } from "./touch-usage"
 
 const controlPort = 8732
 const discoveryPort = 8733
@@ -120,6 +121,7 @@ export class LanController {
     private readonly wallpaper?: WallpaperManager,
     private readonly music?: MusicManager,
     private readonly touchSleep?: TouchSleepManager,
+    private readonly touchUsage?: TouchUsageService,
   ) {
     activeControllers.add(this)
   }
@@ -540,6 +542,13 @@ export class LanController {
   private async handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (!this.authorized(request)) return this.json(response, 401, { ok: false, error: "unauthorized" })
     try {
+      if (request.method === "GET" && request.url?.startsWith("/v1/usage/status")) {
+        const url = new URL(request.url, "http://localhost")
+        if (url.pathname !== "/v1/usage/status" || !this.touchUsage) return this.json(response, 404, { error: "usage unavailable" })
+        const index = Number(url.searchParams.get("index") ?? 0)
+        if (!Number.isInteger(index) || index < 0 || index >= 20) return this.json(response, 400, { error: "invalid provider index" })
+        return this.json(response, 200, await this.touchUsage.snapshot(index))
+      }
       if (request.method === "GET" && request.url === "/v1/music/artwork") {
         const artwork = this.music?.touchArtwork()
         if (!artwork?.url.startsWith("data:image/")) return this.json(response, 404, { error: "artwork unavailable" })

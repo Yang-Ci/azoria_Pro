@@ -32,6 +32,8 @@ struct TouchSnapshot {
 bool beginDisplay();
 bool beginTouch();
 bool begin();
+// GPIO42 is shared with TF-card MOSI. Call before the SPI bus is initialized.
+void flashStatusLed();
 // Returns the number of valid points, 0 for a successful no-touch read, and
 // -1 for an I2C/protocol/argument error.
 int readTouches(TouchPoint *points, int max_points);

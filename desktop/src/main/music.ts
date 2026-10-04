@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { promisify } from "node:util"
 import type { LyricLine, LyricsProvider, MusicControlRequest, MusicControls, MusicSnapshot, MusicSource, MusicTrack } from "../shared/contracts"
+import { currentLyricIndex, projectedMusicPosition } from "../shared/music-timing"
 
 const run = promisify(execFile)
 const requestHeaders = {
@@ -274,24 +275,11 @@ export class MusicManager {
       : track?.repeatMode === "track" ? "track"
         : track?.repeatMode === "list" ? "list"
           : track?.repeatMode === "none" ? "order" : "unknown"
-    const now = Date.now()
-    const elapsed = track?.status === "playing" && track.sampledAt > 0
-      ? Math.max(0, now - track.sampledAt) * track.playbackRate
-      : 0
-    const projectedPosition = track ? track.positionMs + elapsed : 0
-    const positionMs = track?.durationMs
-      ? Math.min(projectedPosition, track.durationMs)
-      : projectedPosition
-    let lyricIndex = -1
-    for (let index = this.latestSnapshot.lines.length - 1; index >= 0; index--) {
-      if ((this.latestSnapshot.lines[index]?.timeMs ?? Number.MAX_SAFE_INTEGER) <= positionMs) {
-        lyricIndex = index
-        break
-      }
-    }
+    const positionMs = track ? projectedMusicPosition(track, Date.now()) : 0
     const lyrics = this.latestSnapshot.lines.length
       ? this.latestSnapshot.lines
       : estimatePlainLyrics(this.latestSnapshot.plainText, track?.durationMs ?? 0)
+    const lyricIndex = currentLyricIndex(lyrics, positionMs)
     return {
       musicAvailable: Boolean(track),
       musicCanSeek: Boolean(track?.controls?.seek && track.durationMs > 0),

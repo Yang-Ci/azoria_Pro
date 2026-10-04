@@ -8,6 +8,7 @@
 #include <driver/gpio.h>
 #include <driver/sdspi_host.h>
 #include <driver/spi_common.h>
+#include <driver/spi_master.h>
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
 #include <atomic>
@@ -54,6 +55,7 @@ fs::FS *storage = nullptr;
 fs::FS *sd_storage = nullptr;
 File playback_file;
 bool sd_spi_bus_ready = false;
+spi_device_handle_t sd_status_led = nullptr;
 lv_obj_t *view = nullptr;
 lv_obj_t *image = nullptr;
 lv_obj_t *empty_label = nullptr;
@@ -458,11 +460,51 @@ bool initializeSdSpiBus() {
                                             SDSPI_DEFAULT_DMA);
   if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) return false;
   sd_spi_bus_ready = true;
+  // D3's WS2812B input is wired to this bus's MOSI (GPIO42). Use a
+  // CS-less SPI device to clear it without stealing GPIO42 from SDSPI.
+  spi_device_interface_config_t led_config{};
+  led_config.clock_speed_hz = 2400000;
+  led_config.spics_io_num = -1;
+  led_config.queue_size = 1;
+  const esp_err_t led_ret = spi_bus_add_device(SPI2_HOST, &led_config,
+                                              &sd_status_led);
+  if (led_ret != ESP_OK) {
+    Serial.printf("RGB D3 SPI setup failed: %s\n", esp_err_to_name(led_ret));
+  }
   return true;
+}
+
+void clearSdStatusLed() {
+  if (!sd_status_led) return;
+  // At 2.4 MHz, 100 encodes a WS2812B zero (0.417 us high / 0.833 us
+  // low). Send 24 zero bits with >=300 us of reset-low on both sides.
+  // The card's CS is high here, so these MOSI pulses cannot write to it.
+  alignas(4) uint8_t frame[204]{};
+  for (size_t index = 0; index < 9; index += 3) {
+    frame[96 + index] = 0x92;
+    frame[97 + index] = 0x49;
+    frame[98 + index] = 0x24;
+  }
+  spi_transaction_t transaction{};
+  transaction.length = sizeof(frame) * 8;
+  transaction.tx_buffer = frame;
+  const esp_err_t ret = spi_device_polling_transmit(sd_status_led, &transaction);
+  if (ret != ESP_OK) {
+    Serial.printf("RGB D3 clear failed: %s\n", esp_err_to_name(ret));
+  } else {
+    static bool logged = false;
+    if (!logged) {
+      Serial.println("RGB D3: cleared after TF command");
+      logged = true;
+    }
+  }
 }
 
 esp_err_t traceSdCommand(int slot, sdmmc_command_t *cmd) {
   const esp_err_t ret = sdspi_host_do_transaction(slot, cmd);
+  // Card probing and fallback-speed traffic can look like LED data. The
+  // SDSPI transaction has released the bus and deselected the card here.
+  clearSdStatusLed();
   if (!sd_command_trace) return ret;
 
   const uint32_t opcode = cmd->opcode;
@@ -478,8 +520,18 @@ esp_err_t traceSdCommand(int slot, sdmmc_command_t *cmd) {
 
 bool releaseSdSpiBus() {
   if (!sd_spi_bus_ready) return true;
+  if (sd_status_led) {
+    const esp_err_t ret = spi_bus_remove_device(sd_status_led);
+    if (ret != ESP_OK) return false;
+    sd_status_led = nullptr;
+  }
   const esp_err_t ret = spi_bus_free(SPI2_HOST);
   sd_spi_bus_ready = false;
+  if (ret == ESP_OK) {
+    // With no card, keep D3's input low rather than leaving it floating.
+    gpio_set_direction(static_cast<gpio_num_t>(kSdMosi), GPIO_MODE_OUTPUT);
+    gpio_set_level(static_cast<gpio_num_t>(kSdMosi), 0);
+  }
   return ret == ESP_OK;
 }
 

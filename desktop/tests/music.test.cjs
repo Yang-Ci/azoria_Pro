@@ -2,17 +2,82 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const path = require('node:path')
 const Module = require('node:module')
-const { readFileSync } = require('node:fs')
-const { transformSync } = require('esbuild')
+const { buildSync } = require('esbuild')
 
 const filename = path.resolve(__dirname, '../src/main/music.ts')
 const compiled = new Module(filename, module)
 compiled.paths = module.paths
-compiled._compile(transformSync(readFileSync(filename, 'utf8'), {
-  loader: 'ts', format: 'cjs', target: 'node20',
-}).code, filename)
+compiled._compile(buildSync({
+  entryPoints: [filename], bundle: true, write: false,
+  platform: 'node', packages: 'external', format: 'cjs', target: 'node20',
+}).outputFiles[0].text, filename)
 const { artworkCacheKey, lyricProviderOrder, matchScore, neteaseSongId, parseSyncedLyrics, selectMediaSession, sourceName } = compiled.exports
 const { MusicManager } = compiled.exports
+const timingFilename = path.resolve(__dirname, '../src/shared/music-timing.ts')
+const timingModule = new Module(timingFilename, module)
+timingModule.paths = module.paths
+timingModule._compile(buildSync({
+  entryPoints: [timingFilename], bundle: true, write: false,
+  platform: 'node', format: 'cjs', target: 'node20',
+}).outputFiles[0].text, timingFilename)
+const { currentLyricIndex, projectedMusicPosition } = timingModule.exports
+
+test('advances lyrics from the sample clock between media polls', () => {
+  const track = { status: 'playing', positionMs: 1000, sampledAt: 10000, playbackRate: 1, durationMs: 5000 }
+  const lines = [{ timeMs: 0 }, { timeMs: 1250 }, { timeMs: 2000 }]
+  assert.equal(currentLyricIndex(lines, projectedMusicPosition(track, 10249)), 0)
+  assert.equal(currentLyricIndex(lines, projectedMusicPosition(track, 10250)), 1)
+  assert.equal(currentLyricIndex(lines, projectedMusicPosition(track, 11000)), 2)
+})
+
+test('keeps pause, seek, playback rate, and song end on the same lyric clock', () => {
+  const track = { status: 'playing', positionMs: 1000, sampledAt: 10000, playbackRate: 2, durationMs: 5000 }
+  assert.equal(projectedMusicPosition(track, 10250), 1500)
+  assert.equal(projectedMusicPosition({ ...track, status: 'paused' }, 15000), 1000)
+  assert.equal(projectedMusicPosition({ ...track, positionMs: 0, sampledAt: 11000 }, 11050), 100)
+  assert.equal(projectedMusicPosition(track, 14000), 5000)
+  assert.equal(projectedMusicPosition(track, 9990), 1000)
+})
+
+test('selects a zero-time lyric and the last of simultaneous timestamps', () => {
+  const lines = [{ timeMs: 0 }, { timeMs: 1000 }, { timeMs: 1000 }, { timeMs: 2000 }]
+  assert.equal(currentLyricIndex([], 0), -1)
+  assert.equal(currentLyricIndex([{ timeMs: 1000 }], 999), -1)
+  assert.equal(currentLyricIndex(lines, 0), 0)
+  assert.equal(currentLyricIndex(lines, 1000), 2)
+})
+
+test('compensates for artwork and IPC time when publishing Touch lyrics', async (t) => {
+  let now = 10000
+  t.mock.method(Date, 'now', () => now)
+  const manager = new MusicManager(filename)
+  manager.sidecar = async (request) => {
+    if (request.include_artwork) now += 400
+    return { sessions: [{
+      sourceAppId: 'cloudmusic.exe', title: '测试歌曲', artist: '歌手',
+      status: 'playing', positionMs: 1000, sampledAt: 10000,
+      durationMs: 5000, playbackRate: 1, positionSource: 'system',
+    }] }
+  }
+  const track = await manager.currentTrack()
+  assert.equal(track.sampledAt, 10000)
+  manager.latestSnapshot = { track, lines: [{ timeMs: 0, text: '前句' }, { timeMs: 1250, text: '当前句' }] }
+  assert.equal(manager.touchStatus().musicPositionMs, 1400)
+  assert.equal(manager.touchStatus().musicLyricCurrent, '当前句')
+  now += 350
+  assert.equal(manager.touchStatus().musicPositionMs, 1750)
+})
+
+test('advances estimated plain lyrics for Touch using the playback position', () => {
+  const manager = new MusicManager(filename)
+  manager.latestSnapshot = {
+    track: { status: 'paused', positionMs: 1500, sampledAt: 10000, playbackRate: 1, durationMs: 3000 },
+    lines: [], plainText: '第一句\n第二句\n第三句',
+  }
+  assert.equal(manager.touchStatus().musicLyricPrevious, '第一句')
+  assert.equal(manager.touchStatus().musicLyricCurrent, '第二句')
+  assert.equal(manager.touchStatus().musicLyricNext, '第三句')
+})
 
 test('lets NetEase cycle once from its own live player mode', async () => {
   const manager = new MusicManager(filename)

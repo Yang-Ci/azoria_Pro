@@ -6,7 +6,39 @@
 
 namespace DisplayControl {
 
+struct UsageState {
+  bool supported = false;
+  bool codex_available = false;
+  bool codex_stale = false;
+  char codex_plan[20]{};
+  uint32_t primary_minutes = 0;
+  int16_t primary_remaining = -1;  // Tenths of a percent; -1 means unavailable.
+  uint32_t primary_resets_at = 0;
+  uint32_t secondary_minutes = 0;
+  int16_t secondary_remaining = -1;
+  uint32_t secondary_resets_at = 0;
+  uint32_t codex_sampled_at = 0;
+  uint8_t provider_count = 0;
+  uint8_t provider_index = 0;
+  bool api_available = false;
+  bool api_stale = false;
+  bool api_paused = false;
+  bool api_error = false;
+  char api_name[52]{};
+  char api_unit[16]{};
+  char api_remaining[40] = "--";
+  char api_compact[28] = "--";
+  char api_scale[8]{};
+  char api_used[40] = "--";
+  char api_recent[40] = "--";
+  char api_requests[40] = "--";
+  uint32_t api_sampled_at = 0;
+  uint32_t received_at_ms = 0;
+  uint32_t revision = 0;
+};
+
 struct RemoteState {
+  UsageState usage;
   bool online = false;
   bool ready = false;
   int brightness = 50;
@@ -44,6 +76,8 @@ struct RemoteState {
 void startRemote(const DeviceConfig &config);
 DeviceConfig getDesktopConfig();
 RemoteState getRemoteState();
+void selectUsageProvider(uint8_t index);
+void requestUsageSync();
 bool queueNumericControl(const char *control, int value, bool final_value = true);
 bool queueBooleanControl(const char *control, bool value);
 bool queueStringControl(const char *control, const char *value);

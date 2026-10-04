@@ -7,6 +7,7 @@
 
 #include "services/device_config.h"
 #include "platform/board.h"
+#include "features/display_control/usage_view.h"
 
 namespace {
 
@@ -203,6 +204,11 @@ void handleLine(String line) {
   }
   if (line == "AZORIA_SCREENSHOT 1") {
     sendScreenshot(1);
+    return;
+  }
+  if (line == "AZORIA_USAGE 0" || line == "AZORIA_USAGE 1") {
+    DisplayControl::UsageView::show(line.endsWith("1") ? 1 : 0);
+    Serial.println(DisplayControl::UsageView::active() ? "AZORIA_USAGE_READY" : "AZORIA_USAGE_UNAVAILABLE");
     return;
   }
   if (line == "AZORIA_REBOOT") {

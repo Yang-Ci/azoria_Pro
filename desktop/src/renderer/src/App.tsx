@@ -7,6 +7,7 @@ import { ProfileWizard } from "./components/profile-wizard"
 import { WallpaperCard } from "./components/wallpaper-card"
 import { MusicLyricsCard } from "./components/music-lyrics-card"
 import { TouchSleepCard } from "./components/touch-sleep-card"
+import { CodexUsagePage } from "./components/codex-usage-page"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -271,6 +272,7 @@ export default function App() {
         <TabsList className="mb-6 bg-zinc-950">
           <TabsTrigger value="control">显示器</TabsTrigger>
           <TabsTrigger value="music">音乐歌词</TabsTrigger>
+          <TabsTrigger value="usage">Codex / API</TabsTrigger>
           <TabsTrigger value="touch">AZORIA Touch</TabsTrigger>
           <TabsTrigger value="diagnostics">诊断</TabsTrigger>
           {developerMode && <TabsTrigger value="developer">开发者</TabsTrigger>}
@@ -297,6 +299,10 @@ export default function App() {
 
         <TabsContent value="music" className="grid gap-5">
           <MusicLyricsCard />
+        </TabsContent>
+
+        <TabsContent value="usage">
+          <CodexUsagePage />
         </TabsContent>
 
         <TabsContent value="touch" className="grid gap-5 lg:grid-cols-2">

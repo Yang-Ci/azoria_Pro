@@ -1,7 +1,8 @@
 import { createHmac } from "node:crypto"
 import path from "node:path"
-import { app, BrowserWindow, dialog, ipcMain, type OpenDialogOptions } from "electron"
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, type OpenDialogOptions } from "electron"
 import type { ControlRequest } from "../shared/contracts"
+import type { ApiProviderInput } from "../shared/usage"
 import { loadConfig, saveDisplayPreference } from "./config"
 import { DiagnosticsController } from "./diagnostics"
 import { TouchManager } from "./touch"
@@ -11,6 +12,10 @@ import { MonitorController } from "./monitor"
 import { WallpaperManager } from "./wallpaper"
 import { MusicManager } from "./music"
 import { TouchSleepManager } from "./touch-sleep"
+import { CodexQuotaService } from "./codex-quota"
+import { UsageProviderStore } from "./usage-provider-store"
+import { ApiUsageService } from "./api-usage"
+import { TouchUsageService } from "./touch-usage"
 
 const isDevelopment = !app.isPackaged
 
@@ -128,10 +133,29 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
       : path.join(process.resourcesPath, "sidecar", process.platform === "win32" ? "azoria-ddc-sidecar.exe" : "azoria-ddc-sidecar"),
   )
   music.startPolling()
-  const lan = new LanController(config.desktopId, monitor, wallpaper, music, touchSleep)
+  const codexQuota = new CodexQuotaService(app.getPath("userData"))
+  const usageProviders = new UsageProviderStore(app.getPath("userData"), {
+    available: () => safeStorage.isEncryptionAvailable()
+      && (process.platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text"),
+    encrypt: (value) => safeStorage.encryptString(value),
+    decrypt: (value) => safeStorage.decryptString(value),
+  })
+  const apiUsage = new ApiUsageService(usageProviders)
+  const touchUsage = new TouchUsageService(codexQuota, usageProviders, apiUsage)
+  touchUsage.start()
+  app.once("before-quit", () => touchUsage.stop())
+  const lan = new LanController(config.desktopId, monitor, wallpaper, music, touchSleep, touchUsage)
   await lan.start()
   const devices = new TouchManager(config.token)
   const diagnostics = new DiagnosticsController(logger, monitor, lan)
+
+  ipcMain.handle("usage:touch", (_event, index?: number) => touchUsage.snapshot(Number.isInteger(index) ? index : 0))
+  ipcMain.handle("usage:codex", () => codexQuota.collect())
+  ipcMain.handle("usage:providers", () => usageProviders.list())
+  ipcMain.handle("usage:save-provider", (_event, input: ApiProviderInput) => usageProviders.save(input))
+  ipcMain.handle("usage:delete-provider", (_event, id: string) => usageProviders.delete(id))
+  ipcMain.handle("usage:refresh-provider", (_event, id: string) => apiUsage.refresh(id))
+  ipcMain.handle("usage:test-provider", (_event, input: ApiProviderInput) => apiUsage.test(input))
 
   ipcMain.handle("monitor:status", () => monitor.status())
   ipcMain.handle("monitor:status-snapshot", () => monitor.statusSnapshot())
