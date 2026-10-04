@@ -19,6 +19,7 @@ export interface MonitorStatus {
   touchSleepStartMinutes?: number
   touchSleepEndMinutes?: number
   touchSleepActive?: boolean
+  touchRotationDegrees?: TouchRotation
   musicAvailable?: boolean
   musicPlaying?: boolean
   musicCanSeek?: boolean
@@ -165,6 +166,7 @@ export interface LanDevice {
 
 export type WallpaperKind = "image" | "video"
 export type WallpaperIdleMinutes = 0 | 1 | 5 | 10 | 30
+export type TouchRotation = 0 | 90 | 180 | 270
 
 export interface WallpaperSettings {
   idleMinutes: WallpaperIdleMinutes
@@ -208,6 +210,10 @@ export interface TouchSleepUpdate {
   enabled: boolean
   startMinutes: number
   endMinutes: number
+}
+
+export interface TouchRotationSettings {
+  degrees: TouchRotation
 }
 
 export interface WallpaperInfo {
@@ -401,6 +407,10 @@ export interface DesktopApi {
   touchSleep: {
     settings(): Promise<TouchSleepSettings>
     update(input: TouchSleepUpdate): Promise<TouchSleepSettings>
+  }
+  touchRotation: {
+    settings(): Promise<TouchRotationSettings>
+    rotateClockwise(): Promise<TouchRotationSettings>
   }
   security: {
     sign(message: string): Promise<string>

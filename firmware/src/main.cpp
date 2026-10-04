@@ -24,6 +24,7 @@ constexpr uint32_t kBufferPixels = kWidth * kHeight;
 lv_disp_draw_buf_t draw_buffer;
 lv_color_t *buffer1 = nullptr;
 lv_color_t *buffer2 = nullptr;
+decltype(lv_draw_ctx_t::buffer_copy) default_buffer_copy = nullptr;
 bool provisioning = false;
 bool have_saved_config = false;
 bool remote_started = false;
@@ -70,6 +71,54 @@ IRAM_ATTR bool displayRefreshFinished(void *user_data) {
   return should_yield == pdTRUE;
 }
 
+void displayBufferCopy(lv_draw_ctx_t *context, void *destination,
+                       lv_coord_t destination_stride,
+                       const lv_area_t *destination_area, void *source,
+                       lv_coord_t source_stride, const lv_area_t *source_area) {
+  const uint16_t degrees = Board::currentFrameBufferRotation();
+  const bool panel_buffers =
+      (source == buffer1 && destination == buffer2) ||
+      (source == buffer2 && destination == buffer1);
+  if (degrees == 0 || !panel_buffers ||
+      source != Board::currentFrameBuffer()) {
+    default_buffer_copy(context, destination, destination_stride,
+                        destination_area, source, source_stride, source_area);
+    return;
+  }
+
+  // LVGL synchronizes dirty areas from the on-screen buffer before rendering.
+  // That buffer is in panel coordinates; the off-screen buffer was restored
+  // to logical coordinates after VSYNC. Undo the source rotation while copying
+  // so each refresh starts from the same logical image, without rotating it
+  // again or allocating another full-screen buffer.
+  const auto *from = static_cast<const lv_color_t *>(source);
+  auto *to = static_cast<lv_color_t *>(destination);
+  const int width = lv_area_get_width(source_area);
+  const int height = lv_area_get_height(source_area);
+  for (int row = 0; row < height; ++row) {
+    const int y = source_area->y1 + row;
+    lv_color_t *destination_row =
+        to + (destination_area->y1 + row) * destination_stride +
+        destination_area->x1;
+    for (int column = 0; column < width; ++column) {
+      const int x = source_area->x1 + column;
+      int physical_x;
+      int physical_y;
+      if (degrees == 90) {
+        physical_x = kWidth - 1 - y;
+        physical_y = x;
+      } else if (degrees == 180) {
+        physical_x = kWidth - 1 - x;
+        physical_y = kHeight - 1 - y;
+      } else {
+        physical_x = y;
+        physical_y = kHeight - 1 - x;
+      }
+      destination_row[column] = from[physical_y * source_stride + physical_x];
+    }
+  }
+}
+
 void displayFlush(lv_disp_drv_t *driver, const lv_area_t *, lv_color_t *colors) {
   // In LVGL direct mode every invalid area can invoke flush, but all areas are
   // rendered into the same off-screen framebuffer. Present it only after the
@@ -78,6 +127,16 @@ void displayFlush(lv_disp_drv_t *driver, const lv_area_t *, lv_color_t *colors) 
     lv_disp_flush_ready(driver);
     return;
   }
+  void *previous_frame_buffer = Board::currentFrameBuffer();
+  if (!previous_frame_buffer || !colors) {
+    Serial.println("LCD frame buffer unavailable");
+    Serial.flush();
+    delay(20);
+    ESP.restart();
+    return;
+  }
+  const bool rotated = Board::rotation() != 0;
+  if (rotated) Board::prepareFrameBufferForDisplay(colors);
   if (!Board::switchFrameBuffer(colors)) {
     Serial.println("LCD frame switch failed");
     Serial.flush();
@@ -116,6 +175,10 @@ void displayFlush(lv_disp_drv_t *driver, const lv_area_t *, lv_color_t *colors) 
   TickType_t wait_ticks = xTaskGetTickCount() - wait_started;
   if (wait_ticks > display_max_flush_wait_ticks) {
     display_max_flush_wait_ticks = wait_ticks;
+  }
+  if (rotated) {
+    Board::restoreFrameBufferAfterDisplay(previous_frame_buffer);
+    Board::commitFrameBufferForDisplay();
   }
   lv_disp_flush_ready(driver);
 }
@@ -230,7 +293,14 @@ bool initLvgl() {
   // Full refresh rewrote 450 KiB on every slider frame and starved RGB DMA once
   // Wi-Fi/HTTP traffic began competing for the same PSRAM.
   display_driver.direct_mode = 1;
-  lv_disp_drv_register(&display_driver);
+  lv_disp_t *display = lv_disp_drv_register(&display_driver);
+  if (!display || !display->driver->draw_ctx ||
+      !display->driver->draw_ctx->buffer_copy) {
+    Serial.println("LVGL display registration failed");
+    return false;
+  }
+  default_buffer_copy = display->driver->draw_ctx->buffer_copy;
+  display->driver->draw_ctx->buffer_copy = displayBufferCopy;
   AppUi::displayReady();
 
   static lv_indev_drv_t input_driver;

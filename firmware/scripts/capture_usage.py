@@ -12,6 +12,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--port", required=True)
 parser.add_argument("--page", type=int, choices=[0, 1], help="Open a usage page; omit to capture the current screen")
 parser.add_argument("--output", type=Path, required=True)
+parser.add_argument("--buffer", choices=["0", "1", "current"], default="current")
+parser.add_argument("--expected-rotation", type=int, choices=[0, 90, 180, 270])
 args = parser.parse_args()
 
 with serial.Serial(args.port, 115200, timeout=0.3) as link:
@@ -28,7 +30,19 @@ with serial.Serial(args.port, 115200, timeout=0.3) as link:
             raise SystemExit("Touch did not confirm its usage view")
     # Allow both display framebuffers to receive the freshly synced state.
     time.sleep(2)
-    link.write(b"AZORIA_SCREENSHOT 1\n")
+    if args.expected_rotation is not None:
+        end = time.monotonic() + 20
+        while time.monotonic() < end:
+            link.write(b"AZORIA_DISPLAY_STATE\n")
+            line = link.readline()
+            state = re.search(rb"AZORIA_DISPLAY_STATE rotation=(\d+) frame_rotation=(\d+)", line)
+            if state and all(int(value) == args.expected_rotation for value in state.groups()):
+                print(line.decode().strip())
+                break
+            time.sleep(0.1)
+        else:
+            raise SystemExit("Touch did not apply the expected display rotation")
+    link.write(f"AZORIA_SCREENSHOT {args.buffer.upper()}\n".encode("ascii"))
     end = time.monotonic() + 15
     while time.monotonic() < end:
         line = link.readline()

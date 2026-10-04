@@ -12,6 +12,7 @@ import { MonitorController } from "./monitor"
 import { WallpaperManager } from "./wallpaper"
 import { MusicManager } from "./music"
 import { TouchSleepManager } from "./touch-sleep"
+import { TouchRotationManager } from "./touch-rotation"
 import { CodexQuotaService } from "./codex-quota"
 import { UsageProviderStore } from "./usage-provider-store"
 import { ApiUsageService } from "./api-usage"
@@ -154,6 +155,8 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   app.once("before-quit", () => wallpaper.stop())
   const touchSleep = new TouchSleepManager(app.getPath("userData"))
   await touchSleep.initialize()
+  const touchRotation = new TouchRotationManager(app.getPath("userData"))
+  await touchRotation.initialize()
   const music = new MusicManager(
     isDevelopment
       ? path.resolve(app.getAppPath(), "sidecar/target/release", process.platform === "win32" ? "azoria-ddc-sidecar.exe" : "azoria-ddc-sidecar")
@@ -171,7 +174,7 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   const touchUsage = new TouchUsageService(codexQuota, usageProviders, apiUsage)
   touchUsage.start()
   app.once("before-quit", () => touchUsage.stop())
-  const lan = new LanController(config.desktopId, monitor, wallpaper, music, touchSleep, touchUsage, computer, brightnessLink)
+  const lan = new LanController(config.desktopId, monitor, wallpaper, music, touchSleep, touchUsage, computer, brightnessLink, touchRotation)
   await lan.start()
   const devices = new TouchManager(config.token)
   const diagnostics = new DiagnosticsController(logger, monitor, lan)
@@ -303,6 +306,8 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   ipcMain.handle("wallpaper:remove", () => wallpaper.remove())
   ipcMain.handle("touch-sleep:settings", () => touchSleep.settings())
   ipcMain.handle("touch-sleep:update", (_event, input) => touchSleep.update(input))
+  ipcMain.handle("touch-rotation:settings", () => touchRotation.settings())
+  ipcMain.handle("touch-rotation:rotate-clockwise", () => touchRotation.rotateClockwise())
   ipcMain.handle("security:sign", (_event, message: string) => {
     if (typeof message !== "string" || message.length > 512) throw new Error("签名消息无效")
     return createHmac("sha256", config.token).update(message).digest("hex").slice(0, 16)

@@ -164,8 +164,7 @@ void scanNetworks() {
   }
 }
 
-void sendScreenshot(uint8_t buffer_index) {
-  void *source = Board::frameBuffer(buffer_index);
+void sendScreenshot(void *source) {
   if (!source) {
     Serial.println("AZORIA_SCREENSHOT_ERROR framebuffer unavailable");
     return;
@@ -188,11 +187,20 @@ void handleLine(String line) {
     return;
   }
   if (line == "AZORIA_SCREENSHOT" || line == "AZORIA_SCREENSHOT 0") {
-    sendScreenshot(0);
+    sendScreenshot(Board::frameBuffer(0));
     return;
   }
   if (line == "AZORIA_SCREENSHOT 1") {
-    sendScreenshot(1);
+    sendScreenshot(Board::frameBuffer(1));
+    return;
+  }
+  if (line == "AZORIA_SCREENSHOT CURRENT") {
+    sendScreenshot(Board::currentFrameBuffer());
+    return;
+  }
+  if (line == "AZORIA_DISPLAY_STATE") {
+    Serial.printf("AZORIA_DISPLAY_STATE rotation=%u frame_rotation=%u\n",
+                  Board::rotation(), Board::currentFrameBufferRotation());
     return;
   }
   if (line == "AZORIA_USAGE 0" || line == "AZORIA_USAGE 1") {

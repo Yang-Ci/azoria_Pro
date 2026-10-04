@@ -8,6 +8,7 @@ import type { MonitorController } from "./monitor"
 import type { WallpaperManager } from "./wallpaper"
 import type { MusicManager } from "./music"
 import type { TouchSleepManager } from "./touch-sleep"
+import type { TouchRotationManager } from "./touch-rotation"
 import type { TouchUsageService } from "./touch-usage"
 import type { ComputerStatsService } from "./computer"
 import type { BrightnessLinkManager } from "./brightness-link"
@@ -126,6 +127,7 @@ export class LanController {
     private readonly touchUsage?: TouchUsageService,
     private readonly computer?: ComputerStatsService,
     private readonly brightnessLink?: BrightnessLinkManager,
+    private readonly touchRotation?: TouchRotationManager,
   ) {
     activeControllers.add(this)
   }
@@ -421,6 +423,7 @@ export class LanController {
       // perform their own targeted readback before acknowledgement.
       const wallpaper = this.wallpaper?.info()
       const touchSleep = this.touchSleep?.settings()
+      const touchRotation = this.touchRotation?.settings()
       return {
         ...this.monitor.snapshot(),
         available: this.reachable,
@@ -431,6 +434,7 @@ export class LanController {
         touchSleepStartMinutes: touchSleep?.startMinutes ?? 0,
         touchSleepEndMinutes: touchSleep?.endMinutes ?? 0,
         touchSleepActive: touchSleep?.active ?? false,
+        touchRotationDegrees: touchRotation?.degrees ?? 0,
         ...this.music?.touchStatus(),
       }
     }
@@ -582,6 +586,7 @@ export class LanController {
         // snapshot immediately so this endpoint never times out behind them.
         const wallpaper = this.wallpaper?.info()
         const touchSleep = this.touchSleep?.settings()
+        const touchRotation = this.touchRotation?.settings()
         return this.json(response, 200, {
           ...this.monitor.snapshot(),
           available: this.monitor.hasStatus(),
@@ -595,6 +600,7 @@ export class LanController {
           touchSleepStartMinutes: touchSleep?.startMinutes ?? 0,
           touchSleepEndMinutes: touchSleep?.endMinutes ?? 0,
           touchSleepActive: touchSleep?.active ?? false,
+          touchRotationDegrees: touchRotation?.degrees ?? 0,
         })
       }
       if (request.method === "GET" && request.url === "/v1/computer/status") {

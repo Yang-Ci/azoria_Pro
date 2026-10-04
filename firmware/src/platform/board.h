@@ -34,6 +34,8 @@ bool beginTouch();
 bool begin();
 // GPIO42 is shared with TF-card MOSI. Call before the SPI bus is initialized.
 void flashStatusLed();
+// Send an off frame and release the shared pin. Call only with TF SPI released.
+void clearStatusLed();
 // Returns the number of valid points, 0 for a successful no-touch read, and
 // -1 for an I2C/protocol/argument error.
 int readTouches(TouchPoint *points, int max_points);
@@ -42,6 +44,14 @@ void printTouchDiagnostics();
 bool readTouchSnapshot(TouchSnapshot &snapshot);
 void printTouchSnapshot(const TouchSnapshot &snapshot);
 void setBacklight(uint8_t value);
+bool setRotation(uint16_t degrees);
+uint16_t rotation();
+uint16_t currentFrameBufferRotation();
+void prepareFrameBufferForDisplay(void *buffer);
+void restoreFrameBufferAfterDisplay(void *buffer);
+void commitFrameBufferForDisplay();
+void copyRotatedArea(const void *source, void *destination,
+                     int16_t x1, int16_t y1, int16_t x2, int16_t y2);
 void *frameBuffer(uint8_t index);
 void *currentFrameBuffer();
 bool switchFrameBuffer(void *buffer);

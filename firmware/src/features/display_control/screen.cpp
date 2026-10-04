@@ -172,6 +172,17 @@ void saveWallpaperIdleMinutes(uint16_t minutes) {
   preferences.end();
 }
 
+bool validRotation(uint16_t degrees) {
+  return degrees == 0 || degrees == 90 || degrees == 180 || degrees == 270;
+}
+
+void applyRotation(uint16_t degrees) {
+  if (!validRotation(degrees) || Board::rotation() == degrees) return;
+  if (!Board::setRotation(degrees)) return;
+  lv_obj_invalidate(lv_scr_act());
+  Serial.printf("TOUCH_ROTATION=%u\n", degrees);
+}
+
 void applyBacklight(int value) {
   current_backlight_percent = constrain(value, kMinBacklightPercent, 100);
   const int scaled = (current_backlight_percent * 255 + 50) / 100;
@@ -1482,6 +1493,7 @@ void showScreen() {
 void refresh() {
   if (!controls || !brightness_slider) return;
   RemoteState state = getRemoteState();
+  applyRotation(state.touch_rotation_degrees);
   applyTouchSleep(touchSleepActive(state));
   if (touch_sleep_applied) return;
   if (wallpaper_exit_requested) {

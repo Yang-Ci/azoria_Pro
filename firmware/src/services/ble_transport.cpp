@@ -469,7 +469,7 @@ bool exchange(const String &unsigned_request, uint32_t request_id,
 bool decodeStatus(const String &wire, String &response) {
   const int count = fieldCount(wire);
   if ((count != 12 && count != 14 && count != 15 && count != 16 &&
-       count != 19) ||
+       count != 19 && count != 20) ||
       field(wire, 3) != "S") return false;
   response =
       "{\"brightness\":" + field(wire, 4) +
@@ -490,13 +490,16 @@ bool decodeStatus(const String &wire, String &response) {
     response += ",\"touchSleepActive\":" +
                 String(field(wire, 14) == "1" ? "true" : "false");
   }
-  if (count == 19) {
+  if (count == 19 || count == 20) {
     response += ",\"touchSleepEnabled\":" +
                 String(field(wire, 14) == "1" ? "true" : "false") +
                 ",\"touchSleepStartMinutes\":" + field(wire, 15) +
                 ",\"touchSleepEndMinutes\":" + field(wire, 16) +
                 ",\"touchSleepActive\":" +
                 String(field(wire, 17) == "1" ? "true" : "false");
+  }
+  if (count == 20) {
+    response += ",\"touchRotationDegrees\":" + field(wire, 18);
   }
   response += "}";
   response.remove(response.length() - 1);

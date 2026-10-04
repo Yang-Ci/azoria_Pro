@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
-import { Clock3, MoonStar } from "lucide-react"
-import type { TouchSleepSettings, TouchSleepUpdate } from "../../../shared/contracts"
+import { Clock3, MoonStar, RotateCw } from "lucide-react"
+import type { TouchRotationSettings, TouchSleepSettings, TouchSleepUpdate } from "../../../shared/contracts"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -13,6 +13,8 @@ const defaults: TouchSleepSettings = {
   endMinutes: 7 * 60,
   active: false,
 }
+
+const defaultRotation: TouchRotationSettings = { degrees: 0 }
 
 function timeValue(minutes: number): string {
   return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`
@@ -38,20 +40,26 @@ function activeNow(settings: TouchSleepSettings, now: Date): boolean {
 
 export function TouchSleepCard({ onMessage }: { onMessage(message: string): void }) {
   const [settings, setSettings] = useState(defaults)
+  const [rotation, setRotation] = useState(defaultRotation)
   const [start, setStart] = useState(timeValue(defaults.startMinutes))
   const [end, setEnd] = useState(timeValue(defaults.endMinutes))
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [rotating, setRotating] = useState(false)
   const [now, setNow] = useState(() => new Date())
 
   const load = useCallback(async () => {
     try {
-      const next = await window.azoria.touchSleep.settings()
-      setSettings(next)
-      setStart(timeValue(next.startMinutes))
-      setEnd(timeValue(next.endMinutes))
+      const [nextSleep, nextRotation] = await Promise.all([
+        window.azoria.touchSleep.settings(),
+        window.azoria.touchRotation.settings(),
+      ])
+      setSettings(nextSleep)
+      setStart(timeValue(nextSleep.startMinutes))
+      setEnd(timeValue(nextSleep.endMinutes))
+      setRotation(nextRotation)
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : "Touch 息屏设置读取失败")
+      onMessage(error instanceof Error ? error.message : "Touch 设置读取失败")
     } finally {
       setLoading(false)
     }
@@ -86,13 +94,26 @@ export function TouchSleepCard({ onMessage }: { onMessage(message: string): void
     }
   }
 
+  const rotateClockwise = async () => {
+    setRotating(true)
+    try {
+      const next = await window.azoria.touchRotation.rotateClockwise()
+      setRotation(next)
+      onMessage(`Touch 屏幕方向已保存为 ${next.degrees}°，连接后自动同步`)
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : "Touch 旋转设置保存失败")
+    } finally {
+      setRotating(false)
+    }
+  }
+
   const active = activeNow(settings, now)
 
   return <Card>
     <CardHeader className="flex flex-row items-start justify-between space-y-0">
       <div>
-        <CardTitle className="flex items-center gap-2"><MoonStar />息屏休息</CardTitle>
-        <CardDescription>在指定时间段内关闭 Touch 背光，结束后自动恢复。</CardDescription>
+        <CardTitle className="flex items-center gap-2"><MoonStar />Touch 设置</CardTitle>
+        <CardDescription>调整屏幕方向，并设置自动息屏时间。</CardDescription>
       </div>
       <Badge variant="outline" className="border-white/10">
         <span className={`h-1.5 w-1.5 rounded-full ${active ? "bg-blue-400" : "bg-zinc-600"}`} />
@@ -100,6 +121,15 @@ export function TouchSleepCard({ onMessage }: { onMessage(message: string): void
       </Badge>
     </CardHeader>
     <CardContent className="space-y-5">
+      <div className="flex items-center justify-between gap-4 rounded-lg border border-white/10 p-4">
+        <div>
+          <p className="text-sm font-medium leading-none">屏幕方向</p>
+          <p className="mt-1 text-sm text-zinc-500">当前顺时针旋转 {rotation.degrees}°，画面与触摸坐标会一起调整。</p>
+        </div>
+        <Button variant="outline" disabled={loading || rotating} onClick={() => void rotateClockwise()}>
+          <RotateCw />{rotating ? "正在保存…" : "旋转 90°"}
+        </Button>
+      </div>
       <div className="flex items-center justify-between rounded-lg border border-white/10 p-4">
         <div>
           <Label htmlFor="touch-sleep-enabled">启用定时息屏</Label>

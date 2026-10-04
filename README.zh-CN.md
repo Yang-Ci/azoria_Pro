@@ -167,8 +167,9 @@ TF 卡时优先使用卡内存储，桌面端生成的动态壁纸最长 10 秒�
 未插卡时自动使用板载数据分区，壁纸包需小于 3 MB。
 
 需要一次完成外壳和支架打印时，使用
-`hardware/enclosure/azoria-touch-all-v3.stl`；该文件包含前壳、后盖和两种背部支架，
-不包含试装片。各部件单独打印与参数调整说明见 `hardware/enclosure/README.md`。
+`hardware/enclosure/v3/azoria-touch-all-v3.stl`；该文件包含前壳、后盖和两种背部支架。
+[V3 文件夹](hardware/enclosure/v3/)包含 5 个 STL，单独打印与装配说明见
+[V3 打印说明](hardware/enclosure/v3/README.md)。
 
 局域网通信使用三个固定端口：TCP `8732` 提供状态和设备登记，UDP `8733` 用于 Desktop
 发现 Touch 及返回命令结果，UDP `8734` 用于 Desktop 心跳、协调和 Touch 控制命令广播。

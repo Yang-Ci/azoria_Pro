@@ -113,8 +113,9 @@ render the current 480×480 LVGL implementation. Device status, the fictional
 track “星夜 / YangCi Demo,” and lyrics are demonstration data, with original demo
 artwork. See [screenshot and asset notes](docs/images/README.md).
 
-For the enclosure, print `hardware/enclosure/azoria-touch-all-v3.stl` to produce
-the front, rear, and both stand designs on one plate without the fit test coupon.
+For the enclosure, print `hardware/enclosure/v3/azoria-touch-all-v3.stl` to produce
+the front, rear, and both stand designs on one plate. The [V3 package](hardware/enclosure/v3/)
+contains five STL files and [printing instructions](hardware/enclosure/v3/README.md).
 
 ## Architecture and device capabilities
 

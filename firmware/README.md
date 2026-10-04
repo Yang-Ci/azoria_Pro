@@ -102,8 +102,9 @@ Touch 每 15 秒获取桌面缓存；桌面在后台检查 Codex 额度并按服
 Flash 和 8MB PSRAM。
 
 背部方形 D3 是 WS2812B RGB 状态灯。启动时以低亮度绿光亮 150 ms，随后熄灭。
-它与 TF 卡 MOSI 共用 GPIO42；每次 TF 卡命令结束后，固件在卡片未选中时发送
-熄灯数据，避免探测或低速通信误点亮 RGB 灯。D5 是硬接 3.3V 的供电指示灯，
+它与 TF 卡 MOSI 共用 GPIO42；固件在 TF 初始化和壁纸读写结束、SPI 空闲时发送
+熄灯数据。初始化重试先释放总线，再重新配置引脚；挂载失败后释放 SPI 并用 RGB
+驱动再次灭灯，保持 GPIO42 为低电平。D5 是硬接 3.3V 的供电指示灯，
 无法通过固件控制。硬件接线见 [VIEWE V1.3 原理图](https://github.com/VIEWESMART/UEDX48480040ESP32-4inch-Touch-Display/blob/main/Schematic/UEDX48480040E-WB-A%20V1.3.SCH_00.png)。
 
 代码遵循根目录 GPL-3.0-or-later；板卡、显示器、平台标识和第三方组件仍受各自许可约束。

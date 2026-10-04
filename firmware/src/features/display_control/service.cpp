@@ -788,6 +788,14 @@ bool readStatus() {
               remote_state.touch_sleep_end_minutes), 0, 1439);
   bool touch_sleep_active =
       jsonBool(response, "touchSleepActive", remote_state.touch_sleep_active);
+  const int requested_rotation =
+      jsonInt(response, "touchRotationDegrees",
+              remote_state.touch_rotation_degrees);
+  const uint16_t touch_rotation_degrees =
+      requested_rotation == 0 || requested_rotation == 90 ||
+              requested_rotation == 180 || requested_rotation == 270
+          ? static_cast<uint16_t>(requested_rotation)
+          : remote_state.touch_rotation_degrees;
   bool music_available = jsonBool(response, "musicAvailable", remote_state.music_available);
   bool music_playing = jsonBool(response, "musicPlaying", remote_state.music_playing);
   bool music_can_seek = jsonBool(response, "musicCanSeek", remote_state.music_can_seek);
@@ -834,6 +842,8 @@ bool readStatus() {
                  remote_state.touch_sleep_end_minutes !=
                      touch_sleep_end_minutes ||
                  remote_state.touch_sleep_active != touch_sleep_active ||
+                 remote_state.touch_rotation_degrees !=
+                     touch_rotation_degrees ||
                  remote_state.music_available != music_available ||
                  remote_state.music_playing != music_playing ||
                  remote_state.music_can_seek != music_can_seek ||
@@ -866,6 +876,7 @@ bool readStatus() {
     remote_state.touch_sleep_end_minutes =
         static_cast<uint16_t>(touch_sleep_end_minutes);
     remote_state.touch_sleep_active = touch_sleep_active;
+    remote_state.touch_rotation_degrees = touch_rotation_degrees;
     remote_state.music_available = music_available;
     remote_state.music_playing = music_playing;
     remote_state.music_can_seek = music_can_seek;

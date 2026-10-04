@@ -81,6 +81,10 @@ const api: DesktopApi = {
     settings: () => ipcRenderer.invoke("touch-sleep:settings"),
     update: (input) => ipcRenderer.invoke("touch-sleep:update", input),
   },
+  touchRotation: {
+    settings: () => ipcRenderer.invoke("touch-rotation:settings"),
+    rotateClockwise: () => ipcRenderer.invoke("touch-rotation:rotate-clockwise"),
+  },
   security: {
     sign: (message: string) => ipcRenderer.invoke("security:sign", message),
   },

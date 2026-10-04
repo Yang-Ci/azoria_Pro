@@ -83,6 +83,8 @@ bool using_sd = false;
 volatile bool sd_command_trace = false;
 uint32_t sd_command_trace_sample = 0;
 
+void clearSdStatusLed();
+
 size_t maxPackageSize() {
   return using_sd ? kSdMaxPackageSize : kFlashMaxPackageSize;
 }
@@ -287,6 +289,7 @@ bool loadFirstFrame() {
   const bool loaded = header_loaded &&
                       decodeFrame(playback_file, frames > 1, source_width);
   if (!loaded) closePlaybackFileLocked();
+  if (using_sd) clearSdStatusLed();
   xSemaphoreGive(storage_mutex);
   if (!loaded) return false;
   frame_count = frames;
@@ -494,7 +497,7 @@ void clearSdStatusLed() {
   } else {
     static bool logged = false;
     if (!logged) {
-      Serial.println("RGB D3: cleared after TF command");
+      Serial.println("RGB D3: cleared while TF bus idle");
       logged = true;
     }
   }
@@ -502,9 +505,11 @@ void clearSdStatusLed() {
 
 esp_err_t traceSdCommand(int slot, sdmmc_command_t *cmd) {
   const esp_err_t ret = sdspi_host_do_transaction(slot, cmd);
-  // Card probing and fallback-speed traffic can look like LED data. The
-  // SDSPI transaction has released the bus and deselected the card here.
-  clearSdStatusLed();
+  // Do not transmit the D3 LED reset frame from this callback. The SD host
+  // owns SPI2 while command and response timing are in progress; a second
+  // transaction here can corrupt card initialization and cause CMD52/CMD0
+  // timeouts. Clear the LED while the bus is idle, after mounting or before
+  // releasing it on the failed-mount path.
   if (!sd_command_trace) return ret;
 
   const uint32_t opcode = cmd->opcode;
@@ -521,16 +526,21 @@ esp_err_t traceSdCommand(int slot, sdmmc_command_t *cmd) {
 bool releaseSdSpiBus() {
   if (!sd_spi_bus_ready) return true;
   if (sd_status_led) {
+    // Failed SD probing also sends MOSI pulses that can latch a colour in D3.
+    // A low GPIO alone does not clear that latched colour; send the LED's
+    // black frame before removing its SPI device and releasing the shared pin.
+    clearSdStatusLed();
     const esp_err_t ret = spi_bus_remove_device(sd_status_led);
     if (ret != ESP_OK) return false;
     sd_status_led = nullptr;
   }
   const esp_err_t ret = spi_bus_free(SPI2_HOST);
-  sd_spi_bus_ready = false;
   if (ret == ESP_OK) {
-    // With no card, keep D3's input low rather than leaving it floating.
-    gpio_set_direction(static_cast<gpio_num_t>(kSdMosi), GPIO_MODE_OUTPUT);
-    gpio_set_level(static_cast<gpio_num_t>(kSdMosi), 0);
+    sd_spi_bus_ready = false;
+    // The RGB driver can own GPIO42 safely once SDSPI has released it. Send
+    // a real off frame as well as holding the idle pin low: low alone cannot
+    // clear a colour already latched by the WS2812B during SD probing.
+    Board::clearStatusLed();
   }
   return ret == ESP_OK;
 }
@@ -569,6 +579,7 @@ bool mountSdAtFrequency(uint32_t frequency) {
     if (card != nullptr) esp_vfs_fat_sdcard_unmount(kSdMountPoint, card);
     return false;
   }
+  clearSdStatusLed();
   return true;
 }
 
@@ -630,6 +641,10 @@ bool tryMountSd() {
 
   const uint32_t frequencies[] = {kSdFrequency, kSdProbingFrequency};
   for (uint8_t round = 0; round < kSdRetryRounds; ++round) {
+    // gpio_reset_pin() disconnects the SPI signal routing. Release the old
+    // bus before GPIO preparation so initializeSdSpiBus() reconnects MOSI
+    // and SCK on every retry, including the LED's CS-less SPI device.
+    if (!releaseSdSpiBus()) return false;
     prepareSdGpios();
     for (uint32_t frequency : frequencies) {
       if (mountSdAtFrequency(frequency)) return adoptSdStorage();
@@ -672,6 +687,7 @@ bool begin() {
     storage->remove(kPackagePath);
     storage->remove(kHashPath);
   }
+  if (using_sd) clearSdStatusLed();
   return true;
 }
 
@@ -771,24 +787,32 @@ void refresh() {
       !frame_buffers_ready ? nullptr
       : current_frame_buffer == frame_buffer_0 ? frame_buffer_1
                                                : frame_buffer_0);
+  const bool rotation_needed = Board::rotation() != 0;
   xSemaphoreTake(storage_mutex, portMAX_DELAY);
   const bool revision_unchanged = shown_asset_revision == asset_revision.load();
   const bool playback_allowed = !sync_in_progress.load() &&
                                 revision_unchanged;
-  const bool positioned = playback_allowed && target_frame_buffer &&
+  const bool output_ready = rotation_needed ? pixels != nullptr
+                                            : target_frame_buffer != nullptr;
+  const bool positioned = playback_allowed && output_ready &&
                           playback_file &&
                           (!wrapped || playback_file.seek(kHeaderSize));
   const bool loaded = positioned &&
                       decodeFrame(playback_file, true,
                                   animation_source_width,
-                                  target_frame_buffer);
+                                  rotation_needed ? nullptr
+                                                  : target_frame_buffer);
+  if (using_sd) clearSdStatusLed();
   xSemaphoreGive(storage_mutex);
   // sync() may have started after the fast check at the top of refresh(). In
   // that case it owns the storage transition; leave the last completed frame
   // visible and let the asset revision reload the new file after commit.
   if (sync_in_progress.load() || !revision_unchanged) return;
-  if (!loaded || !target_frame_buffer ||
-      !Board::switchFrameBuffer(target_frame_buffer)) {
+  const bool presented = rotation_needed
+                             ? loaded
+                             : loaded && target_frame_buffer &&
+                                   Board::switchFrameBuffer(target_frame_buffer);
+  if (!presented) {
     const uint32_t now = millis();
     if (now - last_recovery_log >= 2000) {
       Serial.printf(
@@ -845,6 +869,7 @@ bool sync(const String &host, uint16_t port, const String &sha256,
     storage->remove(kHashPath);
     installed_hash = "";
     asset_revision.fetch_add(1);
+    if (using_sd) clearSdStatusLed();
     xSemaphoreGive(storage_mutex);
     sync_in_progress.store(false);
     return true;
@@ -870,6 +895,7 @@ bool sync(const String &host, uint16_t port, const String &sha256,
     xSemaphoreTake(storage_mutex, portMAX_DELAY);
     storage->remove(kTemporaryPath);
     asset_revision.fetch_add(1);
+    if (using_sd) clearSdStatusLed();
     xSemaphoreGive(storage_mutex);
     sync_in_progress.store(false);
     return false;
@@ -919,6 +945,7 @@ bool sync(const String &host, uint16_t port, const String &sha256,
     installed_hash = "";
   }
   asset_revision.fetch_add(1);
+  if (using_sd) clearSdStatusLed();
   xSemaphoreGive(storage_mutex);
   Serial.printf("WALLPAPER_SYNC,ok=%d,size=%u,storage=%s\n",
                 committed ? 1 : 0, static_cast<unsigned>(size),
