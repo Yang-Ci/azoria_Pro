@@ -2,19 +2,32 @@
 
 AZORIA Touch 的 ESP32-S3 + LVGL 固件，提供亮度、音量、静音、输入源控制和壁纸模式。
 
+Desktop 的 Touch 设置支持顺时针 90° 循环旋转，通过 Wi-Fi / BLE 下发保存的方向。
+固件同步转换显示画面与触摸坐标，静态和动态壁纸沿用相同方向。LVGL 使用独立的
+逻辑绘制缓冲，旋转脏区域后复制到两个 LCD 扫描缓冲，并在 VSYNC 后同步空闲缓冲。
+
 ## 构建
+
+AI 协作、备份、OTA 槽位核验和 Windows 烧录命令见根目录
+[构建、更新与烧录要求](../README.zh-CN.md#ai-协作构建更新与烧录要求)。
+存量设备默认只升级已确认会启动的应用槽，保留配对、Wi-Fi 和壁纸。
 
 ```bash
 pio run -e viewe_uedx48480040e_wb_a
-pio run -e viewe_uedx48480040e_wb_a -t upload --upload-port /dev/cu.usbmodemXXXX
 pio device monitor --port /dev/cu.usbmodemXXXX --baud 115200
 ```
 
 应用固件输出到 `.pio/build/viewe_uedx48480040e_wb_a/firmware.bin`。
 
-手动调用 esptool 刷入时，应保留镜像中的启动参数（`--flash-mode keep`）。
+首刷或用户明确要求完整恢复时，才核对目标端口后使用
+`pio run -e viewe_uedx48480040e_wb_a -t upload --upload-port <实际端口>`；
+该命令可能同时写入启动程序和分区表，不能当作存量设备的默认应用升级命令。
+
+手动调用 esptool 刷入应用时，显式使用
+`--flash-mode keep --flash-freq keep --flash-size keep` 保留已有参数。
 当前 ESP32-S3 启动镜像使用 DIO，不能按 `board_build.flash_mode = qio` 强制改写
-启动镜像头，否则会在 ROM 加载阶段反复重启。PlatformIO 上传会自动处理此区别。
+启动镜像头，否则会在 ROM 加载阶段反复重启。烧录前仍需核对实机分区表及 OTA 槽位，
+不能仅根据构建配置决定写入偏移或启动参数。
 说明见 [Espressif 启动模式文档](https://docs.espressif.com/projects/esptool/en/latest/esp32s3/advanced-topics/boot-mode-selection.html)。
 
 ## 目录

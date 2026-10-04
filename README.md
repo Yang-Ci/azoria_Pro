@@ -87,6 +87,7 @@ track information, lyrics, and playback state.
 | Playlists / scheduled changes | Reorder selected wallpapers, rotate sequentially or randomly at 1-minute to 24-hour intervals, and configure up to 24 daily changes to specific wallpapers. Save settings to apply them. Desktop must stay running and share a LAN with Touch; offline devices retain their last wallpaper. Existing wallpapers migrate automatically. |
 | Idle wallpaper | Enter wallpaper after 1, 5, 10, or 30 idle minutes, or disable automatic entry. Tap the wallpaper to return. |
 | Scheduled sleep | Configure a backlight-off interval, including overnight schedules; backlight resumes when the interval ends. Disabled by default, with a preset of 23:00–07:00. |
+| Screen orientation | In Touch Settings, rotate clockwise by 90° through 0°, 90°, 180°, and 270°. The saved direction syncs over Wi-Fi or BLE; Touch rotates its interface, touch coordinates, and still / video wallpaper together. Requires the updated Touch firmware. |
 | Diagnostics | View control success rate, average / P95 latency, route failures, readback mismatches, and recent events. |
 | Profiles and development | Use the profile wizard or import a profile in Settings. Enable the normally hidden Developer page to select an application firmware image, verify device identity and file hash, and flash over USB. |
 
@@ -210,13 +211,221 @@ Select this `firmware.bin` from the **Developer** page in YangCi. Do not
 select `bootloader.bin` or `partitions.bin`; those files are not accepted by the
 Desktop flashing workflow.
 
-To upload directly with PlatformIO (replace the port with your device's port;
-for example, `COM7` on Windows):
+PlatformIO upload can also write the bootloader and partition table. Use it for
+initial provisioning or an explicitly requested full recovery. For an existing
+device, follow the [application-only update procedure](#touch-application-only-updates)
+below and check the real OTA boot slot first. Replace the example port for initial upload:
 
 ```bash
 cd firmware
 pio run -e viewe_uedx48480040e_wb_a -t upload --upload-port /dev/cu.usbmodemXXXX
 ```
+
+## AI-assisted builds, desktop updates, and Touch flashing
+
+Before asking an AI agent to build, update an installation, or flash Touch, have
+it read this section, the [firmware notes](firmware/README.md), and any applicable
+`AGENTS.md`. These are the project's operating requirements; ports and drive
+letters in examples are not device configuration.
+
+### Scope and environment
+
+- Distinguish source edits, builds, installed desktop updates, Touch flashing,
+  GitHub pushes, and Release publication. Carry out steps the user has already
+  authorized without repeated confirmation. An application update does not
+  authorize a full-chip erase, partition changes, pairing reset, or Wi-Fi
+  reprovisioning; those require an explicit request.
+- Inspect `git status --short`, the branch, remote, tool versions, installation
+  path, and serial devices. Preserve changes from the user and other tasks.
+  Select only this task's files or hunks for commits; do not use `git add .`,
+  force pushes, `git reset --hard`, or `git clean -fd` to overwrite other work.
+- Use locked dependencies. Run `npm ci` when Node dependencies are missing;
+  do not upgrade packages or delete lockfiles just to build. Locate existing
+  tools before installing replacements. Windows PlatformIO Python usually lives
+  at `%USERPROFILE%\.platformio\penv\Scripts\python.exe`, not `penv/bin/python`.
+- Check free space on the source, cache, staging, and backup drives.
+  `firmware/.pio/build` and `sidecar/target` may be junctions: inspect their
+  targets with `Get-Item` before cleanup or migration. A PlatformIO temporary
+  directory cleanup warning is not a reason to recursively delete the target;
+  inspect the exit code and final build result.
+- Use a unique staging / backup directory outside the repository. Record the
+  source commit, uncommitted changes, build results, and artifact SHA-256 values.
+  Do not mix outputs from tasks concurrently changing the same source or build
+  directories; pin the source and artifacts for this update. Routine testing
+  does not require a version bump. For a release, coordinate `package.json`,
+  `package-lock.json`, `firmware/version.txt`, and `CHANGELOG.md`.
+
+### Builds and artifact checks
+
+Choose checks appropriate to the changes. When both desktop and sidecar change,
+run these from the repository root:
+
+```bash
+npm run typecheck
+node --test desktop/tests/*.test.cjs
+npm run sidecar:test
+npm run build
+```
+
+Also run `npm run usage:test` for Codex / API quota changes. Build firmware separately:
+
+```bash
+pio run --project-dir firmware -e viewe_uedx48480040e_wb_a
+```
+
+On Windows, if `pio` is not on PATH, use the existing Python from the repository root:
+
+```powershell
+$pioPython = Join-Path $env:USERPROFILE '.platformio\penv\Scripts\python.exe'
+& $pioPython -X utf8 -m platformio run --project-dir firmware -e viewe_uedx48480040e_wb_a
+if ($LASTEXITCODE -ne 0) { throw 'Firmware build failed; stop installation and flashing' }
+```
+
+`npm run build` refreshes both `out/` and `sidecar/target/release/`.
+`npm run desktop:build` refreshes only Electron output and is insufficient after
+Rust changes. Use this build's `firmware.bin`; check the ESP32-S3 type, application
+description, and integrity with `image-info`, and check its size against the
+actual application partition. Bootloader, partition-table, and merged images
+are not application images. A version string, cached compilation timestamp, or
+filename alone does not establish that an artifact contains the latest source.
+
+### Updating an installed desktop app
+
+1. Identify the running executable and actual installation directory. Back up
+   `resources/app.asar`, relevant `app.asar.unpacked` native dependencies, and
+   `resources/sidecar/`, plus `app.getPath("userData")` (typically
+   `%APPDATA%\YangCi` on Windows). Preserve local keys, API credentials,
+   wallpapers and playback, monitor profiles, brightness scenes, sleep,
+   orientation, and desktop settings.
+2. Prepare a complete package in staging, or repack a compatible installed
+   package with the current `out/`, profiles, and icon assets. Reuse native
+   modules only when Electron, platform / architecture, and runtime dependencies
+   remain compatible; changed dependencies require a complete package rebuild.
+   The archive and `app.asar.unpacked` must match, including serial-port modules.
+3. Check the sidecar's platform and filename: `azoria-ddc-sidecar.exe` on Windows,
+   `azoria-ddc-sidecar` on Linux / macOS. The current `electron-builder.yml` and
+   `npm run package:linux` target Linux. Windows packaging needs an explicit
+   target and `.exe` resource path; do not copy the Linux resource configuration.
+4. Exit YangCi from its tray and verify that processes belonging to this
+   installation have exited before replacing files. Closing the window can
+   simply hide it. If files remain locked, handle only processes belonging to
+   the target installation. Replace using staged files, verify installed hashes,
+   and restore backups if replacement fails rather than leaving mixed resources.
+5. Restart from the actual installation and show its window. Check the new UI,
+   monitor state, Touch connection, and preserved settings. Verify tray operation,
+   background sync, and BLE polling with the window closed. Restore temporary
+   test settings; do not enable startup, hotkeys, or developer mode without a request.
+
+A successful source build and an updated installation are separate outcomes;
+report each accurately.
+
+### Touch application-only updates
+
+Update only the application slot **confirmed to boot on this device**, preserving
+the bootloader, partition table, NVS, OTA metadata, and LittleFS / SD wallpapers.
+Rediscover the device each time; never reuse an old COM port or assume `app0`.
+
+1. Enumerate serial devices, confirm a working Touch with the USB
+   `AZORIA_IDENTIFY` → `AZORIA_TOUCH_V1` handshake, and use esptool to check the
+   ESP32-S3 identity, MAC, and flash capacity. Recovery of a device that cannot
+   respond needs additional board identification. A Windows USB interface
+   instance / `serialNumber` is not necessarily the chip MAC; equality is not
+   a reliable identity test.
+2. Read and back up the real boot-control region. Parse its partition table and
+   `otadata`, validate OTA record CRCs, states, and sequences, and establish the
+   next boot slot. Normal dual-OTA selection uses a valid `ota_seq`, with slot
+   `(ota_seq - 1) % 2`. Investigate blank, damaged, rollback-pending, or ambiguous
+   records before choosing an address.
+3. Back up the target application partition. Copy the new build into its own
+   staging directory, inspect it, and hash it. Recheck that hash immediately
+   before writing, then write only the verified application offset.
+4. On Windows, invoke Python / esptool with `-X utf8` to avoid GBK failures on
+   progress characters. Explicitly use `--flash-mode keep --flash-freq keep
+   --flash-size keep`. Validated boards boot with DIO; do not force QIO into the
+   image header because `platformio.ini` says QIO, as this can cause boot loops.
+
+The expected [repository partition layout](firmware/partitions.csv) is below.
+**Compare it with the table read from the actual device.**
+
+| Partition | Offset | Size | Routine application update |
+| --- | --- | --- | --- |
+| NVS | `0x9000` | `0x5000` | Preserve Wi-Fi, pairing, and device settings |
+| OTA metadata | `0xE000` | `0x2000` | Read and preserve; do not blindly rewrite |
+| `app0` | `0x10000` | `0x640000` | Write only if confirmed as the boot slot |
+| `app1` | `0x650000` | `0x640000` | Write only if confirmed as the boot slot |
+| `spiffs` / LittleFS | `0xC90000` | `0x360000` | Preserve onboard wallpapers |
+| Coredump | `0xFF0000` | `0x10000` | Preserve |
+
+This **esptool 5.x / PowerShell** example runs from the repository root. Replace
+`COM8` and drive D with verified local values. The first block only stages the
+image, checks identity, and reads a backup; it does not flash:
+
+```powershell
+$pioPython = Join-Path $env:USERPROFILE '.platformio\penv\Scripts\python.exe'
+$port = 'COM8' # Replace with the Touch port verified for this operation
+$backupDir = Join-Path 'D:\Touch-Backups' (Get-Date -Format 'yyyyMMdd-HHmmss')
+New-Item -ItemType Directory -Path $backupDir -ErrorAction Stop | Out-Null
+$builtFirmware = (Resolve-Path -LiteralPath 'firmware/.pio/build/viewe_uedx48480040e_wb_a/firmware.bin').Path
+$firmware = Join-Path $backupDir 'firmware-staged.bin'
+Copy-Item -LiteralPath $builtFirmware -Destination $firmware -ErrorAction Stop
+
+& $pioPython -X utf8 -m serial.tools.list_ports
+& $pioPython -X utf8 -m esptool --chip esp32s3 --port $port flash-id
+if ($LASTEXITCODE -ne 0) { throw 'Device verification failed' }
+& $pioPython -X utf8 -m esptool image-info $firmware
+if ($LASTEXITCODE -ne 0) { throw 'Image inspection failed' }
+$firmwareHash = (Get-FileHash -LiteralPath $firmware -Algorithm SHA256).Hash
+$bootControl = Join-Path $backupDir 'boot-control.bin'
+& $pioPython -X utf8 -m esptool --chip esp32s3 --port $port --baud 921600 read-flash 0x0 0x10000 $bootControl
+if ($LASTEXITCODE -ne 0) { throw 'Boot-control backup failed' }
+```
+
+Parse `$bootControl` before proceeding; it contains private NVS data and must
+stay local. The variables below are deliberately unset until the real device
+values have been checked. For the table above, the application size is
+`0x640000`, and its offset is the confirmed boot slot at `0x10000` or `0x650000`:
+
+```powershell
+$appOffset = $null # Set from the verified device partition table and OTA state
+$appSize = $null   # Set to that application partition's size
+if ($null -eq $appOffset -or $null -eq $appSize) { throw 'Verify the partition and OTA boot slot first' }
+if ((Get-Item -LiteralPath $firmware).Length -gt $appSize) { throw 'Image exceeds application partition' }
+$previousApp = Join-Path $backupDir 'previous-app.bin'
+& $pioPython -X utf8 -m esptool --chip esp32s3 --port $port --baud 921600 read-flash $appOffset $appSize $previousApp
+if ($LASTEXITCODE -ne 0) { throw 'Previous application backup failed' }
+if ((Get-FileHash -LiteralPath $firmware -Algorithm SHA256).Hash -ne $firmwareHash) { throw 'Staged image changed' }
+& $pioPython -X utf8 -m esptool --chip esp32s3 --port $port --baud 921600 write-flash --flash-mode keep --flash-freq keep --flash-size keep $appOffset $firmware
+if ($LASTEXITCODE -ne 0) { throw 'Flash failed; preserve the log and investigate' }
+```
+
+Require both exit code zero and successful write verification; 100% progress
+alone is insufficient. Use `verify-flash` for an additional check when needed.
+After reboot, rediscover serial ports, check the 115200-baud identity handshake,
+and verify Wi-Fi / BLE, pairing, wallpapers, and the changed feature. Diagnose
+startup logs and port identity before trying another write; repeated erases or
+reprovisioning are not a substitute for diagnosis.
+
+The desktop Developer flasher currently writes only `0x10000`, and its tool
+paths and USB identity handling differ across platforms. Use it only after
+checking tools, identity, and the `app0` boot slot. If Windows tool discovery or
+its instance-string / MAC comparison fails, perform the independent checks
+above before using esptool; do not bypass identity checks. Routine updates do
+not use `erase-flash`, `-t erase`, filesystem upload, or full PlatformIO upload.
+
+### Verification and delivery
+
+Verify the changed flow end to end: UI → IPC / protocol → sidecar / firmware →
+readback or screen. Distinguish simulation from hardware evidence; do not claim
+physical dual-display validation without testing two physical displays. Record
+the source version, desktop / firmware hashes, backup location, flashed slot,
+verification results, and remaining user tests. Documentation-only edits need
+command, link, and description checks, not another build, installation, or flash.
+
+When the user requests a GitHub upload, commit only this task's source, tests,
+and documentation, then verify the remote commit matches locally. Do not commit
+`out/`, `.pio/`, `target/`, installers, private backups, credentials, serial logs,
+or temporary verification output. Release firmware belongs in a separate Release
+asset. Report built, installed, flashed, and pushed outcomes independently.
 
 ## Hardware status
 
