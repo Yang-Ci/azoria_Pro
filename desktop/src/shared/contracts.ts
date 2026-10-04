@@ -130,6 +130,33 @@ export interface WallpaperSettings {
   idleMinutes: WallpaperIdleMinutes
 }
 
+export interface WallpaperSchedule {
+  id: string
+  time: string
+  wallpaperId: string
+  enabled: boolean
+}
+
+export interface WallpaperPlaybackSettings {
+  enabled: boolean
+  intervalMinutes: number
+  order: "sequential" | "random"
+  playlist: string[]
+  schedules: WallpaperSchedule[]
+}
+
+export interface WallpaperLibraryItem extends WallpaperInfo {
+  id: string
+}
+
+export interface WallpaperLibrarySnapshot {
+  items: WallpaperLibraryItem[]
+  activeId: string | null
+  playback: WallpaperPlaybackSettings
+  nextSwitchAt: string | null
+  error: string | null
+}
+
 export interface TouchSleepSettings {
   enabled: boolean
   startMinutes: number
@@ -306,6 +333,12 @@ export interface DesktopApi {
   wallpaper: {
     info(): Promise<WallpaperInfo | null>
     settings(): Promise<WallpaperSettings>
+    library(): Promise<WallpaperLibrarySnapshot>
+    preview(id: string): Promise<string>
+    activate(id: string): Promise<WallpaperLibrarySnapshot>
+    deleteItem(id: string): Promise<WallpaperLibrarySnapshot>
+    setPlayback(settings: WallpaperPlaybackSettings): Promise<WallpaperLibrarySnapshot>
+    next(): Promise<WallpaperLibrarySnapshot>
     setIdleMinutes(minutes: WallpaperIdleMinutes): Promise<WallpaperSettings>
     upload(input: WallpaperUpload): Promise<WallpaperInfo>
     remove(): Promise<void>

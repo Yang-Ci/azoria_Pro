@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto"
+import { createHash, randomInt } from "node:crypto"
 import { createReadStream } from "node:fs"
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { ServerResponse } from "node:http"
-import type { WallpaperIdleMinutes, WallpaperInfo, WallpaperKind, WallpaperSettings, WallpaperUpload } from "../shared/contracts"
+import type { WallpaperIdleMinutes, WallpaperInfo, WallpaperKind, WallpaperSettings, WallpaperUpload, WallpaperLibraryItem, WallpaperLibrarySnapshot, WallpaperPlaybackSettings } from "../shared/contracts"
 
 const headerSize = 20
 const maxPackageSize = 24 * 1024 * 1024
@@ -63,20 +63,29 @@ function validatePackage(data: Uint8Array, kind: WallpaperKind): PackageValidati
 }
 
 export class WallpaperManager {
-  private readonly packagePath: string
-  private readonly metadataPath: string
   private readonly settingsPath: string
-  private current: WallpaperInfo | null = null
+  private readonly libraryDirectory: string
+  private readonly manifestPath: string
+  private items: WallpaperLibraryItem[] = []
+  private activeId: string | null = null
+  private playback: WallpaperPlaybackSettings = { enabled: false, intervalMinutes: 5, order: "sequential", playlist: [], schedules: [] }
   private currentSettings: WallpaperSettings = { idleMinutes: defaultIdleMinutes }
+  private lastChangedAt = 0
+  private lastCheckedAt = 0
+  private error: string | null = null
+  private loadFailed = false
+  private timer?: NodeJS.Timeout
+  private mutations: Promise<unknown> = Promise.resolve()
 
-  constructor(private readonly directory: string) {
-    this.packagePath = path.join(directory, "wallpaper.azw")
-    this.metadataPath = path.join(directory, "wallpaper.json")
+  constructor(private readonly directory: string, private readonly now: () => number = Date.now) {
     this.settingsPath = path.join(directory, "wallpaper-settings.json")
+    this.libraryDirectory = path.join(directory, "wallpaper-library")
+    this.manifestPath = path.join(this.libraryDirectory, "library.json")
   }
 
   async initialize(): Promise<void> {
-    await mkdir(this.directory, { recursive: true })
+    await mkdir(this.libraryDirectory, { recursive: true })
+    this.lastChangedAt = this.lastCheckedAt = this.now()
     try {
       const parsed = JSON.parse(await readFile(this.settingsPath, "utf8")) as Partial<WallpaperSettings>
       if (typeof parsed.idleMinutes === "number" && allowedIdleMinutes.has(parsed.idleMinutes)) {
@@ -86,24 +95,47 @@ export class WallpaperManager {
       this.currentSettings = { idleMinutes: defaultIdleMinutes }
     }
     try {
-      const [data, rawMetadata] = await Promise.all([readFile(this.packagePath), readFile(this.metadataPath, "utf8")])
-      const metadata = JSON.parse(rawMetadata) as WallpaperInfo
-      if (!metadata || !["image", "video"].includes(metadata.kind) ||
-          typeof metadata.name !== "string" || typeof metadata.updatedAt !== "string") {
-        throw new Error("壁纸元数据无效")
+      const manifest = JSON.parse(await readFile(this.manifestPath, "utf8"))
+      if (manifest.version !== 1 || !Array.isArray(manifest.items) || manifest.items.length > 100) throw new Error("壁纸库格式无效")
+      const restored: WallpaperLibraryItem[] = []
+      for (const item of manifest.items) {
+        if (!this.validInfo(item) || item.id !== item.sha256 || restored.some(entry => entry.id === item.id)) continue
+        try { if ((await stat(this.itemPath(item.id))).size === item.size) restored.push(item) } catch { /* Missing assets are omitted. */ }
       }
-      const validation = validatePackage(data, metadata.kind)
-      const sha256 = createHash("sha256").update(data).digest("hex")
-      if (metadata.sha256 !== sha256 || metadata.size !== data.byteLength ||
-          metadata.frameCount !== validation.frameCount || metadata.durationMs !== validation.durationMs) throw new Error("壁纸元数据不匹配")
-      this.current = metadata
-    } catch {
-      this.current = null
+      this.items = restored
+      this.playback = this.validatePlayback(manifest.playback, true)
+      this.activeId = restored.some(item => item.id === manifest.activeId) ? manifest.activeId : null
+      if (this.activeId) {
+        try { await this.readValidated(this.activeId) } catch { this.activeId = null; this.error = "当前壁纸文件损坏，请重新添加或选择其他壁纸。" }
+      }
+      this.lastChangedAt = typeof manifest.lastChangedAt === "number" && Number.isFinite(manifest.lastChangedAt)
+        ? Math.min(this.now(), manifest.lastChangedAt) : this.now()
+      return
+    } catch (error) {
+      // Never overwrite a damaged manifest with the legacy file or an empty library.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        this.loadFailed = true
+        this.error = "壁纸库读取失败，原文件已保留。请恢复壁纸库文件后重启程序。"
+        return
+      }
     }
+    try {
+      const [data, raw] = await Promise.all([readFile(path.join(this.directory, "wallpaper.azw")), readFile(path.join(this.directory, "wallpaper.json"), "utf8")])
+      const metadata = JSON.parse(raw) as WallpaperInfo
+      if (!this.validInfo(metadata)) return
+      this.verify(data, metadata)
+      const item = { ...metadata, id: metadata.sha256 }
+      await this.writeAsset(item.id, data)
+      this.items = [item]
+      this.activeId = item.id
+      this.playback.playlist = [item.id]
+    } catch { /* First launch or invalid legacy wallpaper. */ }
+    await this.persist()
   }
 
   info(): WallpaperInfo | null {
-    return this.current ? { ...this.current } : null
+    const current = this.items.find(item => item.id === this.activeId)
+    return current ? { ...current } : null
   }
 
   settings(): WallpaperSettings {
@@ -112,12 +144,12 @@ export class WallpaperManager {
 
   async setIdleMinutes(minutes: number): Promise<WallpaperSettings> {
     if (!Number.isInteger(minutes) || !allowedIdleMinutes.has(minutes)) throw new Error("自动壁纸时间无效")
-    const settings: WallpaperSettings = { idleMinutes: minutes as WallpaperIdleMinutes }
-    const temporaryPath = `${this.settingsPath}.tmp`
-    await writeFile(temporaryPath, JSON.stringify(settings, null, 2), { mode: 0o600 })
-    await rename(temporaryPath, this.settingsPath)
-    this.currentSettings = settings
-    return { ...settings }
+    return this.exclusive(async () => {
+      const settings: WallpaperSettings = { idleMinutes: minutes as WallpaperIdleMinutes }
+      await this.writeJson(this.settingsPath, settings)
+      this.currentSettings = settings
+      return { ...settings }
+    })
   }
 
   async upload(input: WallpaperUpload): Promise<WallpaperInfo> {
@@ -127,35 +159,230 @@ export class WallpaperManager {
     }
     const data = Buffer.from(input.data)
     const validation = validatePackage(data, input.kind)
-    const info: WallpaperInfo = {
+    const hash = createHash("sha256").update(data).digest("hex")
+    const info: WallpaperLibraryItem = {
+      id: hash,
       name: path.basename(input.name),
       kind: input.kind,
       size: data.byteLength,
-      sha256: createHash("sha256").update(data).digest("hex"),
+      sha256: hash,
       frameCount: validation.frameCount,
       durationMs: validation.durationMs,
       updatedAt: new Date().toISOString(),
     }
-    const temporaryPackage = `${this.packagePath}.tmp`
-    const temporaryMetadata = `${this.metadataPath}.tmp`
-    await writeFile(temporaryPackage, data, { mode: 0o600 })
-    await writeFile(temporaryMetadata, JSON.stringify(info, null, 2), { mode: 0o600 })
-    await rename(temporaryPackage, this.packagePath)
-    await rename(temporaryMetadata, this.metadataPath)
-    this.current = info
-    return { ...info }
+    return this.exclusive(async () => {
+      const existing = this.items.find(item => item.id === info.id)
+      if (!existing && this.items.length >= 100) throw new Error("壁纸库最多保存 100 张，请先删除不需要的壁纸。")
+      await this.writeAsset(info.id, data)
+      await this.commit({
+        items: existing ? this.items.map(item => item.id === info.id ? info : item) : [info, ...this.items],
+        activeId: info.id,
+        playback: { ...this.playback, playlist: this.playback.playlist.includes(info.id) ? this.playback.playlist : [...this.playback.playlist, info.id] },
+        lastChangedAt: this.now(),
+      })
+      return { ...info }
+    })
   }
 
   async remove(): Promise<void> {
-    await Promise.all([
-      rm(this.packagePath, { force: true }),
-      rm(this.metadataPath, { force: true }),
-    ])
-    this.current = null
+    await this.exclusive(() => this.commit({ activeId: null, playback: { ...this.playback, enabled: false, schedules: this.playback.schedules.map(rule => ({ ...rule, enabled: false })) }, lastChangedAt: this.now() }))
+  }
+
+  library(): WallpaperLibrarySnapshot {
+    const now = this.now()
+    const times: number[] = []
+    if (this.playback.enabled && this.playback.playlist.length > 1) times.push(Math.max(now, this.lastChangedAt + this.playback.intervalMinutes * 60_000))
+    for (const schedule of this.playback.schedules.filter(item => item.enabled)) {
+      const due = this.scheduleTime(schedule.time, now)
+      if (due <= now) { const date = new Date(due); date.setDate(date.getDate() + 1); times.push(date.getTime()) } else times.push(due)
+    }
+    return {
+      items: this.items.map(item => ({ ...item })), activeId: this.activeId,
+      playback: structuredClone(this.playback), error: this.error,
+      nextSwitchAt: times.length ? new Date(Math.min(...times)).toISOString() : null,
+    }
+  }
+
+  async preview(id: string): Promise<string> {
+    this.find(id)
+    const file = await open(this.itemPath(id), "r")
+    try {
+      const lengthData = Buffer.alloc(4)
+      if ((await file.read(lengthData, 0, 4, headerSize)).bytesRead !== 4) throw new Error("壁纸预览读取失败")
+      const length = lengthData.readUInt32LE()
+      if (length < 128 || length > 600_000) throw new Error("壁纸预览无效")
+      const jpeg = Buffer.alloc(length)
+      if ((await file.read(jpeg, 0, length, headerSize + 4)).bytesRead !== length || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw new Error("壁纸预览读取失败")
+      return `data:image/jpeg;base64,${jpeg.toString("base64")}`
+    } finally { await file.close() }
+  }
+
+  activate(id: string): Promise<WallpaperLibrarySnapshot> {
+    return this.exclusive(async () => { await this.switchTo(id, this.now()); return this.library() })
+  }
+
+  deleteItem(id: string): Promise<WallpaperLibrarySnapshot> {
+    return this.exclusive(async () => {
+      this.find(id)
+      const items = this.items.filter(item => item.id !== id)
+      const playlist = this.playback.playlist.filter(item => item !== id)
+      const oldIndex = this.playback.playlist.indexOf(id)
+      const activeId = this.activeId === id ? playlist[oldIndex >= 0 ? oldIndex % Math.max(1, playlist.length) : 0] ?? items[0]?.id ?? null : this.activeId
+      if (activeId && activeId !== this.activeId) await this.readValidated(activeId)
+      await this.commit({ items, activeId, playback: {
+        ...this.playback, playlist, enabled: this.playback.enabled && playlist.length > 1,
+        schedules: this.playback.schedules.filter(item => item.wallpaperId !== id),
+      }, lastChangedAt: activeId !== this.activeId ? this.now() : this.lastChangedAt })
+      // The manifest is committed first; an interrupted cleanup only leaves an unused asset.
+      await rm(this.itemPath(id), { force: true })
+      return this.library()
+    })
+  }
+
+  setPlayback(input: WallpaperPlaybackSettings): Promise<WallpaperLibrarySnapshot> {
+    return this.exclusive(async () => {
+      const playback = this.validatePlayback(input)
+      await this.commit({ playback, lastChangedAt: this.now() })
+      this.lastCheckedAt = this.now()
+      return this.library()
+    })
+  }
+
+  next(): Promise<WallpaperLibrarySnapshot> {
+    return this.exclusive(async () => { await this.advance(this.now()); return this.library() })
+  }
+
+  start(): void {
+    if (this.timer) return
+    this.timer = setInterval(() => { void this.tick().catch(error => { this.error = error instanceof Error ? error.message : "壁纸切换失败" }) }, 10_000)
+    this.timer.unref()
+  }
+
+  stop(): void { clearInterval(this.timer); this.timer = undefined }
+
+  tick(now = this.now()): Promise<void> {
+    return this.exclusive(async () => {
+      let latest: { id: string; due: number } | undefined
+      for (const schedule of this.playback.schedules.filter(item => item.enabled)) {
+        const today = new Date(now)
+        const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1)
+        for (const date of [yesterday, today]) {
+          const due = this.scheduleTime(schedule.time, date.getTime())
+          if (due > this.lastCheckedAt && due <= now && (!latest || due > latest.due)) latest = { id: schedule.wallpaperId, due }
+        }
+      }
+      if (latest) await this.switchTo(latest.id, now)
+      else if (this.playback.enabled && now >= this.lastChangedAt + this.playback.intervalMinutes * 60_000) await this.advance(now)
+      this.lastCheckedAt = now
+    })
+  }
+
+  private scheduleTime(time: string, now: number): number {
+    const [hours, minutes] = time.split(":").map(Number)
+    const date = new Date(now)
+    date.setHours(hours!, minutes!, 0, 0)
+    return date.getTime()
+  }
+
+  private async advance(now: number): Promise<void> {
+    const playlist = this.playback.playlist
+    if (!playlist.length) return
+    const alternatives = playlist.filter(id => id !== this.activeId)
+    const id = this.playback.order === "random" && alternatives.length
+      ? alternatives[randomInt(alternatives.length)]!
+      : playlist[(playlist.indexOf(this.activeId ?? "") + 1) % playlist.length]!
+    await this.switchTo(id, now)
+  }
+
+  private async switchTo(id: string, now: number): Promise<void> {
+    await this.readValidated(id)
+    await this.commit({ activeId: id, lastChangedAt: now })
+  }
+
+  private find(id: string): WallpaperLibraryItem {
+    if (typeof id !== "string" || !/^[0-9a-f]{64}$/.test(id)) throw new Error("壁纸标识无效")
+    const item = this.items.find(item => item.id === id)
+    if (!item) throw new Error("壁纸不存在，请刷新壁纸库。")
+    return item
+  }
+
+  private itemPath(id: string): string {
+    if (!/^[0-9a-f]{64}$/.test(id)) throw new Error("壁纸标识无效")
+    return path.join(this.libraryDirectory, `${id}.azw`)
+  }
+
+  private validInfo(item: WallpaperInfo): boolean {
+    return !!item && ["image", "video"].includes(item.kind) && typeof item.name === "string" && item.name.length > 0 && item.name.length <= 160 &&
+      typeof item.updatedAt === "string" && Number.isFinite(Date.parse(item.updatedAt)) && typeof item.sha256 === "string" && /^[0-9a-f]{64}$/.test(item.sha256) &&
+      Number.isInteger(item.size) && item.size > 0 && item.size <= maxPackageSize
+  }
+
+  private verify(data: Uint8Array, info: WallpaperInfo): void {
+    const validation = validatePackage(data, info.kind)
+    if (createHash("sha256").update(data).digest("hex") !== info.sha256 || info.size !== data.byteLength ||
+        info.frameCount !== validation.frameCount || info.durationMs !== validation.durationMs) throw new Error("壁纸文件校验失败，请重新添加。")
+  }
+
+  private async readValidated(id: string): Promise<Buffer> {
+    const item = this.find(id)
+    const data = await readFile(this.itemPath(id))
+    this.verify(data, item)
+    return data
+  }
+
+  private validatePlayback(input: WallpaperPlaybackSettings, restore = false): WallpaperPlaybackSettings {
+    if (!input || typeof input.enabled !== "boolean" || !Number.isInteger(input.intervalMinutes) || input.intervalMinutes < 1 || input.intervalMinutes > 1440 ||
+        !["sequential", "random"].includes(input.order) || !Array.isArray(input.playlist) || input.playlist.length > 100 ||
+        !Array.isArray(input.schedules) || input.schedules.length > 24) throw new Error("壁纸播放设置无效")
+    const known = new Set(this.items.map(item => item.id))
+    if (!restore && input.playlist.some(id => !known.has(id))) throw new Error("播放列表包含不存在的壁纸")
+    const playlist = [...new Set(input.playlist.filter(id => known.has(id)))]
+    const scheduleIds = new Set<string>()
+    const enabledTimes = new Set<string>()
+    const schedules = input.schedules.filter(item => {
+      if (!item || typeof item.id !== "string" || !/^[a-zA-Z0-9-]{1,64}$/.test(item.id) || scheduleIds.has(item.id) ||
+          typeof item.time !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(item.time) || typeof item.enabled !== "boolean") throw new Error("定时切换规则无效")
+      scheduleIds.add(item.id)
+      if (item.enabled && enabledTimes.has(item.time)) throw new Error("同一时间只能启用一条壁纸切换规则")
+      if (item.enabled) enabledTimes.add(item.time)
+      if (!restore && !known.has(item.wallpaperId)) throw new Error("定时切换包含不存在的壁纸")
+      return known.has(item.wallpaperId)
+    }).map(item => ({ id: item.id, time: item.time, wallpaperId: item.wallpaperId, enabled: item.enabled }))
+    if (!restore && input.enabled && playlist.length < 2) throw new Error("自动轮播至少需要两张壁纸")
+    return { enabled: input.enabled && playlist.length > 1, intervalMinutes: input.intervalMinutes, order: input.order, playlist, schedules }
+  }
+
+  private exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.loadFailed) return Promise.reject(new Error(this.error ?? "壁纸库读取失败"))
+    const result = this.mutations.then(operation)
+    this.mutations = result.catch(() => undefined)
+    return result
+  }
+
+  private async writeAsset(id: string, data: Uint8Array): Promise<void> {
+    const target = this.itemPath(id)
+    await writeFile(`${target}.tmp`, data, { mode: 0o600 })
+    await rename(`${target}.tmp`, target)
+  }
+
+  private async writeJson(target: string, data: unknown): Promise<void> {
+    await writeFile(`${target}.tmp`, JSON.stringify(data, null, 2), { mode: 0o600 })
+    await rename(`${target}.tmp`, target)
+  }
+
+  private persist(): Promise<void> {
+    return this.writeJson(this.manifestPath, { version: 1, items: this.items, activeId: this.activeId, playback: this.playback, lastChangedAt: this.lastChangedAt })
+  }
+
+  private async commit(changes: Partial<{ items: WallpaperLibraryItem[]; activeId: string | null; playback: WallpaperPlaybackSettings; lastChangedAt: number }>): Promise<void> {
+    const state = { items: this.items, activeId: this.activeId, playback: this.playback, lastChangedAt: this.lastChangedAt, ...changes }
+    await this.writeJson(this.manifestPath, { version: 1, ...state })
+    this.items = state.items; this.activeId = state.activeId; this.playback = state.playback; this.lastChangedAt = state.lastChangedAt
+    this.error = null
   }
 
   stream(response: ServerResponse): void {
-    const info = this.current
+    const info = this.items.find(item => item.id === this.activeId)
     if (!info) {
       response.writeHead(404, { "Content-Type": "application/json", "Cache-Control": "no-store" })
       response.end(JSON.stringify({ ok: false, error: "wallpaper not found" }))
@@ -167,7 +394,7 @@ export class WallpaperManager {
       "Cache-Control": "no-store",
       "X-Azoria-SHA256": info.sha256,
     })
-    const stream = createReadStream(this.packagePath)
+    const stream = createReadStream(this.itemPath(info.id))
     stream.on("error", () => response.destroy())
     stream.pipe(response)
   }

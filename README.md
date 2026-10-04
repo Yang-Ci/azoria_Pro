@@ -60,7 +60,8 @@ track information, lyrics, and playback state.
 | Feature | What it does |
 | --- | --- |
 | Device setup | Identify Touch over USB, prepare Bluetooth and connect through BLE; optionally scan and configure 2.4 GHz Wi-Fi over USB for automatic LAN discovery. |
-| Still / video wallpaper | Center-crop media to 480×480 and convert it into a Touch-compatible package for LAN synchronization. TF storage takes priority: videos up to 10 seconds, targeting 25 frames, with a 24 MB package limit; without a card, keep packages under 3 MB. |
+| Still / video wallpaper | Preview the 480×480 crop, adjust its horizontal/vertical position and 1–3× zoom, then save to a local library of up to 100 wallpapers. Preview, display, or delete saved items. TF storage takes priority: videos up to 10 seconds, targeting 25 frames, with a 24 MB package limit; without a card, keep packages under 3 MB. |
+| Playlists / scheduled changes | Reorder selected wallpapers, rotate sequentially or randomly at 1-minute to 24-hour intervals, and configure up to 24 daily changes to specific wallpapers. Save settings to apply them. Desktop must stay running and share a LAN with Touch; offline devices retain their last wallpaper. Existing wallpapers migrate automatically. |
 | Idle wallpaper | Enter wallpaper after 1, 5, 10, or 30 idle minutes, or disable automatic entry. Tap the wallpaper to return. |
 | Scheduled sleep | Configure a backlight-off interval, including overnight schedules; backlight resumes when the interval ends. Disabled by default, with a preset of 23:00–07:00. |
 | Diagnostics | View control success rate, average / P95 latency, route failures, readback mismatches, and recent events. |

@@ -48,6 +48,12 @@ const api: DesktopApi = {
   wallpaper: {
     info: () => ipcRenderer.invoke("wallpaper:info"),
     settings: () => ipcRenderer.invoke("wallpaper:settings"),
+    library: () => ipcRenderer.invoke("wallpaper:library"),
+    preview: (id) => ipcRenderer.invoke("wallpaper:preview", id),
+    activate: (id) => ipcRenderer.invoke("wallpaper:activate", id),
+    deleteItem: (id) => ipcRenderer.invoke("wallpaper:delete-item", id),
+    setPlayback: (settings) => ipcRenderer.invoke("wallpaper:set-playback", settings),
+    next: () => ipcRenderer.invoke("wallpaper:next"),
     setIdleMinutes: (minutes) => ipcRenderer.invoke("wallpaper:set-idle-minutes", minutes),
     upload: (input) => ipcRenderer.invoke("wallpaper:upload", input),
     remove: () => ipcRenderer.invoke("wallpaper:remove"),
