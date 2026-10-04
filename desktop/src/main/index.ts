@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto"
 import path from "node:path"
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, type OpenDialogOptions } from "electron"
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, Tray, type OpenDialogOptions } from "electron"
 import type { ControlRequest } from "../shared/contracts"
 import type { ApiProviderInput } from "../shared/usage"
 import { loadConfig, saveDisplayPreference } from "./config"
@@ -16,21 +16,32 @@ import { CodexQuotaService } from "./codex-quota"
 import { UsageProviderStore } from "./usage-provider-store"
 import { ApiUsageService } from "./api-usage"
 import { TouchUsageService } from "./touch-usage"
+import { BrightnessLinkManager } from "./brightness-link"
+import { ComputerStatsService } from "./computer"
+import { DesktopPreferencesManager } from "./desktop-preferences"
 
 const isDevelopment = !app.isPackaged
+let quitting = false
+let tray: Tray | undefined
+let preferences: DesktopPreferencesManager | undefined
+let windowReady = false
+
+function showWindow(): void {
+  if (!windowReady) return
+  const window = BrowserWindow.getAllWindows()[0] || createWindow()
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+}
 
 app.setName("YangCi")
 if (process.platform === "linux") app.setDesktopName("azoria-desktop.desktop")
 const hasInstanceLock = app.requestSingleInstanceLock()
 if (!hasInstanceLock) app.quit()
 app.on("second-instance", () => {
-  const window = BrowserWindow.getAllWindows()[0]
-  if (window) {
-    if (window.isMinimized()) window.restore()
-    window.show()
-    window.focus()
-  }
+  showWindow()
 })
+app.on("before-quit", () => { quitting = true; preferences?.dispose(); tray?.destroy(); tray = undefined })
 for (const option of [
   "disable-component-update",
   "disable-client-side-phishing-detection",
@@ -52,6 +63,7 @@ function createWindow(): BrowserWindow {
   }
 
   const window = new BrowserWindow({
+    show: !(process.argv.includes("--hidden") && tray),
     icon: path.join(app.getAppPath(), "desktop/assets/icon.png"),
     width: 1180,
     height: 780,
@@ -65,7 +77,12 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Touch BLE requests are polled by the renderer even while in the tray.
+      backgroundThrottling: false,
     },
+  })
+  window.on("close", (event) => {
+    if (!quitting && tray && preferences?.snapshot().closeToTray) { event.preventDefault(); window.hide() }
   })
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
   if (isDevelopment) {
@@ -123,6 +140,14 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
     await saveDisplayPreference(app.getPath("userData"), initialConnection.displayId)
   }
   monitor.startBackgroundStatus()
+  const sidecarBinary = isDevelopment
+    ? path.resolve(app.getAppPath(), "sidecar/target/release", process.platform === "win32" ? "azoria-ddc-sidecar.exe" : "azoria-ddc-sidecar")
+    : path.join(process.resourcesPath, "sidecar", process.platform === "win32" ? "azoria-ddc-sidecar.exe" : "azoria-ddc-sidecar")
+  const brightnessLink = new BrightnessLinkManager(app.getPath("userData"), monitor)
+  await brightnessLink.initialize()
+  const computer = new ComputerStatsService(sidecarBinary)
+  computer.start()
+  app.once("before-quit", () => computer.stop())
   const wallpaper = new WallpaperManager(app.getPath("userData"))
   await wallpaper.initialize()
   wallpaper.start()
@@ -146,10 +171,68 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   const touchUsage = new TouchUsageService(codexQuota, usageProviders, apiUsage)
   touchUsage.start()
   app.once("before-quit", () => touchUsage.stop())
-  const lan = new LanController(config.desktopId, monitor, wallpaper, music, touchSleep, touchUsage)
+  const lan = new LanController(config.desktopId, monitor, wallpaper, music, touchSleep, touchUsage, computer, brightnessLink)
   await lan.start()
   const devices = new TouchManager(config.token)
   const diagnostics = new DiagnosticsController(logger, monitor, lan)
+
+  const reportAction = async (operation: () => Promise<unknown>, success: string) => {
+    let message = success
+    try {
+      await operation()
+      const failures = brightnessLink.snapshot().results.filter(item => item.error)
+      if (failures.length) message = `${success}；${failures.length} 块屏幕调整失败，请查看联动面板`
+      refreshTray()
+    } catch (error) {
+      message = error instanceof Error ? error.message : "操作失败"
+      logger.error("desktop.action_failed", { error: message })
+    }
+    for (const window of BrowserWindow.getAllWindows()) window.webContents.send("desktop:message", message)
+  }
+  const startupAvailable = app.isPackaged && ["win32", "darwin"].includes(process.platform)
+  const startupOptions = { path: process.execPath, args: ["--hidden"] }
+  preferences = new DesktopPreferencesManager(app.getPath("userData"), {
+    startupAvailable,
+    getStartup: () => startupAvailable && app.getLoginItemSettings(startupOptions).openAtLogin,
+    setStartup: (enabled) => app.setLoginItemSettings({ ...startupOptions, openAtLogin: enabled }),
+    register: (key, action) => globalShortcut.register(key, () => {
+      void reportAction(() => action === "nextScene" ? brightnessLink.nextScene() : brightnessLink.adjust(action === "brightnessUp" ? 5 : -5), action === "nextScene" ? "已切换亮度场景" : "亮度已调整")
+    }),
+    unregister: (key) => globalShortcut.unregister(key),
+  })
+  await preferences.initialize()
+  function refreshTray(): void {
+    if (!tray) return
+    const state = brightnessLink.snapshot()
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: "打开 YangCi", click: showWindow }, { type: "separator" },
+      { label: "亮度提高 5 点", click: () => { void reportAction(() => brightnessLink.adjust(5), "亮度已提高") } },
+      { label: "亮度降低 5 点", click: () => { void reportAction(() => brightnessLink.adjust(-5), "亮度已降低") } },
+      { label: "亮度场景", enabled: state.scenes.length > 0, submenu: state.scenes.map(scene => ({ label: scene.name, type: "radio" as const, checked: state.activeSceneId === scene.id, click: () => { void reportAction(() => brightnessLink.applyScene(scene.id), `已切换到 ${scene.name}`) } })) },
+      { type: "separator" }, { label: "退出 YangCi", click: () => app.quit() },
+    ]))
+  }
+  try {
+    const image = nativeImage.createFromPath(path.join(app.getAppPath(), "desktop/assets/icon.png"))
+    if (!image.isEmpty()) {
+      tray = new Tray(image.resize({ width: process.platform === "win32" ? 32 : 18, height: process.platform === "win32" ? 32 : 18 }))
+      tray.setToolTip("YangCi · 显示器与 Touch 控制")
+      tray.on("click", showWindow)
+      preferences.setTrayAvailable(true)
+      refreshTray()
+    }
+  } catch (error) { logger.error("desktop.tray_failed", { error: error instanceof Error ? error.message : "托盘创建失败" }) }
+  const changedLink = async (operation: () => Promise<unknown>) => { const value = await operation(); refreshTray(); return value }
+  ipcMain.handle("computer:snapshot", () => computer.snapshot())
+  ipcMain.handle("desktop:preferences", () => preferences!.snapshot())
+  ipcMain.handle("desktop:update-preferences", (_event, input) => preferences!.update(input))
+  ipcMain.handle("brightness-link:snapshot", () => brightnessLink.snapshot())
+  ipcMain.handle("brightness-link:save", (_event, input) => changedLink(() => brightnessLink.save(input)))
+  ipcMain.handle("brightness-link:capture", (_event, ids) => brightnessLink.capture(ids))
+  ipcMain.handle("brightness-link:set-offset", (_event, offset) => changedLink(() => brightnessLink.setOffset(offset)))
+  ipcMain.handle("brightness-link:save-scene", (_event, name) => changedLink(() => brightnessLink.saveScene(name)))
+  ipcMain.handle("brightness-link:apply-scene", (_event, id) => changedLink(() => brightnessLink.applyScene(id)))
+  ipcMain.handle("brightness-link:delete-scene", (_event, id) => changedLink(() => brightnessLink.deleteScene(id)))
 
   ipcMain.handle("usage:touch", (_event, index?: number) => touchUsage.snapshot(Number.isInteger(index) ? index : 0))
   ipcMain.handle("usage:codex", () => codexQuota.collect())
@@ -162,7 +245,7 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   ipcMain.handle("monitor:status", () => monitor.status())
   ipcMain.handle("monitor:status-snapshot", () => monitor.statusSnapshot())
   ipcMain.handle("monitor:relay-status", () => lan.relayStatus())
-  ipcMain.handle("monitor:control", (_event, request: ControlRequest) => monitor.control(request, "desktop-ui"))
+  ipcMain.handle("monitor:control", (_event, request: ControlRequest) => brightnessLink.control(request, "desktop-ui"))
   ipcMain.handle("monitor:relay-control", (_event, request: ControlRequest, sourceNonce: string, sourceCommandId: string) =>
     lan.relayControl(request, sourceNonce, sourceCommandId))
   ipcMain.handle("monitor:connection", () => monitor.connection())
@@ -229,8 +312,9 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   ipcMain.handle("music:calibrate", (_event, positionMs: number) => music.calibrate(positionMs))
   ipcMain.handle("music:control", (_event, request) => music.control(request))
 
+  windowReady = true
   createWindow()
-  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+  app.on("activate", showWindow)
 })
 
 app.on("before-quit", () => LanController.stopAll())

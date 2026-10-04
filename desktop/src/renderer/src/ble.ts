@@ -1,11 +1,13 @@
 import type { ControlRequest, MonitorStatus, MusicControlRequest } from "../../shared/contracts"
 import { touchUsageBlePage } from "../../shared/touch-usage"
 import type { TouchUsageStatus } from "../../shared/touch-usage"
+import { computerBlePage, computerTouchStatus } from "../../shared/computer"
 
 const SERVICE = "7a6f0001-4e6d-4a9b-8f41-3c41588fee68"
 const REQUEST = "7a6f0002-4e6d-4a9b-8f41-3c41588fee68"
 const RESPONSE = "7a6f0003-4e6d-4a9b-8f41-3c41588fee68"
 let usageBleSnapshot: { nonce: string; index: number; at: number; status: TouchUsageStatus } | undefined
+let computerBleSnapshot: { nonce: string; at: number; status: ReturnType<typeof computerTouchStatus> } | undefined
 
 type Characteristic = {
   readValue(): Promise<DataView>
@@ -171,6 +173,12 @@ async function handleRequest(
       if (page === 0) usageBleSnapshot = { nonce, index, at: Date.now(), status: await window.azoria.usage.touch(index) }
       if (!usageBleSnapshot || usageBleSnapshot.nonce !== nonce || usageBleSnapshot.index !== index || Date.now() - usageBleSnapshot.at > 10_000) throw new Error("usage snapshot expired")
       payload = touchUsageBlePage(usageBleSnapshot.status, page)
+    } else if (fields[3] === "P" && fields.length === 6) {
+      const page = Number(fields[4])
+      if (!Number.isInteger(page) || page < 0 || page > 2) throw new Error("unsupported")
+      if (page === 0) computerBleSnapshot = { nonce, at: Date.now(), status: computerTouchStatus(await window.azoria.computer.snapshot()) }
+      if (!computerBleSnapshot || computerBleSnapshot.nonce !== nonce || Date.now() - computerBleSnapshot.at > 10_000) throw new Error("computer snapshot expired")
+      payload = computerBlePage(computerBleSnapshot.status, page)
     } else if (fields[3] === "M" && fields.length === 6) {
       const current = await status()
       const page = fields[4]

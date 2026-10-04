@@ -69,6 +69,46 @@ export interface MonitorDisplayList {
   displays: MonitorDisplaySummary[]
 }
 
+export interface BrightnessBaseline { displayId: string; baseline: number }
+export interface BrightnessLinkSettings { enabled: boolean; displays: BrightnessBaseline[] }
+export interface BrightnessScene { id: string; name: string; displays: BrightnessBaseline[] }
+export interface BrightnessLinkSnapshot extends BrightnessLinkSettings {
+  offset: number
+  minimumOffset: number
+  maximumOffset: number
+  scenes: BrightnessScene[]
+  activeSceneId: string | null
+  results: Array<{ displayId: string; brightness: number | null; error: string | null }>
+}
+
+export interface ComputerSample {
+  sampledAt: number
+  cpuPercent: number | null
+  memoryPercent: number
+  memoryUsedBytes: number
+  memoryTotalBytes: number
+  networkRxBps: number | null
+  networkTxBps: number | null
+}
+export interface ComputerSnapshot extends ComputerSample {
+  available: boolean
+  networkAvailable: boolean
+  history: ComputerSample[]
+}
+export interface DesktopPreferences {
+  closeToTray: boolean
+  startAtLogin: boolean
+  hotkeysEnabled: boolean
+  brightnessUp: string
+  brightnessDown: string
+  nextScene: string
+}
+export interface DesktopPreferencesSnapshot extends DesktopPreferences {
+  startupAvailable: boolean
+  trayAvailable: boolean
+  shortcutError: string | null
+}
+
 export type MonitorProfileSource = "built-in" | "user"
 export type MonitorProfileMatchState = "selected" | "match" | "fallback" | "available"
 
@@ -299,6 +339,21 @@ export interface DiagnosticsReport {
 }
 
 export interface DesktopApi {
+  computer: { snapshot(): Promise<ComputerSnapshot> }
+  desktop: {
+    preferences(): Promise<DesktopPreferencesSnapshot>
+    updatePreferences(input: DesktopPreferences): Promise<DesktopPreferencesSnapshot>
+    onMessage(callback: (message: string) => void): () => void
+  }
+  brightnessLink: {
+    snapshot(): Promise<BrightnessLinkSnapshot>
+    save(input: BrightnessLinkSettings): Promise<BrightnessLinkSnapshot>
+    capture(displayIds: string[]): Promise<BrightnessBaseline[]>
+    setOffset(offset: number): Promise<BrightnessLinkSnapshot>
+    saveScene(name: string): Promise<BrightnessLinkSnapshot>
+    applyScene(id: string): Promise<BrightnessLinkSnapshot>
+    deleteScene(id: string): Promise<BrightnessLinkSnapshot>
+  }
   usage: UsageApi
   music: {
     snapshot(): Promise<MusicSnapshot>

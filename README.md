@@ -39,6 +39,29 @@ imported monitor profiles. External-monitor audio and input support depend on
 the monitor. For Windows / Linux internal-panel targets, volume and mute control
 the system's default playback device, including headphones.
 
+### Linked brightness, computer status, and background operation
+
+Select displays on the Display page and save independent brightness baselines.
+With baselines of 60% and 40%, an offset of +10 points produces 70% and 50%.
+The allowed offset is -40 to +40, preserving the 20-point difference at both
+limits. Linking uses each display's video DDC/CI or internal-panel interface;
+unsupported or disconnected displays report errors independently. Desktop,
+Touch, and shortcut adjustments share these settings. Save actual brightness
+values as up to 16 scenes and select them from the UI, tray, or shortcuts.
+
+Computer Status samples CPU usage across all cores, used/total memory, and
+aggregate receive/send rates on active interfaces every two seconds, with
+one-minute trends. Tap **PC Status** on Touch to view the same metrics over
+Wi-Fi or BLE. Offline or expired data shows a waiting state. GPU and temperature
+support is planned for a later update.
+
+Settings controls whether closing the window keeps YangCi running in the tray.
+The tray offers brightness adjustments, scene selection, reopening, and exit.
+Global shortcuts are opt-in: Ctrl / Command + Alt + Up / Down adjusts brightness
+by five points and Ctrl / Command + Alt + S cycles scenes. Keys are configurable;
+conflicts retain the previous settings. Installed Windows / macOS builds also
+offer opt-in startup at login, disabled by default.
+
 ### Music and lyrics
 
 ![YangCi desktop: artwork, track information, playback controls, and synchronized lyrics](docs/images/yangci-desktop-music.jpg)

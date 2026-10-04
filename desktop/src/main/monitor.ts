@@ -164,7 +164,37 @@ export class MonitorController {
     private readonly userProfiles = path.resolve("profiles"),
     private readonly sidecarBinary = path.resolve("sidecar/target/release/azoria-ddc-sidecar"),
     private readonly logger?: LocalLogger,
+    private readonly targetedBrightnessOnly = false,
   ) {}
+
+  async forDisplay(displayId: string): Promise<MonitorController> {
+    const controller = new MonitorController(displayId, this.bundledProfiles, this.userProfiles, this.sidecarBinary, this.logger, true)
+    await controller.initialize()
+    if (controller.connectionSnapshot().displayId !== displayId) throw new Error("显示器已断开，请刷新显示器列表")
+    return controller
+  }
+
+  brightness(): Promise<number> {
+    return this.enqueue(async () => {
+      await this.detect()
+      const value = await this.readWithFallback("brightness")
+      if (typeof value !== "number") throw new Error("无法读取显示器亮度")
+      this.lastStatus.brightness = value
+      return value
+    })
+  }
+
+  acceptBrightness(displayId: string, brightness: number): void {
+    if (this.activeDisplayId() !== displayId) return
+    this.lastStatus.brightness = brightness
+    this.trustedControls.add("brightness")
+  }
+
+  coordinateBrightness<T>(operation: () => Promise<T>): Promise<T> {
+    this.pendingControls++
+    this.lastControlAt = Date.now()
+    return this.enqueue(operation).finally(() => { this.pendingControls--; this.lastControlAt = Date.now() })
+  }
 
   async initialize(): Promise<void> {
     await mkdir(this.userProfiles, { recursive: true, mode: 0o700 })
@@ -373,7 +403,7 @@ export class MonitorController {
   private async detect(force = false): Promise<void> {
     if (!force && this.profile && Date.now() - this.detectedAt < 5000) return
     this.detectedAt = Date.now()
-    const [name, hid] = await Promise.all([this.detectDisplayName(), this.probeHidDdc()])
+    const [name, hid] = await Promise.all([this.detectDisplayName(), this.targetedBrightnessOnly ? Promise.resolve(undefined) : this.probeHidDdc()])
     const selected = this.displays.find((display) => display.id === this.display || display.index === Number.parseInt(this.display, 10))
     const selectedInternalPanel = selected?.transport === "internal-panel"
     if (selected && !selectedInternalPanel) this.externalDisplayId = selected.id

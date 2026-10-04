@@ -2,12 +2,11 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <esp_heap_caps.h>
-#include <cstring>
 
 #include "services/device_config.h"
 #include "platform/board.h"
 #include "features/display_control/usage_view.h"
+#include "features/display_control/computer_view.h"
 
 namespace {
 
@@ -16,7 +15,6 @@ constexpr uint16_t kScreenWidth = 480;
 constexpr uint16_t kScreenHeight = 480;
 constexpr size_t kScreenshotBytes =
     static_cast<size_t>(kScreenWidth) * kScreenHeight * sizeof(uint16_t);
-uint8_t *screenshot_copy = nullptr;
 
 int hexValue(char value) {
   if (value >= '0' && value <= '9') return value - '0';
@@ -172,22 +170,13 @@ void sendScreenshot(uint8_t buffer_index) {
     Serial.println("AZORIA_SCREENSHOT_ERROR framebuffer unavailable");
     return;
   }
-  if (!screenshot_copy) {
-    screenshot_copy = static_cast<uint8_t *>(
-        heap_caps_malloc(kScreenshotBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  }
-  if (!screenshot_copy) {
-    Serial.println("AZORIA_SCREENSHOT_ERROR capture buffer unavailable");
-    return;
-  }
-
-  // Copy before announcing the payload so the host can synchronise on the
-  // header even when normal provisioning/status logs are sharing USB CDC.
-  memcpy(screenshot_copy, source, kScreenshotBytes);
+  // USB commands and LVGL rendering run sequentially on the main task. DMA
+  // only reads this buffer while Serial.write blocks, so streaming it directly
+  // keeps the frame stable without reserving another 460 KB of scarce PSRAM.
   Serial.printf("AZORIA_SCREENSHOT_BEGIN %u %u RGB565LE %u\n", kScreenWidth,
                 kScreenHeight, static_cast<unsigned>(kScreenshotBytes));
   Serial.flush();
-  Serial.write(screenshot_copy, kScreenshotBytes);
+  Serial.write(static_cast<const uint8_t *>(source), kScreenshotBytes);
   Serial.flush();
   Serial.println("AZORIA_SCREENSHOT_END");
 }
@@ -209,6 +198,17 @@ void handleLine(String line) {
   if (line == "AZORIA_USAGE 0" || line == "AZORIA_USAGE 1") {
     DisplayControl::UsageView::show(line.endsWith("1") ? 1 : 0);
     Serial.println(DisplayControl::UsageView::active() ? "AZORIA_USAGE_READY" : "AZORIA_USAGE_UNAVAILABLE");
+    return;
+  }
+  if (line == "AZORIA_PC_STATUS") {
+    DisplayControl::UsageView::hide();
+    DisplayControl::ComputerView::show();
+    Serial.println(DisplayControl::ComputerView::active() ? "AZORIA_PC_STATUS_READY" : "AZORIA_PC_STATUS_UNAVAILABLE");
+    return;
+  }
+  if (line == "AZORIA_PC_STATUS_CLOSE") {
+    DisplayControl::ComputerView::hide();
+    Serial.println("AZORIA_PC_STATUS_CLOSED");
     return;
   }
   if (line == "AZORIA_REBOOT") {

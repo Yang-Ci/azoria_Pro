@@ -3,6 +3,25 @@ import type { ControlRequest, DesktopApi, MusicControlRequest } from "../shared/
 import type { ApiProviderInput } from "../shared/usage"
 
 const api: DesktopApi = {
+  computer: { snapshot: () => ipcRenderer.invoke("computer:snapshot") },
+  desktop: {
+    preferences: () => ipcRenderer.invoke("desktop:preferences"),
+    updatePreferences: (input) => ipcRenderer.invoke("desktop:update-preferences", input),
+    onMessage: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, message: string) => { if (typeof message === "string") callback(message) }
+      ipcRenderer.on("desktop:message", listener)
+      return () => ipcRenderer.removeListener("desktop:message", listener)
+    },
+  },
+  brightnessLink: {
+    snapshot: () => ipcRenderer.invoke("brightness-link:snapshot"),
+    save: (input) => ipcRenderer.invoke("brightness-link:save", input),
+    capture: (ids) => ipcRenderer.invoke("brightness-link:capture", ids),
+    setOffset: (offset) => ipcRenderer.invoke("brightness-link:set-offset", offset),
+    saveScene: (name) => ipcRenderer.invoke("brightness-link:save-scene", name),
+    applyScene: (id) => ipcRenderer.invoke("brightness-link:apply-scene", id),
+    deleteScene: (id) => ipcRenderer.invoke("brightness-link:delete-scene", id),
+  },
   usage: {
     touch: (index?: number) => ipcRenderer.invoke("usage:touch", index),
     codex: () => ipcRenderer.invoke("usage:codex"),

@@ -84,6 +84,8 @@ uint8_t music_command_head = 0;
 uint8_t music_command_count = 0;
 uint8_t usage_provider_index = 0;
 bool usage_sync_requested = true;
+bool computer_view_active = false;
+bool computer_sync_requested = false;
 
 bool isPrivateIpv4(const IPAddress &address) {
   const uint8_t first = address[0];
@@ -655,6 +657,54 @@ void readUsage() {
   xSemaphoreGive(state_mutex);
 }
 
+void parseComputerTrend(const String &text, int16_t *values) {
+  for (size_t index = 0; index < kComputerTrendPoints; ++index) values[index] = -1;
+  size_t count = 0;
+  const char *cursor = text.c_str();
+  while (*cursor && count < kComputerTrendPoints) {
+    char *end = nullptr;
+    long value = strtol(cursor, &end, 10);
+    if (end == cursor || (*end && *end != ',')) return;
+    values[count++] = static_cast<int16_t>(constrain(value, -1L, 100L));
+    cursor = *end ? end + 1 : end;
+  }
+}
+
+void readComputer() {
+  String response;
+  bool accepted = wifiRequest("GET", "/v1/computer/status", nullptr, response, 1200);
+  if (!accepted && bleTransportValidated()) {
+    for (int page = 0; page < 3; ++page) {
+      String chunk;
+      if (!bleTransportRequest("GET", String("/v1/computer/status/") + page, nullptr, chunk, 1200)) return;
+      if (page == 0) response = chunk;
+      else if (response.endsWith("}") && chunk.startsWith("{")) {
+        response.remove(response.length() - 1);
+        response += "," + chunk.substring(1);
+      } else return;
+    }
+    accepted = true;
+  }
+  if (!accepted || !jsonBool(response, "statsSupported", false)) return;
+  ComputerState next;
+  next.supported = true;
+  next.available = jsonBool(response, "statsAvailable", false);
+  next.network_available = jsonBool(response, "statsNetworkAvailable", false);
+  next.cpu_percent = constrain(jsonInt(response, "statsCpuPercent", -1), -1, 100);
+  next.memory_percent = constrain(jsonInt(response, "statsMemoryPercent", -1), -1, 100);
+  next.memory_used_mb = max(0, jsonInt(response, "statsMemoryUsedMb", 0));
+  next.memory_total_mb = max(0, jsonInt(response, "statsMemoryTotalMb", 0));
+  next.network_rx_bps = max(0, jsonInt(response, "statsRxBps", 0));
+  next.network_tx_bps = max(0, jsonInt(response, "statsTxBps", 0));
+  const char *keys[] = {"statsCpuTrend", "statsMemoryTrend", "statsRxTrend", "statsTxTrend"};
+  for (int index = 0; index < 4; ++index) parseComputerTrend(jsonString(response, keys[index], ""), next.trends[index]);
+  next.received_at_ms = millis();
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  next.revision = remote_state.computer.revision + 1;
+  remote_state.computer = next;
+  xSemaphoreGive(state_mutex);
+}
+
 bool readStatus() {
   String response;
   if (!request("GET", "/v1/status", nullptr, response,
@@ -1141,6 +1191,7 @@ CommandResult runCommand(const Command &command) {
 void remoteTask(void *) {
   uint32_t last_status = 0;
   uint32_t last_usage = 0;
+  uint32_t last_computer = 0;
   uint32_t last_registration = 0;
   bool desktop_verified = false;
   uint8_t consecutive_status_failures = 0;
@@ -1212,6 +1263,14 @@ void remoteTask(void *) {
     if (desktop_verified && (sync_usage || millis() - last_usage >= 15000)) {
       readUsage();
       last_usage = millis();
+    }
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+    const bool sync_computer = computer_view_active && (computer_sync_requested || millis() - last_computer >= 2000);
+    computer_sync_requested = false;
+    xSemaphoreGive(state_mutex);
+    if (desktop_verified && sync_computer) {
+      readComputer();
+      last_computer = millis();
     }
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(60));
   }
@@ -1303,6 +1362,15 @@ void requestUsageSync() {
   if (!state_mutex) return;
   xSemaphoreTake(state_mutex, portMAX_DELAY);
   usage_sync_requested = true;
+  xSemaphoreGive(state_mutex);
+  wakeRemoteTask();
+}
+
+void setComputerViewActive(bool active) {
+  if (!state_mutex) return;
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  computer_view_active = active;
+  computer_sync_requested = active;
   xSemaphoreGive(state_mutex);
   wakeRemoteTask();
 }

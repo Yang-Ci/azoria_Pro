@@ -504,6 +504,25 @@ bool decodeStatus(const String &wire, String &response) {
   return true;
 }
 
+bool decodeComputerStatus(const String &wire, const String &page, String &response) {
+  if (field(wire, 3) != "P" || field(wire, 4) != page) return false;
+  if (page == "0" && fieldCount(wire) == 14) {
+    response = "{\"statsSupported\":true,\"statsAvailable\":" + String(field(wire, 5) == "1" ? "true" : "false") +
+      ",\"statsCpuPercent\":" + field(wire, 6) + ",\"statsMemoryPercent\":" + field(wire, 7) +
+      ",\"statsMemoryUsedMb\":" + field(wire, 8) + ",\"statsMemoryTotalMb\":" + field(wire, 9) +
+      ",\"statsNetworkAvailable\":" + String(field(wire, 10) == "1" ? "true" : "false") +
+      ",\"statsRxBps\":" + field(wire, 11) + ",\"statsTxBps\":" + field(wire, 12) + "}";
+    return true;
+  }
+  if ((page == "1" || page == "2") && fieldCount(wire) == 8) {
+    const char *first = page == "1" ? "statsCpuTrend" : "statsRxTrend";
+    const char *second = page == "1" ? "statsMemoryTrend" : "statsTxTrend";
+    response = String("{\"") + first + "\":\"" + field(wire, 5) + "\",\"" + second + "\":\"" + field(wire, 6) + "\"}";
+    return true;
+  }
+  return false;
+}
+
 bool decodeMusicStatus(const String &wire, const String &page,
                        String &response) {
   if (field(wire, 3) != "M" || field(wire, 4) != page) return false;
@@ -703,6 +722,13 @@ bool bleTransportRequest(const char *method, const String &path,
     unsigned_request += "|M|" + page;
     if (!exchange(unsigned_request, request_id, wire, timeout_ms)) return false;
     return decodeMusicStatus(wire, page, response);
+  }
+  if (!strcmp(method, "GET") && path.startsWith("/v1/computer/status/")) {
+    const String page = path.substring(path.length() - 1);
+    if (page != "0" && page != "1" && page != "2") return false;
+    unsigned_request += "|P|" + page;
+    if (!exchange(unsigned_request, request_id, wire, timeout_ms)) return false;
+    return decodeComputerStatus(wire, page, response);
   }
   if (!strcmp(method, "GET") && path.startsWith("/v1/usage/status/")) {
     const int query = path.indexOf("?index=");

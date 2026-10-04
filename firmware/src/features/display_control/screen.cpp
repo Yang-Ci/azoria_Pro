@@ -9,6 +9,7 @@
 
 #include "features/display_control/service.h"
 #include "features/display_control/usage_view.h"
+#include "features/display_control/computer_view.h"
 #include "features/wallpaper/wallpaper.h"
 #include "platform/board.h"
 #include "ui/display_badge.h"
@@ -876,6 +877,7 @@ void showMusicView(lv_event_t *) {
   if (!music_view) return;
   hideBacklightPanel();
   UsageView::hide();
+  ComputerView::hide();
   music_view_active = true;
   lv_obj_clear_flag(music_view, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(music_view);
@@ -885,7 +887,17 @@ void showMusicView(lv_event_t *) {
 
 void showUsageView(lv_event_t *) {
   hideBacklightPanel();
+  ComputerView::hide();
   UsageView::show();
+  last_interaction_at = millis();
+  scheduleFullRedraw();
+}
+
+void showComputerView(lv_event_t *) {
+  hideBacklightPanel();
+  hideMusicView(nullptr);
+  UsageView::hide();
+  ComputerView::show();
   last_interaction_at = millis();
   scheduleFullRedraw();
 }
@@ -1317,6 +1329,18 @@ void showScreen() {
   lv_obj_t *usage_open_label = staticLabel(usage_open_button, "Codex / API", 0, 0, &lv_font_montserrat_16, 0xFFC166);
   lv_obj_center(usage_open_label);
 
+  lv_obj_t *computer_button = lv_btn_create(controls);
+  lv_obj_set_pos(computer_button, 298, 18);
+  lv_obj_set_size(computer_button, 126, 44);
+  lv_obj_set_style_bg_color(computer_button, color(0x14222A), 0);
+  lv_obj_set_style_border_width(computer_button, 0, 0);
+  lv_obj_set_style_shadow_width(computer_button, 0, 0);
+  lv_obj_set_style_radius(computer_button, 8, 0);
+  disableScrolling(computer_button);
+  lv_obj_add_event_cb(computer_button, showComputerView, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *computer_label = staticLabel(computer_button, "PC Status", 0, 0, &lv_font_montserrat_16, 0x20DFE5);
+  lv_obj_center(computer_label);
+
   status_dot = lv_obj_create(controls);
   lv_obj_set_pos(status_dot, 446, 20);
   lv_obj_set_size(status_dot, 8, 8);
@@ -1443,6 +1467,7 @@ void showScreen() {
   Wallpaper::createView(controls, wallpaperClicked);
   createMusicView(controls);
   UsageView::create(controls);
+  ComputerView::create(controls);
   updateInputButtons();
   updateMuteVisual();
   updateBrightnessSegments(50);
@@ -1464,7 +1489,7 @@ void refresh() {
     Wallpaper::hide();
     scheduleFullRedraw();
   }
-  if (!Wallpaper::active() && !music_view_active && !UsageView::active() &&
+  if (!Wallpaper::active() && !music_view_active && !UsageView::active() && !ComputerView::active() &&
       wallpaper_idle_minutes > 0 &&
       millis() - last_interaction_at >=
           static_cast<uint32_t>(wallpaper_idle_minutes) * 60UL * 1000UL) {
@@ -1476,6 +1501,7 @@ void refresh() {
     return;
   }
   UsageView::refresh(state);
+  ComputerView::refresh(state);
   if (static_cast<int32_t>(millis() - next_clock_update) >= 0) {
     updateClock();
     next_clock_update = millis() + 1000;

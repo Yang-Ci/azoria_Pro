@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 use std::env;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
+mod network_stats;
 #[cfg(target_os = "windows")]
 use wmi::WMIConnection;
 #[cfg(target_os = "windows")]
@@ -26,6 +27,7 @@ const DDC_DESTINATION: u8 = 0x6e;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
+    NetworkStats,
     CurrentMedia {
         #[serde(default)]
         include_artwork: bool,
@@ -448,6 +450,7 @@ fn lg_input(source: InputSource) -> Result<Value, String> {
 
 fn execute(request: Request) -> Result<Value, String> {
     match request {
+        Request::NetworkStats => network_stats::get(),
         Request::CurrentMedia { include_artwork } => {
             #[cfg(target_os = "windows")]
             {

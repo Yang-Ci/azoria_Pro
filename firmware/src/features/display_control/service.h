@@ -6,6 +6,22 @@
 
 namespace DisplayControl {
 
+constexpr size_t kComputerTrendPoints = 30;
+struct ComputerState {
+  bool supported = false;
+  bool available = false;
+  bool network_available = false;
+  int16_t cpu_percent = -1;
+  int16_t memory_percent = -1;
+  uint32_t memory_used_mb = 0;
+  uint32_t memory_total_mb = 0;
+  uint32_t network_rx_bps = 0;
+  uint32_t network_tx_bps = 0;
+  int16_t trends[4][kComputerTrendPoints]{};
+  uint32_t received_at_ms = 0;
+  uint32_t revision = 0;
+};
+
 struct UsageState {
   bool supported = false;
   bool codex_available = false;
@@ -39,6 +55,7 @@ struct UsageState {
 
 struct RemoteState {
   UsageState usage;
+  ComputerState computer;
   bool online = false;
   bool ready = false;
   int brightness = 50;
@@ -78,6 +95,7 @@ DeviceConfig getDesktopConfig();
 RemoteState getRemoteState();
 void selectUsageProvider(uint8_t index);
 void requestUsageSync();
+void setComputerViewActive(bool active);
 bool queueNumericControl(const char *control, int value, bool final_value = true);
 bool queueBooleanControl(const char *control, bool value);
 bool queueStringControl(const char *control, const char *value);

@@ -9,6 +9,8 @@ import type { WallpaperManager } from "./wallpaper"
 import type { MusicManager } from "./music"
 import type { TouchSleepManager } from "./touch-sleep"
 import type { TouchUsageService } from "./touch-usage"
+import type { ComputerStatsService } from "./computer"
+import type { BrightnessLinkManager } from "./brightness-link"
 
 const controlPort = 8732
 const discoveryPort = 8733
@@ -122,8 +124,14 @@ export class LanController {
     private readonly music?: MusicManager,
     private readonly touchSleep?: TouchSleepManager,
     private readonly touchUsage?: TouchUsageService,
+    private readonly computer?: ComputerStatsService,
+    private readonly brightnessLink?: BrightnessLinkManager,
   ) {
     activeControllers.add(this)
+  }
+
+  private control(request: ControlRequest, source: "touch" | "desktop-peer"): Promise<MonitorStatus> {
+    return this.brightnessLink ? this.brightnessLink.control(request, source) : this.monitor.control(request, source)
   }
 
   async start(): Promise<void> {
@@ -373,7 +381,7 @@ export class LanController {
     const master = this.refreshMaster()
     if (this.reachable && master === this.desktopId) {
       this.isMaster = true
-      const status = await this.monitor.control(request, "touch")
+      const status = await this.control(request, "touch")
       return status[request.control]
     }
     if (!entry) throw new Error("没有可用的局域网接口")
@@ -486,7 +494,7 @@ export class LanController {
         await new Promise((resolve) => setTimeout(resolve, 120))
         if (this.commandResults.has(command.key) || this.claims.get(command.key) !== this.desktopId) return
       }
-      const status = await this.monitor.control({ control: command.control, value: command.value, final: command.final }, "touch")
+      const status = await this.control({ control: command.control, value: command.value, final: command.final }, "touch")
       const returned = status[command.control as keyof typeof status]
       const encoded = typeof returned === "boolean" ? (returned ? "1" : "0") : String(returned)
       this.isMaster = true
@@ -589,6 +597,10 @@ export class LanController {
           touchSleepActive: touchSleep?.active ?? false,
         })
       }
+      if (request.method === "GET" && request.url === "/v1/computer/status") {
+        if (!this.computer) return this.json(response, 404, { ok: false, error: "computer statistics unavailable" })
+        return this.json(response, 200, this.computer.touchStatus())
+      }
       if (request.method === "POST" && request.url === "/v1/music/control") {
         if (!this.music) return this.json(response, 404, { ok: false, error: "music unavailable" })
         const payload = await this.body(request)
@@ -620,7 +632,7 @@ export class LanController {
         const payload = await this.body(request)
         const control = payload.control
         if (!["brightness", "volume", "mute", "input"].includes(String(control))) return this.json(response, 400, { ok: false, error: "unsupported control" })
-        const status = await this.monitor.control(payload as unknown as ControlRequest, "desktop-peer")
+        const status = await this.control(payload as unknown as ControlRequest, "desktop-peer")
         return this.json(response, 200, { accepted: true, confirmed: payload.final !== false, value: status[control as keyof typeof status] })
       }
       if (request.method === "POST" && request.url === "/v1/device/register") {
