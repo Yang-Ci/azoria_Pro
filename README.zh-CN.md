@@ -174,7 +174,7 @@ TF 卡时优先使用卡内存储，桌面端生成的动态壁纸最长 10 秒�
 桌面充电站使用独立的 [酷态科 10 Ultra 可调屏幕外壳包](hardware/enclosure/charging-station-v2/README.md)，
 包含底座、后板、线盖、四线仓挡片、可调屏框及屏幕后盖；2026-10-06 已同步后盖修正。
 先打印试装件，再按说明装配完整充电器和线材。
-[下载完整充电站打印包（2026-10-06）](hardware/enclosure/cuktech-desktop-station-v2-2026-10-06.zip)。
+[下载完整充电站打印包（2026-10-06）](hardware/enclosure/charging-station-v2/cuktech-desktop-station-v2-2026-10-06.zip)。
 
 局域网通信使用三个固定端口：TCP `8732` 提供状态和设备登记，UDP `8733` 用于 Desktop
 发现 Touch 及返回命令结果，UDP `8734` 用于 Desktop 心跳、协调和 Touch 控制命令广播。

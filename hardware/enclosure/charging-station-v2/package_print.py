@@ -5,7 +5,7 @@ from pathlib import Path
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
-TARGET = ROOT.parent / 'cuktech-desktop-station-v2-2026-10-06.zip'
+TARGET = ROOT / 'cuktech-desktop-station-v2-2026-10-06.zip'
 PREFIX = 'cuktech-workstation-compact-v2'
 
 
