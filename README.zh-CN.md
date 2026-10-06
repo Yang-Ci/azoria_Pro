@@ -177,7 +177,8 @@ TF 卡时优先使用卡内存储，桌面端生成的动态壁纸最长 10 秒�
 [下载完整充电站打印包（2026-10-06）](hardware/enclosure/charging-station-v2/cuktech-desktop-station-v2-2026-10-06.zip)。
 
 局域网通信使用三个固定端口：TCP `8732` 提供状态和设备登记，UDP `8733` 用于 Desktop
-发现 Touch 及返回命令结果，UDP `8734` 用于 Desktop 心跳、协调和 Touch 控制命令广播。
+发现 Touch 及返回命令结果，UDP `8734` 用于 Desktop 心跳、协调和 Touch 控制命令。
+Touch 同时广播命令并向已发现的 Desktop 单播相同命令 ID，兼容丢弃客户端广播的 Wi-Fi 网络。
 多个 Desktop 同时在线时，只有实际具备可用 DDC/CI 路径的主机可以执行命令。首次建立
 控制关系后，该主机成为粘性 Master；只要心跳和 DDC/CI 路径保持正常，后续命令不会重复
 选举。Master 断线、路径失效或执行失败时，其他有能力的 Desktop 才重新竞争执行权；网络

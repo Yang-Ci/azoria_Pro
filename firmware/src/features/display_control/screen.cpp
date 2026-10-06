@@ -881,6 +881,7 @@ void hideMusicView(lv_event_t *) {
   }
   music_view_active = false;
   lv_obj_add_flag(music_view, LV_OBJ_FLAG_HIDDEN);
+  noteInteraction();
   scheduleFullRedraw();
 }
 
@@ -1029,32 +1030,33 @@ void createMusicView(lv_obj_t *parent) {
   disableScrolling(music_view);
 
   lv_obj_t *back = lv_btn_create(music_view);
-  lv_obj_set_pos(back, 12, 24);
-  lv_obj_set_size(back, 36, 36);
-  lv_obj_set_style_bg_color(back, color(0x111113), 0);
+  // Match PC Status's visible return button while enlarging only its hit area.
+  lv_obj_set_pos(back, 418, 15);
+  lv_obj_set_size(back, 44, 44);
+  lv_obj_set_ext_click_area(back, 16);
+  lv_obj_clear_flag(back, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(back, 0, 0);
   lv_obj_set_style_shadow_width(back, 0, 0);
-  lv_obj_set_style_radius(back, 14, 0);
-  lv_obj_set_style_border_width(back, 1, 0);
-  lv_obj_set_style_border_color(back, color(0x2A2A2E), 0);
-  lv_obj_set_style_pad_all(back, 0, 0);
   lv_obj_add_event_cb(back, hideMusicView, LV_EVENT_CLICKED, nullptr);
-  lv_obj_t *back_label = label(back, "<", 0, 0, &lv_font_montserrat_28);
+  lv_obj_t *back_label = staticLabel(back, LV_SYMBOL_LEFT, 0, 0,
+                                    &lv_font_montserrat_18, 0xF6F1E9);
   lv_obj_center(back_label);
 
-  music_title = label(music_view, "暂无音乐", 138, 18,
+  music_title = label(music_view, "暂无音乐", 98, 18,
                       &azoria_font_zh_16);
   lv_obj_set_width(music_title, 194);
   lv_label_set_long_mode(music_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
   lv_obj_set_style_text_color(music_title, color(0xFFFFFF), 0);
   lv_obj_set_style_text_opa(music_title, LV_OPA_COVER, 0);
-  music_artist = label(music_view, "", 138, 46, &azoria_font_zh_16);
+  music_artist = label(music_view, "", 98, 46, &azoria_font_zh_16);
   lv_obj_set_width(music_artist, 194);
   lv_label_set_long_mode(music_artist, LV_LABEL_LONG_SCROLL_CIRCULAR);
   lv_obj_set_style_text_color(music_artist, color(0xCBD5E1), 0);
   lv_obj_set_style_text_opa(music_artist, LV_OPA_COVER, 0);
-  music_status = label(music_view, "等待 YangCi", 344, 28,
+  music_status = label(music_view, "", 304, 28,
                        &azoria_font_zh_16);
-  lv_obj_set_width(music_status, 116);
+  lv_obj_set_width(music_status, 96);
   lv_obj_set_style_text_align(music_status, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_set_style_text_color(music_status, color(0x168BFF), 0);
 
@@ -1174,7 +1176,7 @@ void createMusicView(lv_obj_t *parent) {
     lv_obj_add_flag(cover, LV_OBJ_FLAG_HIDDEN);
     return cover;
   };
-  music_cover = create_cover(music_view, 60, 12, &music_cover_placeholder);
+  music_cover = create_cover(music_view, 20, 12, &music_cover_placeholder);
   immersive_cover = create_cover(music_immersive_view, 24, 18, &immersive_cover_placeholder);
   lv_obj_move_foreground(music_immersive_view);
 
@@ -1613,7 +1615,7 @@ void refresh() {
   setMusicLabel(music_status,
                 state.music_available
                     ? (state.music_playing ? "正在播放" : "已暂停")
-                    : "未检测到播放器");
+                    : "");
   setMusicLabel(music_lyric_previous,
                 state.music_available ? state.music_lyric_previous : "");
   const bool regular_lyric_changed = setMusicLabel(music_lyric_current,

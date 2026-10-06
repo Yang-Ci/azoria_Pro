@@ -445,13 +445,19 @@ void sendDiscoveryReply(const IPAddress &address, uint16_t port,
   discovery_udp.endPacket();
 }
 
-void sendCoordinationBroadcast(const String &message) {
+void sendCoordinationCommand(const String &message) {
   if (WiFi.status() != WL_CONNECTED) return;
-  if (!discovery_udp.beginPacket(coordinationBroadcastAddress(),
-                                 kCoordinationPort)) return;
-  discovery_udp.write(
-      reinterpret_cast<const uint8_t *>(message.c_str()), message.length());
-  discovery_udp.endPacket();
+  const IPAddress broadcast = coordinationBroadcastAddress();
+  sendDiscoveryReply(broadcast, kCoordinationPort, message);
+  // Some Wi-Fi networks drop client broadcasts while HTTP status sync still
+  // works. Send the same command ID to the discovered Desktop as well. Its
+  // master election and in-flight/result caches prevent duplicate DDC writes.
+  IPAddress desktop;
+  if (isLocalDesktopHost(remote_config.host) &&
+      desktop.fromString(remote_config.host) && desktop != broadcast &&
+      desktop != WiFi.localIP()) {
+    sendDiscoveryReply(desktop, kCoordinationPort, message);
+  }
 }
 
 void handlePassiveDiscovery() {
@@ -1049,7 +1055,7 @@ bool broadcastCommand(const Command &command, String &response,
   pending_result_response = "";
   pending_result_ready = false;
 
-  sendCoordinationBroadcast(unsigned_message);
+  sendCoordinationCommand(unsigned_message);
   if (!command.final_value) {
     response = "{\"accepted\":true,\"confirmed\":false}";
     return true;
@@ -1068,7 +1074,7 @@ bool broadcastCommand(const Command &command, String &response,
     // Repeating the same command ID is safe: the elected Desktop returns its
     // cached result instead of writing DDC/CI a second time.
     if (millis() - last_send >= 350) {
-      sendCoordinationBroadcast(unsigned_message);
+      sendCoordinationCommand(unsigned_message);
       last_send = millis();
     }
     delay(10);

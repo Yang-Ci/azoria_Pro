@@ -44,7 +44,8 @@ pio device monitor --port /dev/cu.usbmodemXXXX --baud 115200
 “开发者模式”。BLE OTA 会校验固件大小与 SHA-256 后再重启。
 
 连入 Wi‑Fi 后，Touch 在 UDP 8733 被动等待同一私网内的 Desktop 发现请求，随后接收
-Desktop 地址和控制端口。控制操作广播到 UDP 8734，由当前具备 DDC/CI 执行能力的
+Desktop 地址和控制端口。控制操作广播到 UDP 8734，同时向已发现的 Desktop 单播
+同一命令 ID，兼容丢弃客户端广播的 Wi-Fi 网络；由当前具备 DDC/CI 执行能力的
 Desktop Master 消费并在 UDP 8733 返回结果。Master 在连接正常期间保持不变，只有断线、
 DDC/CI 路径失效或执行失败时才重新选择。Touch 会用相同命令 ID 重试未确认的最终操作，
 Desktop 返回缓存结果以避免重复写入。Touch 不主动扫描局域网主机，也不会连接公网地址。

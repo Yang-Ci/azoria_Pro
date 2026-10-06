@@ -36,7 +36,8 @@ void create(lv_obj_t *parent) {
   status = text(view, "WAITING FOR DESKTOP", 21, 55, &lv_font_montserrat_16, 0x929292);
   lv_obj_t *button = lv_btn_create(view);
   lv_obj_set_pos(button, 418, 15); lv_obj_set_size(button, 44, 44);
-  lv_obj_set_style_bg_color(button, lv_color_hex(0x242630), 0);
+  lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(button, 0, 0);
   lv_obj_set_style_shadow_width(button, 0, 0);
   lv_obj_add_event_cb(button, back, LV_EVENT_CLICKED, nullptr);
   lv_obj_t *back_text = text(button, LV_SYMBOL_LEFT, 0, 0, &lv_font_montserrat_18, 0xF6F1E9);
