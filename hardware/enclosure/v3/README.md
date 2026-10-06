@@ -20,7 +20,9 @@ V3 针对 V2 实物反馈做了三项修正：PCB 内腔由 95.2 mm 收紧到 94
   两侧加强筋。
 - [azoria-touch-stand-frame-v3.stl](azoria-touch-stand-frame-v3.stl)：三角框架式背撑，15° 后仰，底面更宽、抗侧翻更强。
 
-本目录保留以上 5 个 V3 STL 和本说明。旧版外壳、V2 预览图及工作站 V1/V2 目录已删除。
+本目录保留以上 5 个 V3 STL 和本说明，是独立屏幕外壳。
+桌面充电站使用旁边的 [charging-station-v2](../charging-station-v2/README.md)，
+其屏幕后盖已同步本目录 2026-10-04 的 USB 开口修正。
 全套单盘文件已经包含四个独立打印件，选择整套打印或按需单独打印即可。
 
 ## 建议验证顺序

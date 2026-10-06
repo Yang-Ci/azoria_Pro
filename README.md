@@ -117,6 +117,11 @@ For the enclosure, print `hardware/enclosure/v3/azoria-touch-all-v3.stl` to prod
 the front, rear, and both stand designs on one plate. The [V3 package](hardware/enclosure/v3/)
 contains five STL files and [printing instructions](hardware/enclosure/v3/README.md).
 
+The [CUKTECH 10 Ultra charging station package](hardware/enclosure/charging-station-v2/README.md)
+adds the charger base, rear panel, cable cover, four reel bays, and adjustable Touch screen.
+Rear-cover corrections were synchronized on 2026-10-06. Print the fit coupons before assembly.
+[Download the complete station print package](hardware/enclosure/cuktech-desktop-station-v2-2026-10-06.zip).
+
 ## Architecture and device capabilities
 
 - Electron + React desktop UI with allowlisted IPC into local services.

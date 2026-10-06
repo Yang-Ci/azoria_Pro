@@ -6,3 +6,5 @@
 *.gif binary
 *.icns binary
 *.bin binary
+# Preserve the validated print package bytes and its SHA256 manifest on checkout.
+hardware/enclosure/charging-station-v2/** -text whitespace=cr-at-eol

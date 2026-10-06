@@ -1,0 +1,15 @@
+{
+  "scope": "Exported rear-panel and screen-lid feature geometry",
+  "checks": {
+    "touch_notch_open_at_top": true,
+    "solid_3mm_bridge_below_touch_notch": true,
+    "rear_holes_and_side_ligaments": true,
+    "six_clearance_holes": true,
+    "six_countersunk_seats": true,
+    "matching_service_cover_holes": true,
+    "screen_usb_opening_continuous_and_shifted": true,
+    "screen_usb_opening_length_25_39mm": true
+  },
+  "passed": true,
+  "physical_fit_verified": false
+}
