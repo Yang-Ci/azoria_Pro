@@ -11,6 +11,7 @@
 #include "features/display_control/service.h"
 #include "features/wallpaper/wallpaper.h"
 #include "platform/board.h"
+#include "platform/touch_contact_filter.h"
 #include "services/device_config.h"
 #include "services/ble_transport.h"
 #include "services/usb_provisioning.h"
@@ -44,16 +45,11 @@ constexpr uint32_t kWiFiRetryIntervalMs = 30000;
 constexpr TickType_t kFrameBoundaryTimeout = pdMS_TO_TICKS(250);
 // The FT6336U is sampled every 8 ms. A real contact persists across reports,
 // while stale coordinates and electrical noise are normally isolated. Require
-// a stable run of valid press/contact reports before LVGL sees a new contact.
+// two valid press/contact reports before LVGL sees a new contact. Movement
+// must not restart confirmation: a light swipe can already travel between
+// the first reports without ever pausing under the finger.
 // LVGL still owns all click, drag and gesture state.
-constexpr uint8_t kTouchPressConfirmSamples = 3;
-constexpr uint8_t kTouchReleaseConfirmSamples = 3;
-constexpr uint16_t kTouchConfirmMaxDriftPixels = 20;
-Board::TouchPoint last_touch_point{};
-Board::TouchPoint touch_press_anchor{};
-uint8_t touch_press_samples = 0;
-uint8_t touch_release_samples = 0;
-bool touch_is_pressed = false;
+TouchContactFilter touch_filter;
 
 IRAM_ATTR bool displayRefreshFinished(void *user_data) {
   TickType_t now = xTaskGetTickCountFromISR();
@@ -215,51 +211,18 @@ void touchRead(lv_indev_drv_t *, lv_indev_data_t *data) {
   Board::TouchPoint point{};
   const int count = Board::readTouches(&point, 1);
   if (DisplayControl::screenSleeping()) {
-    touch_press_samples = 0;
-    touch_release_samples = 0;
-    touch_is_pressed = false;
+    touch_filter.reset();
     data->state = LV_INDEV_STATE_REL;
     return;
   }
-  if (count > 0) {
-    last_touch_point = point;
-    touch_release_samples = 0;
-    if (!touch_is_pressed) {
-      if (touch_press_samples == 0) {
-        touch_press_anchor = point;
-      } else if (abs(point.x - touch_press_anchor.x) >
-                     kTouchConfirmMaxDriftPixels ||
-                 abs(point.y - touch_press_anchor.y) >
-                     kTouchConfirmMaxDriftPixels) {
-        touch_press_samples = 0;
-        data->state = LV_INDEV_STATE_REL;
-        return;
-      }
-      if (++touch_press_samples < kTouchPressConfirmSamples) {
-        data->state = LV_INDEV_STATE_REL;
-        return;
-      }
-      touch_is_pressed = true;
-      touch_press_samples = 0;
-    }
+  if (touch_filter.update(count, point)) {
     DisplayControl::noteInteraction();
     data->state = LV_INDEV_STATE_PR;
-    data->point.x = last_touch_point.x;
-    data->point.y = last_touch_point.y;
+    data->point.x = touch_filter.point().x;
+    data->point.y = touch_filter.point().y;
     return;
   }
 
-  touch_press_samples = 0;
-  if (touch_is_pressed &&
-      ++touch_release_samples < kTouchReleaseConfirmSamples) {
-    data->state = LV_INDEV_STATE_PR;
-    data->point.x = last_touch_point.x;
-    data->point.y = last_touch_point.y;
-    return;
-  }
-
-  touch_is_pressed = false;
-  touch_release_samples = 0;
   data->state = LV_INDEV_STATE_REL;
 }
 

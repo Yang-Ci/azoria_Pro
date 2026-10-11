@@ -72,6 +72,130 @@ test('disabled linking adjusts only the selected display', async t => {
   assert.equal(f.brightness.get('secondary'), 40)
   assert.deepEqual(f.writes, [['single', 80]])
 })
+test('the switch persists immediately without resetting saved baselines or offset', async t => {
+  const f = await fixture(t); await f.link.save(f.settings); await f.link.setOffset(10)
+  await f.link.setEnabled(false)
+  assert.equal(f.link.snapshot().enabled, false)
+  assert.equal(f.link.snapshot().offset, 10)
+  assert.deepEqual(f.link.snapshot().displays, f.settings.displays)
+  const restored = new BrightnessLinkManager(f.directory, f.monitor); await restored.initialize()
+  assert.equal(restored.snapshot().enabled, false)
+  await f.link.setEnabled(true)
+  assert.equal(f.link.snapshot().enabled, true)
+  assert.equal(f.link.snapshot().offset, 10)
+})
+test('disabling cancels queued linked requests and single-display controls bypass the link queue', async t => {
+  const f = await fixture(t); await f.link.save(f.settings)
+  let release
+  f.link.queue = new Promise(resolve => { release = resolve })
+  const preview = f.link.control({ control: 'brightness', value: 65, final: false }, 'touch')
+  const final = f.link.control({ control: 'brightness', value: 70, final: true }, 'touch')
+  const disabled = f.link.setEnabled(false)
+  assert.equal(f.link.snapshot().enabled, false)
+  await f.link.control({ control: 'brightness', value: 80, final: true }, 'desktop-ui')
+  assert.deepEqual(f.writes, [['single', 80]])
+  release(); await Promise.all([preview, final, disabled])
+  assert.deepEqual(f.writes, [['single', 80]])
+})
+test('disabled previews reach the monitor together so its own coalescing still works', async t => {
+  const f = await fixture(t)
+  const pending = []
+  f.monitor.control = request => new Promise(resolve => { pending.push({ request, resolve }) })
+  const requests = [61, 62, 70].map((value, index) => f.link.control({ control: 'brightness', value, final: index === 2 }, 'touch'))
+  assert.equal(pending.length, 3)
+  pending.forEach(item => item.resolve(f.monitor.snapshot()))
+  await Promise.all(requests)
+})
+test('disabling during a hardware write cancels displays still being discovered', async t => {
+  const f = await fixture(t); await f.link.save(f.settings)
+  let release, started
+  const writing = new Promise(resolve => { started = resolve })
+  const blocked = new Promise(resolve => { release = resolve })
+  const forDisplay = f.monitor.forDisplay
+  f.monitor.forDisplay = async id => {
+    if (id === 'secondary') await blocked
+    const controller = await forDisplay(id)
+    const control = controller.control
+    controller.control = async request => { started(); await blocked; return control(request) }
+    return controller
+  }
+  const adjustment = f.link.control({ control: 'brightness', value: 70, final: true }, 'touch')
+  await writing
+  const disabled = f.link.setEnabled(false)
+  release(); await Promise.all([adjustment, disabled])
+  assert.deepEqual(f.writes, [['primary', 70]])
+  assert.equal(f.link.snapshot().enabled, false)
+})
+test('linked displays begin writes together without waiting for the other display', async t => {
+  const f = await fixture(t); await f.link.save(f.settings)
+  let release
+  const blocked = new Promise(resolve => { release = resolve })
+  const started = []
+  let bothStarted
+  const writing = new Promise(resolve => { bothStarted = resolve })
+  const forDisplay = f.monitor.forDisplay
+  f.monitor.forDisplay = async id => {
+    const controller = await forDisplay(id)
+    const control = controller.control
+    controller.control = async request => {
+      started.push(id)
+      if (started.length === 2) bothStarted()
+      await blocked
+      return control(request)
+    }
+    return controller
+  }
+  const adjustment = f.link.control({ control: 'brightness', value: 70, final: true }, 'touch')
+  await writing
+  assert.deepEqual(started, ['primary', 'secondary'])
+  release(); await adjustment
+  assert.deepEqual(f.writes, [['primary', 70], ['secondary', 50]])
+})
+test('linked drag previews skip readback and disk writes until release', async t => {
+  const f = await fixture(t); await f.link.save(f.settings)
+  const flags = []
+  const forDisplay = f.monitor.forDisplay
+  f.monitor.forDisplay = async id => {
+    const controller = await forDisplay(id)
+    const control = controller.control
+    controller.control = request => { flags.push(request.final); return control(request) }
+    return controller
+  }
+  await f.link.control({ control: 'brightness', value: 65, final: false }, 'touch')
+  assert.deepEqual(flags, [false, false])
+  const filename = path.join(f.directory, 'brightness-link.json')
+  assert.equal(JSON.parse(await readFile(filename, 'utf8')).offset, 0)
+  await f.link.control({ control: 'brightness', value: 65, final: true }, 'touch')
+  assert.deepEqual(flags, [false, false, true, true])
+  assert.equal(JSON.parse(await readFile(filename, 'utf8')).offset, 5)
+})
+test('applying a scene while disabled does not re-enable subsequent linking', async t => {
+  const f = await fixture(t); await f.link.save(f.settings)
+  const scene = (await f.link.saveScene('Work')).scenes[0]
+  await f.link.setEnabled(false)
+  await f.link.applyScene(scene.id)
+  assert.equal(f.link.snapshot().enabled, false)
+  f.writes.length = 0
+  await f.link.control({ control: 'brightness', value: 80 }, 'touch')
+  assert.deepEqual(f.writes, [['single', 80]])
+  await assert.rejects(f.link.setOffset(5), /启用/)
+})
+test('disabling also cancels previously queued scene changes', async t => {
+  const f = await fixture(t); await f.link.save(f.settings)
+  const scene = (await f.link.saveScene('Work')).scenes[0]
+  let release
+  f.link.queue = new Promise(resolve => { release = resolve })
+  const sceneRequest = f.link.applyScene(scene.id)
+  const nextRequest = f.link.nextScene()
+  const disabled = f.link.setEnabled(false)
+  release(); await Promise.all([sceneRequest, nextRequest, disabled])
+  assert.deepEqual(f.writes, [])
+})
+test('the switch rejects invalid values and enabling without saved displays', async t => {
+  const f = await fixture(t)
+  assert.throws(() => f.link.setEnabled('false'), /无效/)
+  assert.throws(() => f.link.setEnabled(true), /保存/)
+})
 test('linked queued previews coalesce while the final value is always applied', async t => {
   const f = await fixture(t); await f.link.save(f.settings)
   await Promise.all([f.link.control({ control: 'brightness', value: 61, final: false }, 'touch'), f.link.control({ control: 'brightness', value: 62, final: false }, 'touch'), f.link.control({ control: 'brightness', value: 70, final: true }, 'touch')])

@@ -26,6 +26,8 @@ export class BrightnessLinkManager {
   private results: BrightnessLinkSnapshot["results"] = []
   private queue: Promise<unknown> = Promise.resolve()
   private previewSequence = 0
+  private linkGeneration = 0
+  private suspended = false
   private readonly filename: string
   constructor(userData: string, private readonly monitor: MonitorController) { this.filename = path.join(userData, "brightness-link.json") }
 
@@ -48,15 +50,31 @@ export class BrightnessLinkManager {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.results = [{ displayId: "", brightness: null, error: "亮度联动配置读取失败，原文件已保留；请重新保存设置" }]
     }
   }
-  snapshot(): BrightnessLinkSnapshot { return structuredClone({ ...this.state, ...offsetRange(this.state.displays), results: this.results }) }
+  private enabled(): boolean { return this.state.enabled && !this.suspended }
+  snapshot(): BrightnessLinkSnapshot { return structuredClone({ ...this.state, enabled: this.enabled(), ...offsetRange(this.state.displays), results: this.results }) }
   private serial<T>(work: () => Promise<T>): Promise<T> { const result = this.queue.then(work); this.queue = result.catch(() => undefined); return result }
   private async store(next: typeof this.state): Promise<void> { await writeAtomicJson(this.filename, next); this.state = next }
+  setEnabled(enabled: boolean): Promise<BrightnessLinkSnapshot> {
+    if (typeof enabled !== "boolean") throw new Error("亮度联动设置无效")
+    if (enabled && !this.state.displays.length) throw new Error("请先保存参与联动的显示器和基准值")
+    const generation = ++this.linkGeneration
+    if (!enabled) this.suspended = true
+    return this.serial(async () => {
+      await this.store({ ...this.state, enabled })
+      if (generation === this.linkGeneration) this.suspended = false
+      this.results = []
+      return this.snapshot()
+    })
+  }
   async save(input: BrightnessLinkSettings): Promise<BrightnessLinkSnapshot> {
     if (!input || typeof input.enabled !== "boolean") throw new Error("亮度联动设置无效")
     const displays = baselines(input.displays)
     if (input.enabled && !displays.length) throw new Error("请先选择参与联动的显示器")
+    const generation = ++this.linkGeneration
+    if (!input.enabled) this.suspended = true
     return this.serial(async () => {
       await this.store({ ...this.state, enabled: input.enabled, displays, offset: 0, activeSceneId: null })
+      if (generation === this.linkGeneration) this.suspended = false
       this.results = []
       return this.snapshot()
     })
@@ -73,44 +91,62 @@ export class BrightnessLinkManager {
     }
     return result
   }
-  private async apply(offset: number, source: ControlSource): Promise<BrightnessLinkSnapshot> {
+  private async apply(offset: number, source: ControlSource, final = true, current: () => boolean = () => true): Promise<BrightnessLinkSnapshot> {
     if (!this.state.displays.length) throw new Error("请先保存联动显示器的基准值")
     const range = offsetRange(this.state.displays)
     const clamped = Math.max(range.minimumOffset, Math.min(range.maximumOffset, offset))
-    await this.store({ ...this.state, offset: clamped, activeSceneId: null })
+    if (!current()) return this.snapshot()
+    this.state = { ...this.state, offset: clamped, activeSceneId: null }
     this.results = []
-    await this.monitor.coordinateBrightness(async () => { for (const item of this.state.displays) {
-      try {
-        const controller = await this.monitor.forDisplay(item.displayId)
-        const value = await controller.control({ control: "brightness", value: item.baseline + clamped, final: true }, source)
-        this.monitor.acceptBrightness(item.displayId, value.brightness)
-        this.results.push({ displayId: item.displayId, brightness: value.brightness, error: null })
-      } catch (error) { this.results.push({ displayId: item.displayId, brightness: null, error: error instanceof Error ? error.message : "亮度设置失败" }) }
-    } })
+    await this.monitor.coordinateBrightness(async () => {
+      const results = await Promise.all(this.state.displays.map(async item => {
+        if (!current()) return null
+        try {
+          const controller = await this.monitor.forDisplay(item.displayId)
+          if (!current()) return null
+          const value = await controller.control({ control: "brightness", value: item.baseline + clamped, final }, source)
+          this.monitor.acceptBrightness(item.displayId, value.brightness)
+          return { displayId: item.displayId, brightness: value.brightness, error: null }
+        } catch (error) { return { displayId: item.displayId, brightness: null, error: error instanceof Error ? error.message : "亮度设置失败" } }
+      }))
+      this.results = results.filter((item): item is NonNullable<typeof item> => item !== null)
+    })
+    // Drag previews only write hardware; persist and verify once on release.
+    if (final && current()) await this.store(this.state)
     return this.snapshot()
   }
   setOffset(offset: number): Promise<BrightnessLinkSnapshot> {
     if (!Number.isInteger(offset) || offset < -100 || offset > 100) throw new Error("亮度偏移无效")
-    return this.serial(() => this.apply(offset, "desktop-ui"))
+    const generation = this.linkGeneration
+    return this.serial(() => {
+      if (!this.enabled()) throw new Error("请先启用亮度联动")
+      return this.apply(offset, "desktop-ui", true, () => generation === this.linkGeneration && this.enabled())
+    })
   }
   control(request: ControlRequest, source: ControlSource): Promise<MonitorStatus> {
     if (request.control !== "brightness") return this.monitor.control(request, source)
     const sequence = ++this.previewSequence
+    const generation = this.linkGeneration
+    const activeId = this.monitor.connectionSnapshot().displayId
+    if (!this.enabled() || !this.state.displays.some(item => item.displayId === activeId)) return this.monitor.control(request, source)
     return this.serial(async () => {
-      const activeId = this.monitor.connectionSnapshot().displayId
+      if (generation !== this.linkGeneration || activeId !== this.monitor.connectionSnapshot().displayId) return this.monitor.snapshot()
       const baseline = this.state.displays.find(item => item.displayId === activeId)
-      if (!this.state.enabled || !baseline) return this.monitor.control(request, source)
+      if (!this.enabled() || !baseline) return this.monitor.snapshot()
       if (typeof request.value !== "number" || !Number.isFinite(request.value) || request.value < 0 || request.value > 100) throw new Error("亮度数值无效")
       if (request.final === false && sequence !== this.previewSequence) return this.monitor.snapshot()
-      const result = await this.apply(Math.round(request.value) - baseline.baseline, source)
+      const result = await this.apply(Math.round(request.value) - baseline.baseline, source, request.final !== false,
+        () => generation === this.linkGeneration && this.enabled() && activeId === this.monitor.connectionSnapshot().displayId)
       const active = result.results.find(item => item.displayId === activeId)
       if (active?.error) throw new Error(active.error)
       return this.monitor.snapshot()
     })
   }
   adjust(delta: number): Promise<unknown> {
+    const generation = this.linkGeneration
     return this.serial(async () => {
-      if (this.state.enabled && this.state.displays.length) return this.apply(this.state.offset + delta, "internal")
+      if (generation !== this.linkGeneration) return this.monitor.snapshot()
+      if (this.enabled() && this.state.displays.length) return this.apply(this.state.offset + delta, "internal", true, () => generation === this.linkGeneration && this.enabled())
       const value = await this.monitor.brightness()
       return this.monitor.control({ control: "brightness", value: Math.max(0, Math.min(100, value + delta)), final: true }, "internal")
     })
@@ -126,20 +162,26 @@ export class BrightnessLinkManager {
       return this.snapshot()
     })
   }
-  private async useScene(id: string): Promise<BrightnessLinkSnapshot> {
+  private async useScene(id: string, generation: number): Promise<BrightnessLinkSnapshot> {
+    if (generation !== this.linkGeneration) return this.snapshot()
     const scene = this.state.scenes.find(item => item.id === id)
     if (!scene) throw new Error("场景不存在")
-    await this.store({ ...this.state, enabled: true, displays: structuredClone(scene.displays), offset: 0, activeSceneId: null })
-    await this.apply(0, "internal")
-    if (this.results.every(item => !item.error)) await this.store({ ...this.state, activeSceneId: id })
+    await this.store({ ...this.state, displays: structuredClone(scene.displays), offset: 0, activeSceneId: null })
+    await this.apply(0, "internal", true, () => generation === this.linkGeneration)
+    if (generation === this.linkGeneration && this.results.every(item => !item.error)) await this.store({ ...this.state, activeSceneId: id })
     return this.snapshot()
   }
-  applyScene(id: string): Promise<BrightnessLinkSnapshot> { return this.serial(() => this.useScene(id)) }
+  applyScene(id: string): Promise<BrightnessLinkSnapshot> {
+    const generation = this.linkGeneration
+    return this.serial(() => this.useScene(id, generation))
+  }
   nextScene(): Promise<BrightnessLinkSnapshot> {
-    return this.serial(() => {
+    const generation = this.linkGeneration
+    return this.serial(async () => {
+      if (generation !== this.linkGeneration) return this.snapshot()
       if (!this.state.scenes.length) throw new Error("请先保存一个亮度场景")
       const index = this.state.scenes.findIndex(item => item.id === this.state.activeSceneId)
-      return this.useScene(this.state.scenes[(index + 1) % this.state.scenes.length]!.id)
+      return this.useScene(this.state.scenes[(index + 1) % this.state.scenes.length]!.id, generation)
     })
   }
   deleteScene(id: string): Promise<BrightnessLinkSnapshot> {

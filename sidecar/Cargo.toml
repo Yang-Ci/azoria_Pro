@@ -21,6 +21,7 @@ windows = { version = "0.62.2", features = ["Foundation", "Media", "Media_Contro
 
 [target.'cfg(target_os = "linux")'.dependencies]
 base64 = "0.22.1"
+ddc-i2c = "0.2.2"
 ddc-hi = { version = "0.4.1", default-features = false, features = ["ddc-i2c"] }
 
 [profile.release]

@@ -353,6 +353,7 @@ export interface DesktopApi {
   }
   brightnessLink: {
     snapshot(): Promise<BrightnessLinkSnapshot>
+    setEnabled(enabled: boolean): Promise<BrightnessLinkSnapshot>
     save(input: BrightnessLinkSettings): Promise<BrightnessLinkSnapshot>
     capture(displayIds: string[]): Promise<BrightnessBaseline[]>
     setOffset(offset: number): Promise<BrightnessLinkSnapshot>

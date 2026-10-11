@@ -14,6 +14,7 @@ version = "1.0.1"
 dependencies = [
  "base64",
  "ddc-hi",
+ "ddc-i2c",
  "hidapi",
  "serde",
  "serde_json",

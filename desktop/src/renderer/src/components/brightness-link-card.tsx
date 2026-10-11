@@ -26,6 +26,15 @@ export function BrightnessLinkCard({ displays, onMessage, onChanged }: { display
   useEffect(() => { setOffset(state?.offset ?? 0) }, [state?.offset])
   useEffect(() => { if (state && !dirty) setDraft({ enabled: state.enabled, displays: state.displays }) }, [state, dirty])
   const edit = (next: BrightnessLinkSettings) => { setDraft(next); setDirty(true) }
+  const toggle = async (enabled: boolean) => {
+    setBusy(true); setError(null)
+    try {
+      const value = await window.azoria.brightnessLink.setEnabled(enabled)
+      setState(value); onChanged()
+      onMessage(enabled ? "亮度联动已启用" : "亮度联动已关闭，亮度调节仅作用于当前显示器")
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "联动开关保存失败") }
+    finally { setBusy(false) }
+  }
   const run = async (operation: () => Promise<BrightnessLinkSnapshot>, message: string) => {
     setBusy(true); setError(null)
     try {
@@ -48,7 +57,8 @@ export function BrightnessLinkCard({ displays, onMessage, onChanged }: { display
   return <Card>
     <CardHeader><CardTitle className="flex items-center gap-2"><Link2 />多显示器亮度联动</CardTitle><CardDescription>每块屏幕保存独立基准，统一增减亮度时保持百分点差值。</CardDescription></CardHeader>
     <CardContent className="space-y-5">
-      <div className="flex items-center justify-between gap-4"><Label htmlFor="brightness-link-enabled">启用亮度联动</Label><Switch id="brightness-link-enabled" checked={draft.enabled} disabled={busy || !state} onCheckedChange={enabled => edit({ ...draft, enabled })} /></div>
+      <div className="flex items-center justify-between gap-4"><Label htmlFor="brightness-link-enabled">启用亮度联动</Label><Switch id="brightness-link-enabled" checked={state?.enabled ?? false} disabled={busy || !state} onCheckedChange={enabled => void toggle(enabled)} /></div>
+      <p className="text-xs text-muted-foreground">开关立即生效；参与屏幕和基准值需单独保存。首次启用请先保存基准设置。</p>
       <div className="space-y-2">{rows.map(display => {
         const selected = draft.displays.find(item => item.displayId === display.id)
         const result = state?.results.find(item => item.displayId === display.id)
@@ -60,7 +70,7 @@ export function BrightnessLinkCard({ displays, onMessage, onChanged }: { display
           {result?.error ? <p className="w-full text-xs text-red-400" role="status">{result.error}</p> : null}
         </div>
       })}{!rows.length ? <p className="text-sm text-muted-foreground">连接显示器后可保存基准值。</p> : null}</div>
-      <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy || !rows.length} onClick={() => void capture()}><RefreshCw />读取当前亮度为基准</Button><Button disabled={busy || !state || !dirty} onClick={() => void run(() => window.azoria.brightnessLink.save(draft), "联动基准已保存")}>保存基准设置</Button></div>
+      <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy || !rows.length} onClick={() => void capture()}><RefreshCw />读取当前亮度为基准</Button><Button disabled={busy || !state || !dirty} onClick={() => void run(() => window.azoria.brightnessLink.save({ ...draft, enabled: state?.enabled ?? false }), "联动基准已保存")}>保存基准设置</Button></div>
       {state?.enabled && <div className="space-y-3 rounded-lg border border-border p-4">
         <div className="flex items-center justify-between"><Label htmlFor="brightness-link-offset">统一亮度偏移</Label><span className="font-mono text-sm">{offset > 0 ? "+" : ""}{offset} 点</span></div>
         {state.minimumOffset < state.maximumOffset ? <Slider id="brightness-link-offset" aria-label="统一亮度偏移" min={state.minimumOffset} max={state.maximumOffset} step={1} value={[offset]} disabled={busy || dirty} onValueChange={values => setOffset(values[0] ?? 0)} onValueCommit={values => void run(() => window.azoria.brightnessLink.setOffset(values[0] ?? 0), "联动亮度已更新")} /> : <p className="text-xs text-muted-foreground">当前基准已覆盖 0–100% 范围。</p>}

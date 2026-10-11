@@ -46,11 +46,13 @@ enum Request {
     Get {
         transport: Transport,
         display: usize,
+        display_id: Option<String>,
         vcp: u8,
     },
     Set {
         transport: Transport,
         display: usize,
+        display_id: Option<String>,
         vcp: u8,
         value: u16,
     },
@@ -243,19 +245,9 @@ fn internal_set(display: usize, vcp: u8, value: u16) -> Result<Value, String> {
     Ok(json!({ "vcp": 0x10, "value": value, "acknowledged": true }))
 }
 
-#[cfg(target_os = "linux")]
-fn internal_get(display: usize, vcp: u8) -> Result<Value, String> {
-    linux_internal::get(display, vcp)
-}
-
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn internal_get(_display: usize, _vcp: u8) -> Result<Value, String> {
     Err("internal-panel brightness is only available on Windows and Linux".into())
-}
-
-#[cfg(target_os = "linux")]
-fn internal_set(display: usize, vcp: u8, value: u16) -> Result<Value, String> {
-    linux_internal::set(display, vcp, value)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
@@ -263,7 +255,29 @@ fn internal_set(_display: usize, _vcp: u8, _value: u16) -> Result<Value, String>
     Err("internal-panel brightness is only available on Windows and Linux".into())
 }
 
-fn native_display(display: usize) -> Result<Display, String> {
+fn native_display(display: usize, display_id: Option<&str>) -> Result<Display, String> {
+    #[cfg(target_os = "linux")]
+    if let Some(id) = display_id {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        for entry in std::fs::read_dir("/dev").map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            if !entry.file_name().to_string_lossy().starts_with("i2c-") {
+                continue;
+            }
+            let metadata = entry.metadata().map_err(|error| error.to_string())?;
+            if metadata.file_type().is_char_device() && metadata.rdev().to_string() == id {
+                let handle =
+                    ddc_i2c::from_i2c_device(entry.path()).map_err(|error| error.to_string())?;
+                return Ok(Display::new(
+                    ddc_hi::Handle::I2cDevice(handle),
+                    ddc_hi::DisplayInfo::new(ddc_hi::Backend::I2cDevice, id.into()),
+                ));
+            }
+        }
+        return Err(format!("display ID {id} was not found"));
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = display_id;
     if display == 0 {
         return Err("display indexes start at 1".into());
     }
@@ -273,8 +287,8 @@ fn native_display(display: usize) -> Result<Display, String> {
         .ok_or_else(|| format!("display {display} was not found"))
 }
 
-fn native_get(display: usize, vcp: u8) -> Result<Value, String> {
-    let mut display = native_display(display)?;
+fn native_get(display: usize, display_id: Option<&str>, vcp: u8) -> Result<Value, String> {
+    let mut display = native_display(display, display_id)?;
     let value = display
         .handle
         .get_vcp_feature(vcp)
@@ -288,8 +302,13 @@ fn native_get(display: usize, vcp: u8) -> Result<Value, String> {
     }))
 }
 
-fn native_set(display: usize, vcp: u8, value: u16) -> Result<Value, String> {
-    let mut display = native_display(display)?;
+fn native_set(
+    display: usize,
+    display_id: Option<&str>,
+    vcp: u8,
+    value: u16,
+) -> Result<Value, String> {
+    let mut display = native_display(display, display_id)?;
     display
         .handle
         .set_vcp_feature(vcp, value)
@@ -587,13 +606,25 @@ fn execute(request: Request) -> Result<Value, String> {
         Request::Get {
             transport: Transport::NativeDdc,
             display,
+            display_id,
             vcp,
-        } => native_get(display, vcp),
+        } => native_get(display, display_id.as_deref(), vcp),
         Request::Get {
             transport: Transport::InternalPanel,
             display,
+            display_id,
             vcp,
-        } => internal_get(display, vcp),
+        } => {
+            #[cfg(target_os = "linux")]
+            {
+                linux_internal::get(display, display_id.as_deref(), vcp)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = display_id;
+                internal_get(display, vcp)
+            }
+        }
         Request::Get {
             transport: Transport::LgHidDdc,
             vcp,
@@ -602,15 +633,27 @@ fn execute(request: Request) -> Result<Value, String> {
         Request::Set {
             transport: Transport::NativeDdc,
             display,
+            display_id,
             vcp,
             value,
-        } => native_set(display, vcp, value),
+        } => native_set(display, display_id.as_deref(), vcp, value),
         Request::Set {
             transport: Transport::InternalPanel,
             display,
+            display_id,
             value,
             vcp,
-        } => internal_set(display, vcp, value),
+        } => {
+            #[cfg(target_os = "linux")]
+            {
+                linux_internal::set(display, display_id.as_deref(), vcp, value)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = display_id;
+                internal_set(display, vcp, value)
+            }
+        }
         Request::Set {
             transport: Transport::LgHidDdc,
             vcp,
@@ -657,6 +700,19 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_stable_ids_preserve_legacy_requests() {
+        assert!(serde_json::from_str::<Request>(r#"{"operation":"get","transport":"native-ddc","display":1,"vcp":16}"#).is_ok());
+        assert!(serde_json::from_str::<Request>(r#"{"operation":"set","transport":"native-ddc","display":1,"display_id":"22799","vcp":16,"value":50}"#).is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unknown_stable_id_never_falls_back_to_another_display() {
+        assert!(native_display(1, Some("missing-display")).is_err());
+        assert!(linux_internal::get(1, Some("missing-display"), 0x10).is_err());
+    }
 
     #[test]
     fn parses_known_good_lg_reply() {

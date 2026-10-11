@@ -190,7 +190,29 @@ pub fn panels() -> Vec<InternalPanelInfo> {
         .collect()
 }
 
-fn panel_for_display(display: usize) -> Result<Panel, String> {
+fn panel_for_display(display: usize, display_id: Option<&str>) -> Result<Panel, String> {
+    if let Some(id) = display_id {
+        use std::os::unix::fs::MetadataExt;
+        // Stable IDs route directly through DRM/sysfs, without probing every
+        // I2C adapter merely to locate the laptop's backlight.
+        for panel in panels_for(&[]) {
+            let connector = panel
+                .connector
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            let panel_id = format!("internal-panel:{connector}:{}", panel.backlight.name);
+            let native_id = fs::canonicalize(panel.connector.join("ddc"))
+                .ok()
+                .and_then(|path| path.file_name().map(|name| Path::new("/dev").join(name)))
+                .and_then(|path| fs::metadata(path).ok())
+                .map(|metadata| metadata.rdev().to_string());
+            if id == panel_id || native_id.as_deref() == Some(id) {
+                return Ok(panel);
+            }
+        }
+        return Err(format!("internal panel ID {id} was not found"));
+    }
     let displays = Display::enumerate();
     let native_count = displays.len();
     let mut appended_count = 0;
@@ -219,16 +241,16 @@ pub fn probe() -> Result<Value, String> {
     }))
 }
 
-pub fn get(display: usize, vcp: u8) -> Result<Value, String> {
+pub fn get(display: usize, display_id: Option<&str>, vcp: u8) -> Result<Value, String> {
     match vcp {
         0x10 => {}
         0x62 | 0x8d => {
-            panel_for_display(display)?;
+            panel_for_display(display, display_id)?;
             return audio(vcp, None);
         }
         _ => return Err("internal-panel does not support this control".into()),
     }
-    let panel = panel_for_display(display)?;
+    let panel = panel_for_display(display, display_id)?;
     let current = panel.backlight.current * 100 / panel.backlight.maximum;
     Ok(json!({
         "driver": "sysfs-backlight",
@@ -240,11 +262,11 @@ pub fn get(display: usize, vcp: u8) -> Result<Value, String> {
     }))
 }
 
-pub fn set(display: usize, vcp: u8, value: u16) -> Result<Value, String> {
+pub fn set(display: usize, display_id: Option<&str>, vcp: u8, value: u16) -> Result<Value, String> {
     match vcp {
         0x10 => {}
         0x62 | 0x8d => {
-            panel_for_display(display)?;
+            panel_for_display(display, display_id)?;
             return audio(vcp, Some(value));
         }
         _ => return Err("internal-panel does not support this control".into()),
@@ -252,7 +274,7 @@ pub fn set(display: usize, vcp: u8, value: u16) -> Result<Value, String> {
     if value > 100 {
         return Err("internal-panel brightness must be 0-100".into());
     }
-    let panel = panel_for_display(display)?;
+    let panel = panel_for_display(display, display_id)?;
     let backlight = panel.backlight;
     let raw = u32::from(value) * backlight.maximum / 100;
     set_backlight(&backlight, raw)?;

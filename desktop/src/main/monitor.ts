@@ -157,6 +157,7 @@ export class MonitorController {
   private externalDisplayId?: string
   private lastExternalInput: InputSource = "usbc"
   private lastPreview?: { control: ControlName; value: ControlRequest["value"]; source: ControlSource; transport: MonitorTransport; at: number }
+  private readonly brightnessControllers = new Map<string, { ready: Promise<MonitorController>; expiresAt: number }>()
 
   constructor(
     private display = "1",
@@ -168,10 +169,31 @@ export class MonitorController {
   ) {}
 
   async forDisplay(displayId: string): Promise<MonitorController> {
-    const controller = new MonitorController(displayId, this.bundledProfiles, this.userProfiles, this.sidecarBinary, this.logger, true)
-    await controller.initialize()
-    if (controller.connectionSnapshot().displayId !== displayId) throw new Error("显示器已断开，请刷新显示器列表")
-    return controller
+    const cached = this.brightnessControllers.get(displayId)
+    if (cached && Date.now() < cached.expiresAt) return cached.ready
+    const ready = (async () => {
+      const controller = cached ? await cached.ready : new MonitorController(displayId, this.bundledProfiles, this.userProfiles, this.sidecarBinary, this.logger, true)
+      // Linux hardware requests validate stable IDs directly, so reuse the
+      // main controller's discovered topology instead of probing all buses
+      // again for each linked screen (including the first drag after idle).
+      if (process.platform === "linux" && this.displays.some(display => display.id === displayId) && this.profiles.length) {
+        controller.profiles = this.profiles
+        controller.profileSources = new Map(this.profileSources)
+        await controller.detect(true, this.displays)
+      } else if (cached) await controller.detect(true)
+      else await controller.initialize()
+      if (!controller.displays.some(display => display.id === displayId) || controller.activeDisplayId() !== displayId || !controller.candidates().length) {
+        throw new Error("显示器已断开或亮度控制不可用，请刷新显示器列表")
+      }
+      return controller
+    })()
+    const entry = { ready, expiresAt: Date.now() + 5000 }
+    this.brightnessControllers.set(displayId, entry)
+    try { return await ready }
+    catch (error) {
+      if (this.brightnessControllers.get(displayId) === entry) this.brightnessControllers.delete(displayId)
+      throw error
+    }
   }
 
   brightness(): Promise<number> {
@@ -186,6 +208,7 @@ export class MonitorController {
 
   acceptBrightness(displayId: string, brightness: number): void {
     if (this.activeDisplayId() !== displayId) return
+    this.lastPreview = undefined
     this.lastStatus.brightness = brightness
     this.trustedControls.add("brightness")
   }
@@ -197,6 +220,7 @@ export class MonitorController {
   }
 
   async initialize(): Promise<void> {
+    this.brightnessControllers.clear()
     await mkdir(this.userProfiles, { recursive: true, mode: 0o700 })
     const loaded = await Promise.all([
       this.loadDirectory(this.bundledProfiles, "built-in"),
@@ -234,7 +258,9 @@ export class MonitorController {
   }
 
   async listDisplays(): Promise<{ activeDisplayId: string; displays: MonitorDisplaySummary[] }> {
-    this.displays = await this.enumerateDisplays()
+    const displays = await this.enumerateDisplays()
+    if (JSON.stringify(displays) !== JSON.stringify(this.displays)) this.brightnessControllers.clear()
+    this.displays = displays
     return { activeDisplayId: this.activeDisplayId(), displays: this.displays }
   }
 
@@ -358,11 +384,11 @@ export class MonitorController {
   }
 
   private get(transport: "native-ddc" | "lg-hid-ddc" | "internal-panel", vcp: number): Promise<Record<string, unknown>> {
-    return this.sidecarValue({ operation: "get", transport, display: this.displayIndex(), vcp })
+    return this.sidecarValue({ operation: "get", transport, display: this.displayIndex(), ...(process.platform === "linux" ? { display_id: this.activeDisplayId() } : {}), vcp })
   }
 
   private set(transport: "native-ddc" | "lg-hid-ddc" | "internal-panel", vcp: number, value: number): Promise<Record<string, unknown>> {
-    return this.sidecarValue({ operation: "set", transport, display: this.displayIndex(), vcp, value })
+    return this.sidecarValue({ operation: "set", transport, display: this.displayIndex(), ...(process.platform === "linux" ? { display_id: this.activeDisplayId() } : {}), vcp, value })
   }
 
   private async detectDisplayName(): Promise<string> {
@@ -400,10 +426,14 @@ export class MonitorController {
     } catch { return false }
   }
 
-  private async detect(force = false): Promise<void> {
+  private async detect(force = false, knownDisplays?: MonitorDisplaySummary[]): Promise<void> {
     if (!force && this.profile && Date.now() - this.detectedAt < 5000) return
     this.detectedAt = Date.now()
-    const [name, hid] = await Promise.all([this.detectDisplayName(), this.targetedBrightnessOnly ? Promise.resolve(undefined) : this.probeHidDdc()])
+    if (knownDisplays) this.displays = knownDisplays
+    const [name, hid] = await Promise.all([
+      knownDisplays ? Promise.resolve(this.activeDisplay()?.name || "未检测到显示器") : this.detectDisplayName(),
+      this.targetedBrightnessOnly ? Promise.resolve(undefined) : this.probeHidDdc(),
+    ])
     const selected = this.displays.find((display) => display.id === this.display || display.index === Number.parseInt(this.display, 10))
     const selectedInternalPanel = selected?.transport === "internal-panel"
     if (selected && !selectedInternalPanel) this.externalDisplayId = selected.id
@@ -936,6 +966,10 @@ export class MonitorController {
   }
 
   control(request: ControlRequest, source: ControlSource = "internal"): Promise<MonitorStatus> {
+    if (request.control === "brightness") {
+      // A direct write makes any targeted controller's old preview stale.
+      void this.brightnessControllers.get(this.activeDisplayId())?.ready.then(controller => { controller.lastPreview = undefined }).catch(() => undefined)
+    }
     const sequence = ++this.requestSequence
     const displayGeneration = this.displayGeneration
     const queuedAt = Date.now()

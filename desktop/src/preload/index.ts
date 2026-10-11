@@ -15,6 +15,7 @@ const api: DesktopApi = {
   },
   brightnessLink: {
     snapshot: () => ipcRenderer.invoke("brightness-link:snapshot"),
+    setEnabled: (enabled) => ipcRenderer.invoke("brightness-link:set-enabled", enabled),
     save: (input) => ipcRenderer.invoke("brightness-link:save", input),
     capture: (ids) => ipcRenderer.invoke("brightness-link:capture", ids),
     setOffset: (offset) => ipcRenderer.invoke("brightness-link:set-offset", offset),

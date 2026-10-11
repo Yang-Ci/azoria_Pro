@@ -230,6 +230,7 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   ipcMain.handle("desktop:preferences", () => preferences!.snapshot())
   ipcMain.handle("desktop:update-preferences", (_event, input) => preferences!.update(input))
   ipcMain.handle("brightness-link:snapshot", () => brightnessLink.snapshot())
+  ipcMain.handle("brightness-link:set-enabled", (_event, enabled) => changedLink(() => brightnessLink.setEnabled(enabled)))
   ipcMain.handle("brightness-link:save", (_event, input) => changedLink(() => brightnessLink.save(input)))
   ipcMain.handle("brightness-link:capture", (_event, ids) => brightnessLink.capture(ids))
   ipcMain.handle("brightness-link:set-offset", (_event, offset) => changedLink(() => brightnessLink.setOffset(offset)))

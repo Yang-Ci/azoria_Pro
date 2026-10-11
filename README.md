@@ -49,6 +49,12 @@ unsupported or disconnected displays report errors independently. Desktop,
 Touch, and shortcut adjustments share these settings. Save actual brightness
 values as up to 16 scenes and select them from the UI, tray, or shortcuts.
 
+The linking switch saves immediately; save display selections and baselines
+before enabling it for the first time. Disabling limits adjustments to the
+selected display, and applying a scene does not turn linking back on. Display
+commands start in parallel, with response times determined by each interface.
+Touch sends brightness previews every 80 ms and verifies the final value on release.
+
 Computer Status samples CPU usage across all cores, used/total memory, and
 aggregate receive/send rates on active interfaces every two seconds, with
 one-minute trends. Tap **PC Status** on Touch to view the same metrics over

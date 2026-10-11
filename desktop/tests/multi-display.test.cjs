@@ -12,6 +12,8 @@ compiled._compile(transformSync(readFileSync(filename, 'utf8'), {
   loader: 'ts', format: 'cjs', target: 'node20',
 }).code, filename)
 const { MonitorController } = compiled.exports
+const { mkdtemp, writeFile, rm } = require('node:fs/promises')
+const { tmpdir } = require('node:os')
 
 const fallbackProfile = {
   id: 'generic-ddc',
@@ -223,4 +225,51 @@ test('Windows internal panels route brightness, system volume and mute with read
     () => monitor.control({ control: 'input', value: 'hdmi1', final: true }),
     /外接显示器控制不可用/,
   )
+})
+
+test('linked controllers reuse discovery and previews but refresh topology on expiry', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'azoria-linked-controllers-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await writeFile(path.join(directory, 'generic.json'), readFileSync(path.resolve(__dirname, '../profiles/generic-ddc.json')))
+  const original = MonitorController.prototype.sidecar
+  t.after(() => { MonitorController.prototype.sidecar = original })
+  let connected = true, index = 1, brightness = 50
+  const operations = []
+  MonitorController.prototype.sidecar = async request => {
+    operations.push(request)
+    if (request.operation === 'enumerate') return connected
+      ? Array.from({ length: index }, (_, position) => ({ display: position + 1, id: position + 1 === index ? 'stable-1' : 'other', model: 'test' }))
+      : [{ display: 1, id: 'other', model: 'test' }]
+    if (request.operation === 'get') return { current: brightness, maximum: 100 }
+    if (request.operation === 'set') { brightness = request.value; return {} }
+    throw new Error('Unexpected linked discovery')
+  }
+  const monitor = new MonitorController('stable-1', directory, directory)
+  const controller = await monitor.forDisplay('stable-1')
+  await controller.control({ control: 'brightness', value: 63, final: false }, 'touch')
+  const discoveries = operations.filter(item => item.operation === 'enumerate').length
+  const reads = operations.filter(item => item.operation === 'get').length
+  assert.equal(await monitor.forDisplay('stable-1'), controller)
+  await controller.control({ control: 'brightness', value: 63, final: true }, 'touch')
+  assert.equal(operations.filter(item => item.operation === 'enumerate').length, discoveries)
+  assert.equal(operations.filter(item => item.operation === 'get').length, reads + 1)
+  assert.equal(operations.filter(item => item.operation === 'set').length, 1)
+  monitor.profiles = controller.profiles
+  await monitor.detect(true)
+  await controller.control({ control: 'brightness', value: 64, final: false }, 'touch')
+  await monitor.control({ control: 'brightness', value: 80, final: true }, 'touch')
+  await controller.control({ control: 'brightness', value: 64, final: true }, 'touch')
+  assert.equal(brightness, 64)
+  assert.deepEqual(operations.filter(item => item.operation === 'set').slice(-3).map(item => item.value), [64, 80, 64])
+  index = 2
+  monitor.displays = await monitor.enumerateDisplays()
+  monitor.brightnessControllers.get('stable-1').expiresAt = 0
+  assert.equal(await monitor.forDisplay('stable-1'), controller)
+  await controller.control({ control: 'brightness', value: 65, final: true }, 'touch')
+  assert.equal(operations.filter(item => item.operation === 'set').at(-1).display, 2)
+  connected = false
+  monitor.displays = await monitor.enumerateDisplays()
+  monitor.brightnessControllers.get('stable-1').expiresAt = 0
+  await assert.rejects(monitor.forDisplay('stable-1'), /断开/)
+  assert.equal(monitor.brightnessControllers.has('stable-1'), false)
 })

@@ -113,6 +113,10 @@ constexpr uint16_t kDefaultWallpaperIdleMinutes = 5;
 // faster only keeps Wi-Fi/HTTP continuously busy; the local slider remains
 // immediate and release still queues the final value without delay.
 constexpr uint32_t kDragSendIntervalMs = 400;
+// Native DDC and Linux backlight control no longer enumerate all displays for
+// each write. Brightness can follow the finger at 12.5 Hz; Desktop coalesces
+// previews if a particular display's hardware route is slower.
+constexpr uint32_t kBrightnessDragSendIntervalMs = 80;
 constexpr uint32_t kPostInteractionRedrawDelayMs = 2000;
 constexpr int kBrightnessSegmentCount = 40;
 constexpr uint32_t kLightAccent = 0xE8C58A;
@@ -551,7 +555,7 @@ void brightnessChanged(lv_event_t *) {
   lv_label_set_text_fmt(brightness_value, "%d%%", value);
   updateBrightnessSegments(value);
   if (brightness_dragging &&
-      millis() - brightness_last_sent >= kDragSendIntervalMs) {
+      millis() - brightness_last_sent >= kBrightnessDragSendIntervalMs) {
     if (!queueNumericControl("brightness", value, false)) {
       setFooter("亮度失败");
     }
