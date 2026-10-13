@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+      - "V*"
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-latest
+            script: package:windows
+            artifact: release/*.exe
+          - platform: linux-x64
+            os: ubuntu-22.04
+            script: package:linux
+            artifact: release/*.deb
+          - platform: macos
+            os: macos-latest
+            script: package:macos
+            artifact: |
+              release/*.dmg
+              release/*.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: npm ci
+      - run: npm run ${{ matrix.script }}
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd release
+          shopt -s nullglob
+          files=(*.exe *.deb *.dmg *.zip)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No release artifacts found" >&2
+            exit 1
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${files[@]}" > "SHA256SUMS-${{ matrix.platform }}.txt"
+          else
+            shasum -a 256 "${files[@]}" > "SHA256SUMS-${{ matrix.platform }}.txt"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yangci-${{ matrix.platform }}
+          if-no-files-found: error
+          path: |
+            ${{ matrix.artifact }}
+            release/SHA256SUMS-${{ matrix.platform }}.txt
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY"; then
+            gh release upload "$tag" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" release-assets/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "YangCi $tag" \
+              --generate-notes
+          fi

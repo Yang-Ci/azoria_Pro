@@ -296,8 +296,8 @@ if ($LASTEXITCODE -ne 0) { throw '固件构建失败，停止安装和烧录' }
    只有 Electron、平台 / 架构及运行时依赖兼容时才能复用旧原生模块；依赖变化时重新制作完整包。
    `app.asar` 与 `app.asar.unpacked` 必须匹配，不能遗漏串口原生模块。
 3. 核对 Sidecar 的平台与文件名：Windows 为 `azoria-ddc-sidecar.exe`，Linux / macOS 为
-   `azoria-ddc-sidecar`。当前 `electron-builder.yml` 和 `npm run package:linux` 面向 Linux；
-   Windows 打包需明确配置目标及 `.exe` 资源，不能直接照搬 Linux 资源路径。
+   `azoria-ddc-sidecar`。本地使用 `npm run package:windows`、`npm run package:linux`
+   或 `npm run package:macos`；平台配置会分别打包对应文件名的 sidecar。
 4. 从托盘退出 YangCi，确认目标安装目录的进程及子进程已退出，再替换文件。
    关闭主窗口可能只是隐藏到托盘。文件仍被占用时只处理属于该安装目录的进程。
    使用暂存文件替换，核对安装后哈希；替换失败则恢复备份，避免留下半套资源。

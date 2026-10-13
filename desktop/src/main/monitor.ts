@@ -303,15 +303,20 @@ export class MonitorController {
   }
 
   private async command(binary: string, args: string[], timeout = 4000): Promise<string> {
-    const env: NodeJS.ProcessEnv = {
-      PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-    }
-    for (const name of ["DBUS_SESSION_BUS_ADDRESS", "DBUS_SYSTEM_BUS_ADDRESS", "XDG_RUNTIME_DIR"]) {
-      if (process.env[name]) env[name] = process.env[name]
+    const env: NodeJS.ProcessEnv = { ...process.env }
+    if (process.platform !== "win32") {
+      env.PATH = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        process.env.PATH,
+      ].filter(Boolean).join(path.delimiter)
     }
     const { stdout } = await run(binary, args, {
       timeout, maxBuffer: 128 * 1024,
       env,
+      windowsHide: true,
     })
     return stdout.trim()
   }

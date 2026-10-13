@@ -317,9 +317,9 @@ filename alone does not establish that an artifact contains the latest source.
    remain compatible; changed dependencies require a complete package rebuild.
    The archive and `app.asar.unpacked` must match, including serial-port modules.
 3. Check the sidecar's platform and filename: `azoria-ddc-sidecar.exe` on Windows,
-   `azoria-ddc-sidecar` on Linux / macOS. The current `electron-builder.yml` and
-   `npm run package:linux` target Linux. Windows packaging needs an explicit
-   target and `.exe` resource path; do not copy the Linux resource configuration.
+   `azoria-ddc-sidecar` on Linux / macOS. Use `npm run package:windows`,
+   `npm run package:linux`, or `npm run package:macos`; the platform
+   configuration packages the correctly named sidecar for each target.
 4. Exit YangCi from its tray and verify that processes belonging to this
    installation have exited before replacing files. Closing the window can
    simply hide it. If files remain locked, handle only processes belonging to

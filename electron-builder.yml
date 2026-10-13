@@ -16,11 +16,12 @@ asar: true
 asarUnpack:
   - node_modules/@serialport/bindings-cpp/**/*
 extraResources:
-  - from: sidecar/target/release/azoria-ddc-sidecar
-    to: sidecar/azoria-ddc-sidecar
   - from: desktop/assets/icon.png
     to: assets/icon.png
 linux:
+  extraResources:
+    - from: sidecar/target/release/azoria-ddc-sidecar
+      to: sidecar/azoria-ddc-sidecar
   syncDesktopName: true
   executableName: yangci-desktop
   synopsis: YangCi monitor and Touch control
@@ -37,6 +38,34 @@ linux:
       Comment[zh_CN]: 控制显示器与 AZORIA Touch
       StartupWMClass: yangci-desktop
       Keywords: AZORIA;Monitor;Brightness;DDC;显示器;亮度;
+win:
+  extraResources:
+    - from: sidecar/target/release/azoria-ddc-sidecar.exe
+      to: sidecar/azoria-ddc-sidecar.exe
+  executableName: yangci-desktop
+  icon: desktop/assets/icon.png
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: YangCi-${version}-windows-${arch}-setup.${ext}
+mac:
+  extraResources:
+    - from: sidecar/target/release/azoria-ddc-sidecar
+      to: sidecar/azoria-ddc-sidecar
+  icon: desktop/assets/icon.png
+  category: public.app-category.utilities
+  darkModeSupport: true
+  identity: null
+  target:
+    - dmg
+    - zip
+  artifactName: YangCi-${version}-macos-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
 afterPack: scripts/electron-after-pack.cjs
 artifactBuildCompleted: scripts/electron-artifact-completed.cjs
 deb:

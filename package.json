@@ -14,6 +14,8 @@
     "desktop:build": "npm run icons:build && electron-vite build",
     "icons:build": "node scripts/build-icons.cjs",
     "package:linux": "npm run typecheck && npm run build && electron-builder --linux deb --x64 --publish never",
+    "package:windows": "npm run typecheck && npm run build && electron-builder --win nsis --x64 --publish never",
+    "package:macos": "npm run typecheck && npm run build && electron-builder --mac dmg zip --publish never",
     "sidecar:build": "cargo build --manifest-path sidecar/Cargo.toml --release",
     "sidecar:test": "cargo test --manifest-path sidecar/Cargo.toml",
     "usage:test": "node scripts/test-usage.cjs",

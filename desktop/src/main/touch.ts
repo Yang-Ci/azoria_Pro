@@ -19,10 +19,22 @@ export class TouchManager {
 
   private tools(): { python: string; esptool: string } {
     const platformio = path.join(homedir(), ".platformio")
-    const python = path.join(platformio, "penv/bin/python")
+    const python = process.platform === "win32"
+      ? path.join(platformio, "penv", "Scripts", "python.exe")
+      : path.join(platformio, "penv", "bin", "python")
     const esptool = path.join(platformio, "packages/tool-esptoolpy/esptool.py")
     if (!existsSync(python) || !existsSync(esptool)) throw new Error("本地固件工具不可用")
     return { python, esptool }
+  }
+
+  private async runEsptool(
+    args: string[],
+    options: { timeout: number; maxBuffer: number },
+  ): Promise<{ stdout: string; stderr: string }> {
+    const { python, esptool } = this.tools()
+    const pythonArgs = process.platform === "win32" ? ["-X", "utf8", esptool, ...args] : [esptool, ...args]
+    const result = await run(python, pythonArgs, { ...options, windowsHide: true })
+    return { stdout: String(result.stdout), stderr: String(result.stderr) }
   }
 
   async listUsb(): Promise<UsbDevice[]> {
@@ -73,7 +85,7 @@ export class TouchManager {
     let stdout = ""
     let stderr = ""
     try {
-      const result = await run(python, [esptool, "--chip", "esp32s3", "--port", devicePath, "chip-id"], {
+      const result = await this.runEsptool(["--chip", "esp32s3", "--port", devicePath, "chip-id"], {
         timeout: 20000, maxBuffer: 256 * 1024,
       })
       stdout = result.stdout
@@ -86,8 +98,12 @@ export class TouchManager {
     const output = `${stdout}\n${stderr}`
     if (!output.includes("Connected to ESP32-S3")) throw new Error("USB 设备不是受支持的 ESP32-S3")
     const mac = output.match(/MAC:\s+([0-9a-f:]{17})/i)?.[1]?.toUpperCase()
-    const expected = (await this.listUsb()).find((device) => device.path === devicePath)?.serialNumber?.toUpperCase()
-    if (!mac || !expected || mac !== expected) throw new Error("芯片 MAC 与 USB 身份不一致，已阻止刷写")
+    const device = (await this.listUsb()).find((item) => item.path === devicePath)
+    const expected = device?.serialNumber?.toUpperCase()
+    const windowsInterfaceSerial = process.platform === "win32" && device?.verified
+    if (!mac || !expected || (expected !== mac && !windowsInterfaceSerial)) {
+      throw new Error("芯片 MAC 与 USB 身份不一致，已阻止刷写")
+    }
     return { chip: "ESP32-S3", mac }
   }
 
@@ -99,10 +115,9 @@ export class TouchManager {
     if (!file.includes(Buffer.from("AZORIA_TOUCH_V1")) || !file.includes(Buffer.from("AZORIA Touch"))) {
       throw new Error("不是 AZORIA Touch 固件")
     }
-    const { python, esptool } = this.tools()
     let output = ""
     try {
-      const result = await run(python, [esptool, "image-info", firmwarePath], {
+      const result = await this.runEsptool(["image-info", firmwarePath], {
         timeout: 15000, maxBuffer: 512 * 1024,
       })
       output = `${result.stdout}\n${result.stderr}`
@@ -181,10 +196,9 @@ export class TouchManager {
     if (!/^[0-9a-f]{64}$/.test(expectedSha256) || firmware.sha256 !== expectedSha256) {
       throw new Error("所选固件已发生变化")
     }
-    const { python, esptool } = this.tools()
     try {
-      await run(python, [
-        esptool, "--chip", "esp32s3", "--port", devicePath, "--baud", "460800",
+      await this.runEsptool([
+        "--chip", "esp32s3", "--port", devicePath, "--baud", "460800",
         "--before", "default-reset", "--after", "hard-reset", "write-flash",
         "--flash-mode", "keep", "--flash-freq", "keep", "--flash-size", "keep",
         "0x10000", firmwarePath,

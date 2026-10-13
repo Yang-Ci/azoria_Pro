@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 新增 Windows NSIS、Linux DEB、macOS DMG / ZIP 三平台打包脚本，并通过版本标签自动生成 GitHub Release 附件与 SHA256 清单；
+- 修复 Windows 下 sidecar 进程环境变量、PlatformIO Python 路径与 esptool UTF-8 调用兼容性；
 - Linux 主程序与子进程统一命名为 `yangci-desktop`，更新桌面启动入口并兼容原有 `azoria-desktop` 命令；
 - 固定 Electron 44.1.0，修复 Ubuntu / GNOME Wayland 下托盘图标无法注册的问题；托盘菜单新增“隐藏到托盘”，图标读取失败时记录诊断并保留窗口退出行为；
 - 修复亮度联动开关仅修改草稿的问题，开关立即保存并取消旧联动请求；应用亮度场景不再自动开启联动；
