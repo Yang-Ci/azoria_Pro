@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto"
 import path from "node:path"
+import { execFile } from "node:child_process"
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, Tray, type OpenDialogOptions } from "electron"
 import type { ControlRequest } from "../shared/contracts"
 import type { ApiProviderInput } from "../shared/usage"
@@ -26,6 +27,12 @@ let quitting = false
 let tray: Tray | undefined
 let preferences: DesktopPreferencesManager | undefined
 let windowReady = false
+
+function appIconPath(): string {
+  return isDevelopment
+    ? path.join(app.getAppPath(), "desktop/assets/icon.png")
+    : path.join(process.resourcesPath, "assets/icon.png")
+}
 
 function showWindow(): void {
   if (!windowReady) return
@@ -65,7 +72,7 @@ function createWindow(): BrowserWindow {
 
   const window = new BrowserWindow({
     show: !(process.argv.includes("--hidden") && tray),
-    icon: path.join(app.getAppPath(), "desktop/assets/icon.png"),
+   icon: appIconPath(),
     width: 1180,
     height: 780,
     minWidth: 880,
@@ -208,7 +215,8 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
     if (!tray) return
     const state = brightnessLink.snapshot()
     tray.setContextMenu(Menu.buildFromTemplate([
-      { label: "打开 YangCi", click: showWindow }, { type: "separator" },
+      { label: "打开 YangCi", click: showWindow },
+      { label: "隐藏到托盘", click: () => BrowserWindow.getAllWindows()[0]?.hide() }, { type: "separator" },
       { label: "亮度提高 5 点", click: () => { void reportAction(() => brightnessLink.adjust(5), "亮度已提高") } },
       { label: "亮度降低 5 点", click: () => { void reportAction(() => brightnessLink.adjust(-5), "亮度已降低") } },
       { label: "亮度场景", enabled: state.scenes.length > 0, submenu: state.scenes.map(scene => ({ label: scene.name, type: "radio" as const, checked: state.activeSceneId === scene.id, click: () => { void reportAction(() => brightnessLink.applyScene(scene.id), `已切换到 ${scene.name}`) } })) },
@@ -216,15 +224,19 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
     ]))
   }
   try {
-    const image = nativeImage.createFromPath(path.join(app.getAppPath(), "desktop/assets/icon.png"))
-    if (!image.isEmpty()) {
-      tray = new Tray(image.resize({ width: process.platform === "win32" ? 32 : 18, height: process.platform === "win32" ? 32 : 18 }))
-      tray.setToolTip("YangCi · 显示器与 Touch 控制")
-      tray.on("click", showWindow)
-      preferences.setTrayAvailable(true)
-      refreshTray()
-    }
-  } catch (error) { logger.error("desktop.tray_failed", { error: error instanceof Error ? error.message : "托盘创建失败" }) }
+   const image = nativeImage.createFromPath(appIconPath())
+    if (image.isEmpty()) throw new Error("托盘图标读取失败")
+    tray = new Tray(image.resize({ width: process.platform === "win32" ? 32 : 18, height: process.platform === "win32" ? 32 : 18 }))
+    tray.setToolTip("YangCi · 显示器与 Touch 控制")
+    tray.on("click", showWindow)
+    refreshTray()
+    preferences.setTrayAvailable(true)
+    logger.info("desktop.tray_ready", { electron: process.versions.electron })
+  } catch (error) {
+    tray?.destroy(); tray = undefined
+    preferences.setTrayAvailable(false)
+    logger.error("desktop.tray_failed", { error: error instanceof Error ? error.message : "托盘创建失败" })
+  }
   const changedLink = async (operation: () => Promise<unknown>) => { const value = await operation(); refreshTray(); return value }
   ipcMain.handle("computer:snapshot", () => computer.snapshot())
   ipcMain.handle("desktop:preferences", () => preferences!.snapshot())
@@ -317,6 +329,23 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   ipcMain.handle("music:snapshot", () => music.snapshot())
   ipcMain.handle("music:calibrate", (_event, positionMs: number) => music.calibrate(positionMs))
   ipcMain.handle("music:control", (_event, request) => music.control(request))
+
+  ipcMain.handle("power:mode", () => {
+    return new Promise<string>((resolve) => {
+      execFile("powerprofilesctl", ["get"], (error, stdout) => {
+        if (error) {
+          resolve("unknown")
+          return
+        }
+        const mode = stdout.trim()
+        if (mode === "performance" || mode === "balanced" || mode === "power-saver") {
+          resolve(mode)
+        } else {
+          resolve("unknown")
+        }
+      })
+    })
+  })
 
   windowReady = true
   createWindow()

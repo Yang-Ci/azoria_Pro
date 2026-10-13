@@ -22,7 +22,8 @@ def main():
         assert digest(ROOT / part['file']) == part['sha256'], 'Rebuild changed STL: ' + part['file']
     files = sorted(p for p in ROOT.rglob('*') if p.is_file()
                    and p.suffix in {'.md', '.scad', '.py', '.stl', '.png', '.json'}
-                   and '__pycache__' not in p.parts and p.name != 'manifest.json')
+                   and '__pycache__' not in p.parts and p.name != 'manifest.json'
+                   and 'multicolor' not in p.relative_to(ROOT).parts)
     manifest = {'package': PREFIX, 'revision': '2026-10-06',
                 'units': 'mm', 'physical_fit_verified': False,
                 'files': {p.relative_to(ROOT).as_posix(): digest(p) for p in files}}

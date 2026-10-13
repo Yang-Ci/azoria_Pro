@@ -1,4 +1,5 @@
 #include "platform/board.h"
+#include "platform/display_pixels.h"
 
 #include <Arduino.h>
 #include <driver/gpio.h>
@@ -22,7 +23,7 @@ esp_panel::drivers::LCD *lcd = nullptr;
 esp_panel::drivers::Backlight *backlight = nullptr;
 void *current_frame_buffer = nullptr;
 uint16_t rotation_degrees = 0;
-bool current_frame_buffer_is_rotated = false;
+uint16_t presented_rotation_degrees = 0;
 esp_panel::drivers::BusI2C *touch_bus = nullptr;
 esp_lcd_panel_io_handle_t touch_io = nullptr;
 
@@ -365,129 +366,36 @@ void setBacklight(uint8_t value) {
   backlight->setBrightness(percent);
 }
 
-void rotateFrameBufferInPlace(void *buffer, uint16_t degrees);
-
 bool setRotation(uint16_t degrees) {
   if (degrees != 0 && degrees != 90 && degrees != 180 && degrees != 270) {
     return false;
   }
-  if (degrees == rotation_degrees) return true;
-  if (current_frame_buffer_is_rotated && current_frame_buffer &&
-      rotation_degrees != 0) {
-    const uint16_t inverse = rotation_degrees == 90
-                                 ? 270
-                                 : rotation_degrees == 270 ? 90 : 180;
-    rotateFrameBufferInPlace(current_frame_buffer, inverse);
-    current_frame_buffer_is_rotated = false;
-  }
+  // The visible buffer remains in physical coordinates until the next flush.
+  // Never rotate a buffer while RGB DMA can still be reading it.
   rotation_degrees = degrees;
   return true;
 }
 
-uint16_t rotation() {
-  return rotation_degrees;
-}
+uint16_t rotation() { return rotation_degrees; }
 
-uint16_t currentFrameBufferRotation() {
-  return current_frame_buffer_is_rotated ? rotation_degrees : 0;
-}
-
-void rotateFrameBufferInPlace(void *buffer, uint16_t degrees) {
-  if (!buffer || degrees == 0) return;
-  auto *pixels = static_cast<uint16_t *>(buffer);
-  constexpr int kSide = 480;
-  if (degrees == 180) {
-    for (int index = 0; index < kSide * kSide / 2; ++index) {
-      const int other = kSide * kSide - 1 - index;
-      const uint16_t value = pixels[index];
-      pixels[index] = pixels[other];
-      pixels[other] = value;
-    }
-    return;
-  }
-  for (int y = 0; y < kSide; ++y) {
-    for (int x = y + 1; x < kSide; ++x) {
-      const int first = y * kSide + x;
-      const int second = x * kSide + y;
-      const uint16_t value = pixels[first];
-      pixels[first] = pixels[second];
-      pixels[second] = value;
-    }
-  }
-  if (degrees == 90) {
-    for (int y = 0; y < kSide; ++y) {
-      for (int x = 0; x < kSide / 2; ++x) {
-        const int first = y * kSide + x;
-        const int second = y * kSide + (kSide - 1 - x);
-        const uint16_t value = pixels[first];
-        pixels[first] = pixels[second];
-        pixels[second] = value;
-      }
-    }
-  } else {
-    for (int x = 0; x < kSide; ++x) {
-      for (int y = 0; y < kSide / 2; ++y) {
-        const int first = y * kSide + x;
-        const int second = (kSide - 1 - y) * kSide + x;
-        const uint16_t value = pixels[first];
-        pixels[first] = pixels[second];
-        pixels[second] = value;
-      }
-    }
-  }
-}
-
-void prepareFrameBufferForDisplay(void *buffer) {
-  rotateFrameBufferInPlace(buffer, rotation_degrees);
-}
-
-void restoreFrameBufferAfterDisplay(void *buffer) {
-  if (!current_frame_buffer_is_rotated || !buffer ||
-      buffer == current_frame_buffer || rotation_degrees == 0) {
-    return;
-  }
-  const uint16_t inverse = rotation_degrees == 90
-                               ? 270
-                               : rotation_degrees == 270 ? 90 : 180;
-  rotateFrameBufferInPlace(buffer, inverse);
-  current_frame_buffer_is_rotated = false;
-}
+uint16_t currentFrameBufferRotation() { return presented_rotation_degrees; }
 
 void commitFrameBufferForDisplay() {
-  current_frame_buffer_is_rotated = rotation_degrees != 0;
+  presented_rotation_degrees = rotation_degrees;
 }
 
-void copyRotatedArea(const void *source, void *destination,
-                     int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
-  if (!source || !destination) return;
-  x1 = constrain(x1, 0, 479);
-  y1 = constrain(y1, 0, 479);
-  x2 = constrain(x2, x1, 479);
-  y2 = constrain(y2, y1, 479);
-  const auto *from = static_cast<const uint16_t *>(source);
-  auto *to = static_cast<uint16_t *>(destination);
-  if (rotation_degrees == 0) {
-    const size_t row_bytes = static_cast<size_t>(x2 - x1 + 1) * sizeof(uint16_t);
-    for (int16_t y = y1; y <= y2; ++y) {
-      memcpy(to + static_cast<size_t>(y) * 480 + x1,
-             from + static_cast<size_t>(y) * 480 + x1, row_bytes);
-    }
-    return;
-  }
-  for (int16_t y = y1; y <= y2; ++y) {
-    const size_t source_row = static_cast<size_t>(y) * 480;
-    for (int16_t x = x1; x <= x2; ++x) {
-      size_t destination_index = 0;
-      if (rotation_degrees == 90) {
-        destination_index = static_cast<size_t>(x) * 480 + (479 - y);
-      } else if (rotation_degrees == 180) {
-        destination_index = static_cast<size_t>(479 - y) * 480 + (479 - x);
-      } else {
-        destination_index = static_cast<size_t>(479 - x) * 480 + y;
-      }
-      to[destination_index] = from[source_row + x];
-    }
-  }
+void copyDrawAreaToFrameBuffer(const void *source, void *destination,
+                              int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
+  DisplayPixels::writeArea(static_cast<const uint16_t *>(source),
+                           static_cast<uint16_t *>(destination), 480,
+                           {x1, y1, x2, y2}, rotation_degrees);
+}
+
+void syncFrameBufferArea(const void *source, void *destination,
+                        int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
+  DisplayPixels::syncArea(static_cast<const uint16_t *>(source),
+                          static_cast<uint16_t *>(destination), 480,
+                          {x1, y1, x2, y2}, rotation_degrees);
 }
 
 void *frameBuffer(uint8_t index) {

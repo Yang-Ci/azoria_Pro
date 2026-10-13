@@ -6,6 +6,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const executableNames = new Set([
+  "yangci-desktop",
   "azoria-desktop",
   "chrome-sandbox",
   "chrome_crashpad_handler",
@@ -100,6 +101,9 @@ exports.default = async function afterPack(context) {
     return;
   }
 
+  // Keep existing launchers working while the actual process uses YangCi's name.
+  await fsp.writeFile(path.join(context.appOutDir, "azoria-desktop"),
+    '#!/bin/sh\nexec "$(dirname -- "$0")/yangci-desktop" "$@"\n', { mode: 0o755 });
   await pruneSerialportPrebuilds(context.appOutDir);
   stripUnneededBinaries(context.appOutDir);
   await normalizePermissions(context.appOutDir);

@@ -46,7 +46,7 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "@vitejs/plugin-react": "^5.1.4",
-    "electron": "latest",
+    "electron": "44.1.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "latest",
     "tailwindcss": "latest",

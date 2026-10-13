@@ -47,11 +47,11 @@ void setBacklight(uint8_t value);
 bool setRotation(uint16_t degrees);
 uint16_t rotation();
 uint16_t currentFrameBufferRotation();
-void prepareFrameBufferForDisplay(void *buffer);
-void restoreFrameBufferAfterDisplay(void *buffer);
 void commitFrameBufferForDisplay();
-void copyRotatedArea(const void *source, void *destination,
-                     int16_t x1, int16_t y1, int16_t x2, int16_t y2);
+void copyDrawAreaToFrameBuffer(const void *source, void *destination,
+                             int16_t x1, int16_t y1, int16_t x2, int16_t y2);
+void syncFrameBufferArea(const void *source, void *destination,
+                        int16_t x1, int16_t y1, int16_t x2, int16_t y2);
 void *frameBuffer(uint8_t index);
 void *currentFrameBuffer();
 bool switchFrameBuffer(void *buffer);

@@ -92,6 +92,9 @@ const api: DesktopApi = {
   diagnostics: {
     report: () => ipcRenderer.invoke("diagnostics:report"),
   },
+  power: {
+    mode: () => ipcRenderer.invoke("power:mode"),
+  },
 }
 
 contextBridge.exposeInMainWorld("azoria", api)

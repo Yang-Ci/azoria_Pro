@@ -2,12 +2,18 @@
 set -e
 
 if command -v update-alternatives >/dev/null 2>&1; then
+  if [ -L /usr/bin/yangci-desktop ] && [ -e /usr/bin/yangci-desktop ] && \
+     [ "$(readlink /usr/bin/yangci-desktop)" != /etc/alternatives/yangci-desktop ]; then
+    rm -f /usr/bin/yangci-desktop
+  fi
+  update-alternatives --install /usr/bin/yangci-desktop yangci-desktop "/opt/YangCi/yangci-desktop" 100
   if [ -L /usr/bin/azoria-desktop ] && [ -e /usr/bin/azoria-desktop ] && \
      [ "$(readlink /usr/bin/azoria-desktop)" != /etc/alternatives/azoria-desktop ]; then
     rm -f /usr/bin/azoria-desktop
   fi
   update-alternatives --install /usr/bin/azoria-desktop azoria-desktop "/opt/YangCi/azoria-desktop" 100
 else
+  ln -sf "/opt/YangCi/yangci-desktop" /usr/bin/yangci-desktop
   ln -sf "/opt/YangCi/azoria-desktop" /usr/bin/azoria-desktop
 fi
 

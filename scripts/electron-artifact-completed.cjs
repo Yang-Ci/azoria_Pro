@@ -8,6 +8,7 @@ const { spawnSync } = require("node:child_process");
 const zlib = require("node:zlib");
 
 const executableNames = new Set([
+  "yangci-desktop",
   "azoria-desktop",
   "chrome-sandbox",
   "chrome_crashpad_handler",

@@ -1,16 +1,18 @@
 import { useEffect, useState, type CSSProperties } from "react"
 import { RotateCcw } from "lucide-react"
-import { defaultWallpaperCrop, wallpaperCropRect, wallpaperKind, type WallpaperCrop } from "../wallpaper-format"
+import { defaultWallpaperCrop, wallpaperCropRect, wallpaperKind, type WallpaperCrop, type WallpaperVideoMode } from "../wallpaper-format"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Slider } from "@/components/ui/slider"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 export function WallpaperCropDialog({ file, processing, progress, saveError, onClose, onSave }: {
-  file: File; processing: boolean; progress: number; saveError: string | null; onClose(): void; onSave(crop: WallpaperCrop): void
+  file: File; processing: boolean; progress: number; saveError: string | null; onClose(): void; onSave(crop: WallpaperCrop, mode: WallpaperVideoMode): void
 }) {
   const [url, setUrl] = useState("")
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null)
   const [crop, setCrop] = useState<WallpaperCrop>(defaultWallpaperCrop)
+  const [videoMode, setVideoMode] = useState<WallpaperVideoMode>("smooth")
   const [error, setError] = useState<string | null>(null)
   const kind = wallpaperKind(file)
   useEffect(() => {
@@ -48,6 +50,17 @@ export function WallpaperCropDialog({ file, processing, progress, saveError, onC
           <p className="mt-2 text-center text-xs text-muted-foreground">480 × 480{kind === "video" ? " · 动态壁纸保留前 10 秒以内片段" : ""}</p>
         </div>
         <fieldset disabled={processing || !dimensions || !!error} className="space-y-5">
+          {kind === "video" ? <div className="space-y-2">
+            <label className="text-sm" htmlFor="wallpaper-video-mode">动态壁纸模式</label>
+            <Select value={videoMode} disabled={processing || !dimensions || !!error} onValueChange={value => setVideoMode(value as WallpaperVideoMode)}>
+              <SelectTrigger id="wallpaper-video-mode"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="smooth">流畅优先 · 目标 10 帧/秒</SelectItem>
+                <SelectItem value="detail">画质优先 · 目标 5 帧/秒</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs leading-5 text-muted-foreground">{videoMode === "smooth" ? "以 320 × 320 编码并铺满屏幕，画面更柔和。" : "保留 480 × 480 的细节，帧间隔更长。"}预览播放原视频；Touch 的实际帧率取决于设备处理速度。</p>
+          </div> : null}
           <div className="space-y-3"><label className="flex justify-between text-sm" htmlFor="wallpaper-crop-zoom">缩放<span className="font-mono text-muted-foreground">{crop.zoom.toFixed(2)}×</span></label><Slider disabled={processing || !dimensions || !!error} id="wallpaper-crop-zoom" aria-label="壁纸缩放" min={100} max={300} step={1} value={[Math.round(crop.zoom * 100)]} onValueChange={([value]) => setCrop(current => ({ ...current, zoom: value! / 100 }))} /></div>
           <div className="space-y-3"><label className="text-sm" htmlFor="wallpaper-crop-x">水平位置</label><Slider disabled={processing || !dimensions || !!error} id="wallpaper-crop-x" aria-label="壁纸水平位置" min={0} max={100} value={[Math.round(crop.x * 100)]} onValueChange={([value]) => setCrop(current => ({ ...current, x: value! / 100 }))} /></div>
           <div className="space-y-3"><label className="text-sm" htmlFor="wallpaper-crop-y">垂直位置</label><Slider disabled={processing || !dimensions || !!error} id="wallpaper-crop-y" aria-label="壁纸垂直位置" min={0} max={100} value={[Math.round(crop.y * 100)]} onValueChange={([value]) => setCrop(current => ({ ...current, y: value! / 100 }))} /></div>
@@ -60,7 +73,7 @@ export function WallpaperCropDialog({ file, processing, progress, saveError, onC
       {processing ? <p role="status" className="text-sm text-muted-foreground">正在生成壁纸… {progress}%</p> : null}
       <DialogFooter>
         <Button variant="outline" disabled={processing} onClick={onClose}>取消</Button>
-        <Button disabled={processing || !dimensions || !!error} onClick={() => onSave(crop)}>{processing ? "正在保存…" : "保存并显示"}</Button>
+        <Button disabled={processing || !dimensions || !!error} onClick={() => onSave(crop, videoMode)}>{processing ? "正在保存…" : "保存并显示"}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>

@@ -1,0 +1,228 @@
+{
+  "revision": "2026-10-11",
+  "units": "mm",
+  "parts": [
+    {
+      "file": "multicolor/base-black.stl",
+      "triangles": 10752,
+      "bounds_mm": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          236.0,
+          120.0,
+          43.599998474121094
+        ]
+      ],
+      "size_mm": [
+        236.0,
+        120.0,
+        43.6
+      ],
+      "volume_mm3": 190679.651,
+      "components": 1,
+      "expected_components": 1,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "f9722e1d0ef86df0a4e972c469e22a41dc64a60b00dd05f88c75cca506718ced",
+      "passed": true
+    },
+    {
+      "file": "multicolor/base-white-text.stl",
+      "triangles": 6436,
+      "bounds_mm": [
+        [
+          92.17353820800781,
+          0.0,
+          11.896682739257812
+        ],
+        [
+          172.65528869628906,
+          0.7999992370605469,
+          34.163055419921875
+        ]
+      ],
+      "size_mm": [
+        80.482,
+        0.8,
+        22.266
+      ],
+      "volume_mm3": 86.107,
+      "components": 14,
+      "expected_components": 14,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "02f9ca6470618736398a237eba16fe9fc05e6b1adb4737a7d3b76427eee168e8",
+      "passed": true
+    },
+    {
+      "file": "multicolor/coupon-black.stl",
+      "triangles": 6488,
+      "bounds_mm": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          85.0,
+          2.799999237060547,
+          28.0
+        ]
+      ],
+      "size_mm": [
+        85.0,
+        2.8,
+        28.0
+      ],
+      "volume_mm3": 6577.891,
+      "components": 1,
+      "expected_components": 1,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "0eda8c8148c316c622a996278b7b13353cb6ca6cb1420b1435613c35679e7e64",
+      "passed": true,
+      "retriangulation": {
+        "removed_zero_area_triangles": 2,
+        "identical_vertex_set": true,
+        "volume_preserved": true
+      }
+    },
+    {
+      "file": "multicolor/coupon-white.stl",
+      "triangles": 6436,
+      "bounds_mm": [
+        [
+          2.1735382080078125,
+          0.0,
+          2.8966827392578125
+        ],
+        [
+          82.65528869628906,
+          0.800000011920929,
+          25.163055419921875
+        ]
+      ],
+      "size_mm": [
+        80.482,
+        0.8,
+        22.266
+      ],
+      "volume_mm3": 86.107,
+      "components": 14,
+      "expected_components": 14,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "46f5b2d31fdab2546598b1d2e56d4db9dbef62fe09ec50b7de04170b440a01a7",
+      "passed": true
+    }
+  ],
+  "partition_checks": [
+    {
+      "check": "overlap",
+      "passed": true
+    },
+    {
+      "check": "missing",
+      "passed": true
+    },
+    {
+      "check": "outside",
+      "passed": true
+    },
+    {
+      "check": "coupon_missing",
+      "passed": true
+    },
+    {
+      "check": "coupon_outside",
+      "passed": true
+    },
+    {
+      "check": "base-black_actual_stl_overlap",
+      "method": "Manifold solid intersection",
+      "overlap_volume_mm3": 0.0,
+      "float32_volume_tolerance_mm3": 0.001,
+      "passed": true
+    },
+    {
+      "check": "coupon-black_actual_stl_overlap",
+      "method": "Manifold solid intersection",
+      "overlap_volume_mm3": 4.5365596783617665e-05,
+      "float32_volume_tolerance_mm3": 0.001,
+      "passed": true
+    }
+  ],
+  "models_3mf": [
+    {
+      "file": "base-black-white-X2D.3mf",
+      "part_count": 2,
+      "rotated_90_degrees": true,
+      "positioned_bounds_mm": [
+        [
+          68.0,
+          10.0,
+          0.0
+        ],
+        [
+          188.0,
+          246.0,
+          43.599998474121094
+        ]
+      ],
+      "passed": true,
+      "sha256": "c708450830230162da21129811deaa662002d44818fd17086f2d6743fa366f58"
+    },
+    {
+      "file": "lettering-test.3mf",
+      "part_count": 2,
+      "rotated_90_degrees": false,
+      "positioned_bounds_mm": [
+        [
+          20.0,
+          20.0,
+          0.0
+        ],
+        [
+          105.0,
+          22.799999237060547,
+          28.0
+        ]
+      ],
+      "passed": true,
+      "sha256": "65a39a85cbbdf963f05e3d110f35f743384037236f8fbfecd5628b9cf5e798dd"
+    }
+  ],
+  "reused_validated_parts": [
+    "common/rear-panel.stl",
+    "common/ac-cable-cover.stl",
+    "common/reel-retainer.stl",
+    "common/screen-rear-v3.stl",
+    "adjustable/top-hinge.stl",
+    "adjustable/screen-carrier.stl",
+    "fit-first/charger-gauge.stl",
+    "fit-first/reel-gauge.stl",
+    "fit-first/hinge-gauge.stl",
+    "fit-first/screen-fit-v3.stl"
+  ],
+  "source_hashes": {
+    "multicolor/black-white.scad": "ede0f8ca3ea6426f3125383eca499e585f4e233d05a30faabc52a7de09b91bff",
+    "multicolor/build_black_white.py": "eb308eafce94cd783f026aa27af47ecb7c5abdb05ff5cb0bb5c1a23e6a517a6b",
+    "workstation.scad": "8b5cd6ec955de8bf6457ecce3a47010b25cd4a5d04bc854767ca78a121b6aa1c",
+    "azoria-touch-v3-source.scad": "610b29fd3669748ab11d35a565c681a70e688892b2db7f1eb569e673bc8fc342"
+  },
+  "slicer_verified": false,
+  "physical_print_verified": false,
+  "passed": true
+}

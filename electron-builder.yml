@@ -18,9 +18,11 @@ asarUnpack:
 extraResources:
   - from: sidecar/target/release/azoria-ddc-sidecar
     to: sidecar/azoria-ddc-sidecar
+  - from: desktop/assets/icon.png
+    to: assets/icon.png
 linux:
   syncDesktopName: true
-  executableName: azoria-desktop
+  executableName: yangci-desktop
   synopsis: YangCi monitor and Touch control
   icon: desktop/assets/icons
   category: Utility
@@ -33,7 +35,7 @@ linux:
       Name: YangCi
       Comment: Control your monitor and AZORIA Touch
       Comment[zh_CN]: 控制显示器与 AZORIA Touch
-      StartupWMClass: azoria-desktop
+      StartupWMClass: yangci-desktop
       Keywords: AZORIA;Monitor;Brightness;DDC;显示器;亮度;
 afterPack: scripts/electron-after-pack.cjs
 artifactBuildCompleted: scripts/electron-artifact-completed.cjs

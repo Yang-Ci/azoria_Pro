@@ -2,14 +2,15 @@ import type { WallpaperKind, WallpaperUpload } from "../../shared/contracts"
 
 const displayWidth = 480
 const displayHeight = 480
-const animationWidth = 480
-const animationHeight = 480
 const headerSize = 20
 const flashPackageSize = 3 * 1024 * 1024 - 64 * 1024
 const tfPackageSize = 24 * 1024 * 1024 - 64 * 1024
 const maxVideoDurationSeconds = 10
-const targetFrameCount = 25
-const minimumVideoFrameDelayMs = 400
+export type WallpaperVideoMode = "smooth" | "detail"
+const videoModes = {
+  smooth: { side: 320, frameCount: 100, frameDelayMs: 100 },
+  detail: { side: 480, frameCount: 50, frameDelayMs: 200 },
+} as const
 const videoExtensions = new Set(["mp4", "mov", "m4v", "webm", "avi", "mkv"])
 const imageExtensions = new Set(["jpg", "jpeg", "png", "webp", "gif", "bmp"])
 
@@ -66,7 +67,7 @@ function buildPackage(frames: Uint8Array[], frameDelayMs: number, sourceWidth: n
   const payloadSize = frames.reduce((total, frame) => total + 4 + frame.byteLength, 0)
   const output = new Uint8Array(headerSize + payloadSize)
   output.set(frameDelayMs > 0
-    ? [0x41, 0x5a, 0x57, 0x34]
+    ? [0x41, 0x5a, 0x57, sourceWidth === 320 ? 0x33 : 0x34]
     : [0x41, 0x5a, 0x57, 0x31])
   const view = new DataView(output.buffer)
   view.setUint16(4, sourceWidth, true)
@@ -101,7 +102,7 @@ async function seek(video: HTMLVideoElement, seconds: number): Promise<void> {
   await ready
 }
 
-async function encodeVideo(file: File, canvas: HTMLCanvasElement, context: CanvasRenderingContext2D, packageLimit: number, crop: WallpaperCrop, onProgress?: (percent: number) => void): Promise<{ frames: Uint8Array[]; delay: number }> {
+async function encodeVideo(file: File, canvas: HTMLCanvasElement, context: CanvasRenderingContext2D, packageLimit: number, crop: WallpaperCrop, mode: WallpaperVideoMode, onProgress?: (percent: number) => void): Promise<{ frames: Uint8Array[]; delay: number }> {
   const url = URL.createObjectURL(file)
   const video = document.createElement("video")
   video.muted = true
@@ -114,21 +115,26 @@ async function encodeVideo(file: File, canvas: HTMLCanvasElement, context: Canva
       throw new Error("视频时长或尺寸无效")
     }
     const duration = Math.min(video.duration, maxVideoDurationSeconds)
-    const delay = Math.max(minimumVideoFrameDelayMs, Math.ceil((duration * 1000) / targetFrameCount))
-    const frameCount = Math.min(targetFrameCount, Math.max(2, Math.round((duration * 1000) / delay)))
+    const profile = videoModes[mode]
+    const frameCount = Math.min(profile.frameCount, Math.max(2, Math.ceil((duration * 1000) / profile.frameDelayMs)))
+    const delay = Math.max(100, Math.round((duration * 1000) / frameCount))
     const frames: Uint8Array[] = []
-    let packageSize = headerSize
+    // Reserve room for every frame: reaching the limit must not silently
+    // shorten the clip or introduce an abrupt loop partway through the video.
+    const frameBudget = Math.min(600_000, Math.floor((packageLimit - headerSize) / frameCount) - 4)
     for (let index = 0; index < frameCount; index += 1) {
       const time = (index * delay) / 1000
       await seek(video, Math.min(time, Math.max(0, video.duration - 0.02)))
       drawCover(context, video, video.videoWidth, video.videoHeight, crop)
-      const frame = await canvasJpeg(canvas, 0.78)
-      if (packageSize + 4 + frame.byteLength > packageLimit) break
+      let frame = await canvasJpeg(canvas, 0.78)
+      for (const quality of [0.66, 0.54, 0.42]) {
+        if (frame.byteLength <= frameBudget) break
+        frame = await canvasJpeg(canvas, quality)
+      }
+      if (frame.byteLength > frameBudget) throw new Error("视频压缩后仍超过 Touch 存储限制，请选择更短或画面更简单的视频")
       frames.push(frame)
-      packageSize += 4 + frame.byteLength
       onProgress?.(Math.round((index + 1) / frameCount * 100))
     }
-    if (frames.length < 2) throw new Error("视频压缩后仍超过 Touch 存储限制，请选择更短或画面更简单的视频")
     return { frames, delay }
   } finally {
     video.removeAttribute("src")
@@ -137,13 +143,14 @@ async function encodeVideo(file: File, canvas: HTMLCanvasElement, context: Canva
   }
 }
 
-export async function createWallpaperUpload(file: File, packageLimit = flashPackageSize, crop = defaultWallpaperCrop, onProgress?: (percent: number) => void): Promise<WallpaperUpload> {
+export async function createWallpaperUpload(file: File, packageLimit = flashPackageSize, crop = defaultWallpaperCrop, onProgress?: (percent: number) => void, videoMode: WallpaperVideoMode = "smooth"): Promise<WallpaperUpload> {
   if (!Number.isFinite(packageLimit) || packageLimit < 1024) throw new Error("Touch 存储空间不足")
   const safePackageLimit = Math.min(tfPackageSize, Math.floor(packageLimit))
   const kind = wallpaperKind(file)
+  if (!Object.hasOwn(videoModes, videoMode)) throw new Error("动态壁纸模式无效")
   const canvas = document.createElement("canvas")
-  canvas.width = kind === "video" ? animationWidth : displayWidth
-  canvas.height = kind === "video" ? animationHeight : displayHeight
+  canvas.width = kind === "video" ? videoModes[videoMode].side : displayWidth
+  canvas.height = kind === "video" ? videoModes[videoMode].side : displayHeight
   const context = canvas.getContext("2d", { alpha: false })
   if (!context) throw new Error("当前系统无法处理壁纸")
   if (kind === "image") {
@@ -153,7 +160,7 @@ export async function createWallpaperUpload(file: File, packageLimit = flashPack
     onProgress?.(100)
     return { name: file.name, kind, data }
   }
-  const { frames, delay } = await encodeVideo(file, canvas, context, safePackageLimit, crop, onProgress)
+  const { frames, delay } = await encodeVideo(file, canvas, context, safePackageLimit, crop, videoMode, onProgress)
   onProgress?.(100)
-  return { name: file.name, kind, data: buildPackage(frames, delay, animationWidth, animationHeight) }
+  return { name: file.name, kind, data: buildPackage(frames, delay, canvas.width, canvas.height) }
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { ArrowDown, ArrowUp, Clock3, Film, Image as ImageIcon, ListVideo, Plus, RefreshCw, SkipForward, Trash2, Upload } from "lucide-react"
 import type { LanDevice, WallpaperIdleMinutes, WallpaperLibraryItem, WallpaperLibrarySnapshot, WallpaperPlaybackSettings } from "../../../shared/contracts"
-import { createWallpaperUpload, wallpaperKind, type WallpaperCrop } from "../wallpaper-format"
+import { createWallpaperUpload, wallpaperKind, type WallpaperCrop, type WallpaperVideoMode } from "../wallpaper-format"
 import { WallpaperCropDialog } from "./wallpaper-crop-dialog"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
@@ -82,13 +82,13 @@ export function WallpaperCard({ devices, onMessage }: { devices: LanDevice[]; on
     playlist[index] = playlist[target]!; playlist[target] = item
     return { ...current, playlist }
   })
-  const upload = async (crop: WallpaperCrop) => {
+  const upload = async (crop: WallpaperCrop, videoMode: WallpaperVideoMode) => {
     if (!file) return
     setProcessing(true); setBusy(true); setProgress(0); setError(null)
     try {
       const limits = devices.map(device => device.wallpaperLimit).filter((limit): limit is number => typeof limit === "number" && Number.isInteger(limit) && limit > 0)
       const packageLimit = limits.length === devices.length && limits.length > 0 ? Math.min(...limits) - 64 * 1024 : 3 * 1024 * 1024 - 64 * 1024
-      const input = await createWallpaperUpload(file, packageLimit, crop, setProgress)
+      const input = await createWallpaperUpload(file, packageLimit, crop, setProgress, videoMode)
       await window.azoria.wallpaper.upload(input)
       await refresh(); setFile(null)
       onMessage(devices.length ? "壁纸已加入壁纸库，Touch 正在自动同步" : "壁纸已加入壁纸库，Touch 联机后会自动同步")
@@ -166,12 +166,12 @@ export function WallpaperCard({ devices, onMessage }: { devices: LanDevice[]; on
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4"><div className="text-xs text-muted-foreground">{library?.nextSwitchAt ? `下次切换 ${new Date(library.nextSwitchAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}` : "自动轮播未开启"}{dirty.current ? " · 显示的是已保存的计划" : ""}</div><div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" disabled={busy || dirty.current || (library?.playback.playlist.length ?? 0) < 2} onClick={() => void run(() => window.azoria.wallpaper.next(), "已切换到播放列表中的下一张壁纸")}><SkipForward className="size-4" />下一张</Button><Button variant="ghost" size="sm" disabled={busy || !dirty.current} onClick={discardPlayback}>撤销修改</Button><Button size="sm" disabled={busy || !dirty.current} onClick={() => void savePlayback()}>保存播放设置</Button></div></div>
       </fieldset> : null}
       <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground"><span>{items.length}/100 张{devices.length ? ` · ${tfCount ? "TF 卡已就绪" : "板载存储或等待设备上报"}` : ""}</span>{current ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void run(() => window.azoria.wallpaper.remove(), "已停止显示壁纸并暂停播放计划，壁纸库仍保留")}>停止显示</Button> : null}</div>
-      <p className="text-xs leading-5 text-muted-foreground">轮播和定时切换需要 YangCi 运行，Touch 与电脑连接同一局域网；小屏离线时保留最后同步的壁纸。动态壁纸最长 10 秒、目标 25 帧，TF 卡最大 24 MB，板载存储最大 3 MB。</p>
+      <p className="text-xs leading-5 text-muted-foreground">轮播和定时切换需要 YangCi 运行，Touch 与电脑连接同一局域网；小屏离线时保留最后同步的壁纸。动态壁纸最长 10 秒：流畅优先目标 10 帧/秒，画质优先目标 5 帧/秒。TF 卡最大 24 MB，板载存储最大 3 MB。已有视频需重新导入才能提高帧率。</p>
       <input ref={inputRef} type="file" accept="image/*,video/*" className="sr-only" aria-label="选择图片或视频壁纸" onChange={event => {
         const selected = event.target.files?.[0]; event.target.value = ""
         if (selected) { try { wallpaperKind(selected); setError(null); setFile(selected) } catch (error) { setError(errorMessage(error)) } }
       }} />
-      {file ? <WallpaperCropDialog key={`${file.name}-${file.lastModified}`} file={file} processing={processing} progress={progress} saveError={error} onClose={() => setFile(null)} onSave={crop => void upload(crop)} /> : null}
+      {file ? <WallpaperCropDialog key={`${file.name}-${file.lastModified}`} file={file} processing={processing} progress={progress} saveError={error} onClose={() => setFile(null)} onSave={(crop, mode) => void upload(crop, mode)} /> : null}
       <AlertDialog open={!!deleteTarget} onOpenChange={open => { if (!open) setDeleteTarget(null) }}>
         <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>删除这张壁纸？</AlertDialogTitle><AlertDialogDescription>{deleteTarget?.name} 将从壁纸库、播放列表和定时规则中移除。当前壁纸被删除时会切换到下一张。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction onClick={() => { if (deleteTarget) void removeItem(deleteTarget) }}>删除壁纸</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>

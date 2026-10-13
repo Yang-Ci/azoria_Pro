@@ -1,4 +1,6 @@
 #include "features/wallpaper/wallpaper.h"
+#include "features/wallpaper/playback_clock.h"
+#include "features/wallpaper/jpeg_pixels.h"
 
 #include <HTTPClient.h>
 #include <LittleFS.h>
@@ -14,7 +16,7 @@
 #include <atomic>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
-#include <jpeg_decoder.h>
+#include <esp32s3/rom/tjpgd.h>
 #include <mbedtls/sha256.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -63,6 +65,13 @@ lv_img_dsc_t descriptor{};
 uint8_t *pixels = nullptr;
 uint8_t *compressed = nullptr;
 size_t compressed_capacity = 0;
+size_t compressed_size = 0;
+uint16_t cached_frame_index = UINT16_MAX;
+uint32_t frame_offsets[120]{};
+// Keep IDCT/Huffman scratch data in internal RAM, and reuse it across frames.
+// 4096 bytes exceeds the ROM decoder's 3100-byte minimum working pool.
+alignas(4) uint8_t jpeg_workspace[4096];
+uint16_t animation_row[480];
 String installed_hash;
 std::atomic<uint32_t> asset_revision{0};
 std::atomic<bool> sync_in_progress{false};
@@ -76,8 +85,10 @@ uint16_t animation_source_width = kWidth;
 uint32_t playback_decode_total_ms = 0;
 uint32_t playback_decode_max_ms = 0;
 uint16_t playback_decode_samples = 0;
+uint32_t playback_skipped_frames = 0;
 uint32_t last_recovery_log = 0;
 bool is_active = false;
+bool playback_needs_reload = false;
 bool filesystem_ready = false;
 bool using_sd = false;
 volatile bool sd_command_trace = false;
@@ -202,21 +213,21 @@ void upscaleAnimationFrame(uint8_t *buffer, uint16_t source_width,
   uint16_t expanded_row[kWidth];
   // Expand backwards so the decoder output and 480x480 display image
   // can safely share one PSRAM buffer. Build each row in internal memory and
-  // copy it to PSRAM in two contiguous writes; individual PSRAM pixel writes
+  // copy it to PSRAM in one contiguous write; individual PSRAM pixel writes
   // are substantially slower on this board.
   for (int destination_y = kHeight - 1; destination_y >= 0; --destination_y) {
     const uint16_t source_y = static_cast<uint16_t>(
         static_cast<uint32_t>(destination_y) * source_height / kHeight);
     const size_t source_row = static_cast<size_t>(source_y) * source_width;
+    memcpy(animation_row, colors + source_row, source_width * sizeof(uint16_t));
     for (uint16_t destination_x = 0; destination_x < kWidth;
          ++destination_x) {
       const uint16_t source_x = static_cast<uint16_t>(
           static_cast<uint32_t>(destination_x) * source_width / kWidth);
-      expanded_row[destination_x] = colors[source_row + source_x];
+      expanded_row[destination_x] = animation_row[source_x];
     }
     memcpy(colors + static_cast<size_t>(destination_y) * kWidth,
            expanded_row, sizeof(expanded_row));
-    if ((destination_y & 31) == 0) delay(1);
   }
 }
 
@@ -231,8 +242,8 @@ bool ensureCompressedCapacity(size_t size) {
   return true;
 }
 
-bool decodeFrame(File &file, bool animation, uint16_t source_width,
-                 uint8_t *output_override = nullptr) {
+bool readCompressedFrame(File &file) {
+  compressed_size = 0;
   uint8_t size_bytes[4]{};
   if (file.read(size_bytes, sizeof(size_bytes)) != sizeof(size_bytes)) return false;
   const uint32_t size = readU32(size_bytes);
@@ -240,24 +251,71 @@ bool decodeFrame(File &file, bool animation, uint16_t source_width,
       static_cast<size_t>(file.position()) + size > file.size() ||
       !ensureCompressedCapacity(size) ||
       file.read(compressed, size) != size) return false;
+  compressed_size = size;
+  next_frame_offset = file.position();
+  return true;
+}
+
+bool prepareFrameLocked(uint16_t index) {
+  if (cached_frame_index == index && compressed_size > 0) return true;
+  cached_frame_index = UINT16_MAX;
+  if (!playback_file || !playback_file.seek(frame_offsets[index]) ||
+      !readCompressedFrame(playback_file)) return false;
+  cached_frame_index = index;
+  return true;
+}
+
+bool indexFrames(File &file, uint16_t frames) {
+  for (uint16_t index = 0; index < frames; ++index) {
+    frame_offsets[index] = file.position();
+    uint8_t size_bytes[4]{};
+    if (file.read(size_bytes, sizeof(size_bytes)) != sizeof(size_bytes)) return false;
+    const uint32_t size = readU32(size_bytes);
+    if (size < 128 || size > kMaxFrameSize ||
+        static_cast<size_t>(file.position()) + size > file.size() ||
+        !file.seek(file.position() + size)) return false;
+  }
+  return static_cast<size_t>(file.position()) == file.size();
+}
+
+struct JpegDecodeState {
+  size_t read = 0;
+  uint16_t *output;
+  uint16_t side;
+};
+
+UINT jpegRead(JDEC *decoder, BYTE *buffer, UINT requested) {
+  auto *state = static_cast<JpegDecodeState *>(decoder->device);
+  const size_t remaining = compressed_size - state->read;
+  const size_t count = remaining < requested ? remaining : requested;
+  if (buffer) memcpy(buffer, compressed + state->read, count);
+  state->read += count;
+  return static_cast<UINT>(count);
+}
+
+UINT jpegWrite(JDEC *decoder, void *bitmap, JRECT *rect) {
+  auto *state = static_cast<JpegDecodeState *>(decoder->device);
+  return copyJpegBlock(static_cast<const uint8_t *>(bitmap), state->output,
+                       state->side, rect->left, rect->top,
+                       rect->right, rect->bottom) ? 1 : 0;
+}
+
+bool decodePreparedFrame(bool animation, uint16_t source_width,
+                         uint8_t *output_override = nullptr) {
+  if (compressed_size == 0) return false;
   uint8_t *output_pixels = output_override ? output_override : pixels;
   if (!output_pixels) return false;
-  esp_jpeg_image_cfg_t config{};
-  config.indata = compressed;
-  config.indata_size = size;
-  config.outbuf = output_pixels;
-  config.outbuf_size = kPixelBufferSize;
-  config.out_format = JPEG_IMAGE_FORMAT_RGB565;
-  config.out_scale = JPEG_IMAGE_SCALE_0;
-  config.flags.swap_color_bytes = 0;
-  esp_jpeg_image_output_t output{};
+  JDEC decoder{};
+  JpegDecodeState state{0, reinterpret_cast<uint16_t *>(output_pixels),
+                        source_width};
   const uint16_t expected_width = source_width;
   const uint16_t expected_height = expected_width;
-  const size_t expected_size = static_cast<size_t>(expected_width) *
-                               expected_height * sizeof(lv_color_t);
-  if (esp_jpeg_decode(&config, &output) != ESP_OK ||
-      output.width != expected_width || output.height != expected_height ||
-      output.output_len != expected_size) return false;
+  // Use the same ESP32-S3 ROM decoder as esp_jpeg_decode(), with a row-copy
+  // output callback instead of the generic wrapper's per-pixel byte writes.
+  if (jd_prepare(&decoder, jpegRead, jpeg_workspace, sizeof(jpeg_workspace),
+                 &state) != JDR_OK ||
+      decoder.width != expected_width || decoder.height != expected_height ||
+      jd_decomp(&decoder, jpegWrite, 0) != JDR_OK) return false;
   if (animation && expected_width < kWidth) {
     upscaleAnimationFrame(output_pixels, expected_width, expected_height);
   }
@@ -267,16 +325,20 @@ bool decodeFrame(File &file, bool animation, uint16_t source_width,
     lv_img_set_src(image, &descriptor);
     lv_obj_invalidate(image);
   }
-  next_frame_offset = file.position();
   return true;
 }
 
 void closePlaybackFileLocked() {
+  cached_frame_index = UINT16_MAX;
+  compressed_size = 0;
   playback_file.close();
   playback_file = File();
 }
 
 bool loadFirstFrame() {
+  playback_needs_reload = false;
+  frame_count = 0;
+  frame_delay_ms = 0;
   if (!filesystem_ready || !pixels || currentHash().isEmpty()) return false;
   xSemaphoreTake(storage_mutex, portMAX_DELAY);
   closePlaybackFileLocked();
@@ -286,12 +348,17 @@ bool loadFirstFrame() {
   uint16_t source_width = 0;
   const bool header_loaded = readHeader(playback_file, frames, delay,
                                         source_width);
-  const bool loaded = header_loaded &&
-                      decodeFrame(playback_file, frames > 1, source_width);
+  const bool loaded = header_loaded && indexFrames(playback_file, frames) &&
+                      prepareFrameLocked(0) &&
+                      decodePreparedFrame(frames > 1, source_width);
   if (!loaded) closePlaybackFileLocked();
   if (using_sd) clearSdStatusLed();
   xSemaphoreGive(storage_mutex);
-  if (!loaded) return false;
+  if (!loaded) {
+    playback_needs_reload = true;
+    next_frame_due = millis() + 500;
+    return false;
+  }
   frame_count = frames;
   frame_delay_ms = delay;
   frame_index = 0;
@@ -299,6 +366,7 @@ bool loadFirstFrame() {
   playback_decode_total_ms = 0;
   playback_decode_max_ms = 0;
   playback_decode_samples = 0;
+  playback_skipped_frames = 0;
   next_frame_due = millis() + frame_delay_ms;
   return true;
 }
@@ -770,48 +838,56 @@ void refresh() {
     updateEmptyState(loadFirstFrame());
     return;
   }
-  if (frame_count < 2 || frame_delay_ms == 0 ||
-      static_cast<int32_t>(millis() - next_frame_due) < 0) return;
+  if (playback_needs_reload) {
+    if (static_cast<int32_t>(millis() - next_frame_due) >= 0 &&
+        loadFirstFrame()) updateEmptyState(true);
+    return;
+  }
+  if (frame_count < 2 || frame_delay_ms == 0) return;
+  const uint32_t clock_now = millis();
+  if (static_cast<int32_t>(clock_now - next_frame_due) < 0) {
+    // Use the existing compressed PSRAM buffer to read ahead between frames.
+    // Do not wait behind a download or touch the visible/LVGL pixel buffers.
+    if (xSemaphoreTake(storage_mutex, 0) == pdTRUE) {
+      if (!sync_in_progress.load() &&
+          shown_asset_revision == asset_revision.load()) {
+        const uint16_t upcoming = (frame_index + 1) % frame_count;
+        const bool needs_read = cached_frame_index != upcoming;
+        // A failed read is retried on the deadline, not every 5 ms.
+        if (needs_read && cached_frame_index != UINT16_MAX) {
+          prepareFrameLocked(upcoming);
+          if (using_sd) clearSdStatusLed();
+        }
+      }
+      xSemaphoreGive(storage_mutex);
+    }
+    return;
+  }
 
-  const uint32_t scheduled_due = next_frame_due;
-  const uint16_t next_index = static_cast<uint16_t>(
-      frame_index + 1 >= frame_count ? 0 : frame_index + 1);
-  const bool wrapped = next_index == 0;
+  const PlaybackStep step = playbackStep(frame_index, frame_count,
+                                         frame_delay_ms, next_frame_due,
+                                         clock_now);
+  const uint16_t next_index = step.index;
   const uint32_t decode_started = millis();
-  void *current_frame_buffer = Board::currentFrameBuffer();
-  void *frame_buffer_0 = Board::frameBuffer(0);
-  void *frame_buffer_1 = Board::frameBuffer(1);
-  const bool frame_buffers_ready = current_frame_buffer && frame_buffer_0 &&
-                                   frame_buffer_1;
-  auto *target_frame_buffer = static_cast<uint8_t *>(
-      !frame_buffers_ready ? nullptr
-      : current_frame_buffer == frame_buffer_0 ? frame_buffer_1
-                                               : frame_buffer_0);
-  const bool rotation_needed = Board::rotation() != 0;
   xSemaphoreTake(storage_mutex, portMAX_DELAY);
   const bool revision_unchanged = shown_asset_revision == asset_revision.load();
   const bool playback_allowed = !sync_in_progress.load() &&
                                 revision_unchanged;
-  const bool output_ready = rotation_needed ? pixels != nullptr
-                                            : target_frame_buffer != nullptr;
+  const bool output_ready = pixels != nullptr;
+  const bool needs_read = cached_frame_index != next_index;
   const bool positioned = playback_allowed && output_ready &&
-                          playback_file &&
-                          (!wrapped || playback_file.seek(kHeaderSize));
+                          prepareFrameLocked(next_index);
   const bool loaded = positioned &&
-                      decodeFrame(playback_file, true,
-                                  animation_source_width,
-                                  rotation_needed ? nullptr
-                                                  : target_frame_buffer);
-  if (using_sd) clearSdStatusLed();
+                      decodePreparedFrame(true, animation_source_width);
+  if (using_sd && needs_read) clearSdStatusLed();
   xSemaphoreGive(storage_mutex);
   // sync() may have started after the fast check at the top of refresh(). In
   // that case it owns the storage transition; leave the last completed frame
   // visible and let the asset revision reload the new file after commit.
-  if (sync_in_progress.load() || !revision_unchanged) return;
-  const bool presented = rotation_needed
-                             ? loaded
-                             : loaded && target_frame_buffer &&
-                                   Board::switchFrameBuffer(target_frame_buffer);
+  if (sync_in_progress.load() ||
+      shown_asset_revision != asset_revision.load()) return;
+  // LVGL is the sole owner of panel buffers and scan-boundary presentation.
+  const bool presented = loaded;
   if (!presented) {
     const uint32_t now = millis();
     if (now - last_recovery_log >= 2000) {
@@ -834,26 +910,25 @@ void refresh() {
   playback_decode_total_ms += decode_ms;
   playback_decode_max_ms = max(playback_decode_max_ms, decode_ms);
   playback_decode_samples++;
+  playback_skipped_frames += step.skipped;
 
   // Keep the animation on its original clock. Decode and flash I/O time should
   // consume the current frame's budget instead of being added to every frame.
-  next_frame_due = scheduled_due + frame_delay_ms;
-  const uint32_t now = millis();
-  if (static_cast<int32_t>(now - next_frame_due) >= 0) {
-    next_frame_due = now + 1;
-  }
+  next_frame_due = step.next_due;
 
-  if (wrapped && playback_decode_samples > 0) {
+  if (step.wrapped && playback_decode_samples > 0) {
     Serial.printf(
-        "WALLPAPER_PLAYBACK,loop=1,frames=%u,delay=%u,decode_avg_ms=%lu,decode_max_ms=%lu,storage=%s\n",
+        "WALLPAPER_PLAYBACK,loop=1,frames=%u,delay=%u,decode_avg_ms=%lu,decode_max_ms=%lu,skipped=%lu,storage=%s\n",
         static_cast<unsigned>(frame_count),
         static_cast<unsigned>(frame_delay_ms),
         static_cast<unsigned long>(playback_decode_total_ms /
                                    playback_decode_samples),
-        static_cast<unsigned long>(playback_decode_max_ms), storageKind());
+        static_cast<unsigned long>(playback_decode_max_ms),
+        static_cast<unsigned long>(playback_skipped_frames), storageKind());
     playback_decode_total_ms = 0;
     playback_decode_max_ms = 0;
     playback_decode_samples = 0;
+    playback_skipped_frames = 0;
   }
 }
 

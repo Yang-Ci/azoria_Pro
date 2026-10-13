@@ -93,6 +93,22 @@ test('wallpaper kind must match the package animation frames', async () => {
   }
 })
 
+test('smooth full-resolution videos and older animation packages remain compatible', async t => {
+  const { manager } = await fixture(t)
+  for (const [format, side, frames, delay] of [
+    ['AZW4', 480, 50, 200], ['AZW4', 480, 25, 400],
+    ['AZW3', 320, 100, 100], ['AZW3', 320, 50, 200], ['AZW2', 240, 50, 200],
+  ]) {
+    const data = wallpaperPackage(frames, delay)
+    data.write(format, 0)
+    data.writeUInt16LE(side, 4)
+    data.writeUInt16LE(side, 6)
+    const info = await manager.upload({ name: 'clip.mp4', kind: 'video', data })
+    assert.equal(info.frameCount, frames)
+    assert.equal(info.durationMs, 10_000)
+  }
+})
+
 test('library keeps multiple wallpapers, deduplicates content and restores selection and settings', async t => {
   const { directory, manager, upload } = await fixture(t)
   const a = await upload('a.jpg', 0x11)

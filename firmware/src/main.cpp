@@ -21,11 +21,12 @@ namespace {
 
 constexpr uint32_t kWidth = 480;
 constexpr uint32_t kHeight = 480;
-constexpr uint32_t kBufferPixels = kWidth * kHeight;
+constexpr uint32_t kDrawRows = 8;
+constexpr uint32_t kBufferPixels = kWidth * kDrawRows;
 lv_disp_draw_buf_t draw_buffer;
-lv_color_t *buffer1 = nullptr;
-lv_color_t *buffer2 = nullptr;
-decltype(lv_draw_ctx_t::buffer_copy) default_buffer_copy = nullptr;
+lv_color_t *draw_pixels = nullptr;
+lv_area_t pending_flush_area{};
+bool flush_area_pending = false;
 bool provisioning = false;
 bool have_saved_config = false;
 bool remote_started = false;
@@ -67,73 +68,33 @@ IRAM_ATTR bool displayRefreshFinished(void *user_data) {
   return should_yield == pdTRUE;
 }
 
-void displayBufferCopy(lv_draw_ctx_t *context, void *destination,
-                       lv_coord_t destination_stride,
-                       const lv_area_t *destination_area, void *source,
-                       lv_coord_t source_stride, const lv_area_t *source_area) {
-  const uint16_t degrees = Board::currentFrameBufferRotation();
-  const bool panel_buffers =
-      (source == buffer1 && destination == buffer2) ||
-      (source == buffer2 && destination == buffer1);
-  if (degrees == 0 || !panel_buffers ||
-      source != Board::currentFrameBuffer()) {
-    default_buffer_copy(context, destination, destination_stride,
-                        destination_area, source, source_stride, source_area);
-    return;
-  }
-
-  // LVGL synchronizes dirty areas from the on-screen buffer before rendering.
-  // That buffer is in panel coordinates; the off-screen buffer was restored
-  // to logical coordinates after VSYNC. Undo the source rotation while copying
-  // so each refresh starts from the same logical image, without rotating it
-  // again or allocating another full-screen buffer.
-  const auto *from = static_cast<const lv_color_t *>(source);
-  auto *to = static_cast<lv_color_t *>(destination);
-  const int width = lv_area_get_width(source_area);
-  const int height = lv_area_get_height(source_area);
-  for (int row = 0; row < height; ++row) {
-    const int y = source_area->y1 + row;
-    lv_color_t *destination_row =
-        to + (destination_area->y1 + row) * destination_stride +
-        destination_area->x1;
-    for (int column = 0; column < width; ++column) {
-      const int x = source_area->x1 + column;
-      int physical_x;
-      int physical_y;
-      if (degrees == 90) {
-        physical_x = kWidth - 1 - y;
-        physical_y = x;
-      } else if (degrees == 180) {
-        physical_x = kWidth - 1 - x;
-        physical_y = kHeight - 1 - y;
-      } else {
-        physical_x = y;
-        physical_y = kHeight - 1 - x;
-      }
-      destination_row[column] = from[physical_y * source_stride + physical_x];
-    }
-  }
-}
-
-void displayFlush(lv_disp_drv_t *driver, const lv_area_t *, lv_color_t *colors) {
-  // In LVGL direct mode every invalid area can invoke flush, but all areas are
-  // rendered into the same off-screen framebuffer. Present it only after the
-  // final area is complete.
-  if (!lv_disp_flush_is_last(driver)) {
-    lv_disp_flush_ready(driver);
-    return;
-  }
+void displayFlush(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *colors) {
   void *previous_frame_buffer = Board::currentFrameBuffer();
-  if (!previous_frame_buffer || !colors) {
+  void *target = previous_frame_buffer == Board::frameBuffer(0)
+                     ? Board::frameBuffer(1) : Board::frameBuffer(0);
+  if (!previous_frame_buffer || !target || !colors) {
     Serial.println("LCD frame buffer unavailable");
     Serial.flush();
     delay(20);
     ESP.restart();
     return;
   }
-  const bool rotated = Board::rotation() != 0;
-  if (rotated) Board::prepareFrameBufferForDisplay(colors);
-  if (!Board::switchFrameBuffer(colors)) {
+  Board::copyDrawAreaToFrameBuffer(colors, target, area->x1, area->y1,
+                                  area->x2, area->y2);
+  if (!flush_area_pending) {
+    pending_flush_area = *area;
+    flush_area_pending = true;
+  } else {
+    pending_flush_area.x1 = min(pending_flush_area.x1, area->x1);
+    pending_flush_area.y1 = min(pending_flush_area.y1, area->y1);
+    pending_flush_area.x2 = max(pending_flush_area.x2, area->x2);
+    pending_flush_area.y2 = max(pending_flush_area.y2, area->y2);
+  }
+  if (!lv_disp_flush_is_last(driver)) {
+    lv_disp_flush_ready(driver);
+    return;
+  }
+  if (!Board::switchFrameBuffer(target)) {
     Serial.println("LCD frame switch failed");
     Serial.flush();
     delay(20);
@@ -172,10 +133,14 @@ void displayFlush(lv_disp_drv_t *driver, const lv_area_t *, lv_color_t *colors) 
   if (wait_ticks > display_max_flush_wait_ticks) {
     display_max_flush_wait_ticks = wait_ticks;
   }
-  if (rotated) {
-    Board::restoreFrameBufferAfterDisplay(previous_frame_buffer);
-    Board::commitFrameBufferForDisplay();
-  }
+  // The old front buffer is idle only after the completed scan boundary.
+  // Synchronize changed physical rows so both buffers remain ready for partial
+  // updates. No panel buffer is ever rotated back into logical coordinates.
+  Board::commitFrameBufferForDisplay();
+  Board::syncFrameBufferArea(target, previous_frame_buffer,
+                             pending_flush_area.x1, pending_flush_area.y1,
+                             pending_flush_area.x2, pending_flush_area.y2);
+  flush_area_pending = false;
   lv_disp_flush_ready(driver);
 }
 
@@ -232,10 +197,14 @@ void tick(void *) {
 
 bool initLvgl() {
   AppUi::init();
-  buffer1 = static_cast<lv_color_t *>(Board::frameBuffer(0));
-  buffer2 = static_cast<lv_color_t *>(Board::frameBuffer(1));
-  if (!buffer1 || !buffer2) {
+  if (!Board::frameBuffer(0) || !Board::frameBuffer(1)) {
     Serial.println("LCD double frame buffers unavailable");
+    return false;
+  }
+  draw_pixels = static_cast<lv_color_t *>(heap_caps_malloc(
+      kBufferPixels * sizeof(lv_color_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (!draw_pixels) {
+    Serial.println("LCD internal draw buffer unavailable");
     return false;
   }
   if (!Board::attachRefreshFinishCallback(displayRefreshFinished,
@@ -243,7 +212,7 @@ bool initLvgl() {
     Serial.println("LCD VSYNC callback setup failed");
     return false;
   }
-  lv_disp_draw_buf_init(&draw_buffer, buffer1, buffer2, kBufferPixels);
+  lv_disp_draw_buf_init(&draw_buffer, draw_pixels, nullptr, kBufferPixels);
 
   static lv_disp_drv_t display_driver;
   lv_disp_drv_init(&display_driver);
@@ -251,19 +220,13 @@ bool initLvgl() {
   display_driver.ver_res = kHeight;
   display_driver.flush_cb = displayFlush;
   display_driver.draw_buf = &draw_buffer;
-  // ESP32_Display_Panel's recommended RGB anti-tearing mode: LVGL redraws and
-  // synchronizes only dirty regions between the two full-screen framebuffers.
-  // Full refresh rewrote 450 KiB on every slider frame and starved RGB DMA once
-  // Wi-Fi/HTTP traffic began competing for the same PSRAM.
-  display_driver.direct_mode = 1;
+  // LVGL renders small logical regions in SRAM. The flush path rotates only
+  // those regions into the idle physical panel buffer and owns presentation.
   lv_disp_t *display = lv_disp_drv_register(&display_driver);
-  if (!display || !display->driver->draw_ctx ||
-      !display->driver->draw_ctx->buffer_copy) {
+  if (!display) {
     Serial.println("LVGL display registration failed");
     return false;
   }
-  default_buffer_copy = display->driver->draw_ctx->buffer_copy;
-  display->driver->draw_ctx->buffer_copy = displayBufferCopy;
   AppUi::displayReady();
 
   static lv_indev_drv_t input_driver;
@@ -403,25 +366,15 @@ void loop() {
           ? display->driver->draw_buf
           : nullptr;
   if (display_full_redraw_pending && display != nullptr &&
-      active_draw_buffer != nullptr && display->driver->direct_mode &&
-      active_draw_buffer->buf1 != nullptr &&
-      active_draw_buffer->buf2 != nullptr && !display->rendering_in_progress &&
+      active_draw_buffer != nullptr && active_draw_buffer->buf1 != nullptr &&
+      !display->rendering_in_progress &&
       !active_draw_buffer->flushing && lv_anim_count_running() == 0) {
-    // The first refresh redraws and presents the complete screen. In LVGL
-    // direct-mode double buffering that leaves a full-screen sync area for the
-    // other buffer, so run the refresh path once more to consume that area.
-    // This keeps both framebuffers identical without an unsafe manual memcpy.
     display_full_redraw_pending = false;
     lv_obj_invalidate(lv_disp_get_scr_act(display));
     lv_refr_now(display);
-    if (!display->rendering_in_progress && !active_draw_buffer->flushing &&
-        lv_anim_count_running() == 0) {
-      lv_refr_now(display);
-      ++display_full_redraw_count;
-    } else {
-      display_full_redraw_pending = true;
-    }
+    ++display_full_redraw_count;
   }
+
   if (static_cast<int32_t>(millis() - next_runtime_diagnostics) >= 0) {
     logMemory("runtime");
     next_runtime_diagnostics = millis() + kRuntimeDiagnosticIntervalMs;

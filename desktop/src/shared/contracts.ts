@@ -344,6 +344,12 @@ export interface DiagnosticsReport {
   logPath: string
 }
 
+export type PowerMode = "performance" | "balanced" | "power-saver" | "unknown"
+
+export interface PowerApi {
+  mode(): Promise<PowerMode>
+}
+
 export interface DesktopApi {
   computer: { snapshot(): Promise<ComputerSnapshot> }
   desktop: {
@@ -418,5 +424,8 @@ export interface DesktopApi {
   }
   diagnostics: {
     report(): Promise<DiagnosticsReport>
+  }
+  power: {
+    mode(): Promise<PowerMode>
   }
 }

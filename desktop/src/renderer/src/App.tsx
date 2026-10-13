@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Activity, Bluetooth, Cable, Check, FileUp, Radio, RefreshCw, Router, Settings, ShieldCheck, Sun, Volume2, VolumeX, Zap } from "lucide-react"
+import { Activity, Battery, Bluetooth, Cable, Check, FileUp, Radio, RefreshCw, Router, Settings, ShieldCheck, Sun, Volume2, VolumeX, Zap } from "lucide-react"
 import type { ControlName, ControlTarget, DiagnosticsReport, FirmwareImage, LanDevice, MonitorConnectionInfo, MonitorDisplaySummary, MonitorStatus, MonitorSystem, MonitorTransport, UsbDevice } from "../../shared/contracts"
 import { connectBle } from "./ble"
 import { YcBrand } from "./components/brand"
@@ -11,6 +11,7 @@ import { CodexUsagePage } from "./components/codex-usage-page"
 import { BrightnessLinkCard } from "./components/brightness-link-card"
 import { ComputerStatusCard } from "./components/computer-status-card"
 import { DesktopSettingsCard } from "./components/desktop-settings-card"
+import { PowerPage } from "./components/power-page"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -274,13 +275,14 @@ export default function App() {
     <main className="mx-auto max-w-[1180px] px-8 py-8">
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="mb-6 bg-zinc-950">
-          <TabsTrigger value="control">显示器</TabsTrigger>
-          <TabsTrigger value="music">音乐歌词</TabsTrigger>
-          <TabsTrigger value="usage">Codex / API</TabsTrigger>
-          <TabsTrigger value="touch">AZORIA Touch</TabsTrigger>
-          <TabsTrigger value="computer">电脑状态</TabsTrigger>
-          <TabsTrigger value="settings">设置</TabsTrigger>
-          <TabsTrigger value="diagnostics">诊断</TabsTrigger>
+         <TabsTrigger value="control">显示器</TabsTrigger>
+         <TabsTrigger value="music">音乐歌词</TabsTrigger>
+         <TabsTrigger value="usage">Codex / API</TabsTrigger>
+         <TabsTrigger value="touch">AZORIA Touch</TabsTrigger>
+         <TabsTrigger value="computer">电脑状态</TabsTrigger>
+         <TabsTrigger value="settings">设置</TabsTrigger>
+         <TabsTrigger value="diagnostics">诊断</TabsTrigger>
+          <TabsTrigger value="power" className="gap-1"><Battery className="h-4 w-4" />电源</TabsTrigger>
           {developerMode && <TabsTrigger value="developer">开发者</TabsTrigger>}
         </TabsList>
 
@@ -304,8 +306,12 @@ export default function App() {
           <div className="lg:col-span-2"><BrightnessLinkCard displays={displays} onMessage={setMessage} onChanged={() => void refreshSnapshot()} /></div>
         </TabsContent>
 
-        <TabsContent value="computer"><ComputerStatusCard /></TabsContent>
-        <TabsContent value="settings"><DesktopSettingsCard onMessage={setMessage} /></TabsContent>
+       <TabsContent value="computer"><ComputerStatusCard /></TabsContent>
+       <TabsContent value="settings"><DesktopSettingsCard onMessage={setMessage} /></TabsContent>
+
+        <TabsContent value="power">
+          <PowerPage />
+        </TabsContent>
 
         <TabsContent value="music" className="grid gap-5">
           <MusicLyricsCard />

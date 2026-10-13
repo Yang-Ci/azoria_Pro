@@ -1,0 +1,411 @@
+{
+  "scope": "Digital mesh topology, rear-cover features and nominal component envelope only",
+  "units": "mm",
+  "parts": [
+    {
+      "file": "common\\base.stl",
+      "triangles": 6992,
+      "bounds_mm": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          236.0,
+          120.0,
+          43.599998474121094
+        ]
+      ],
+      "size_mm": [
+        236.0,
+        120.0,
+        43.6
+      ],
+      "volume_mm3": 190728.42,
+      "components": 1,
+      "expected_components": 1,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "b5523b9da6f56214a28903ff58f58e6397a4549194b489c7ac4fe324ba67452b",
+      "passed": true
+    },
+    {
+      "file": "common\\rear-panel.stl",
+      "triangles": 2812,
+      "bounds_mm": [
+        [
+          5.199999809265137,
+          7.629394644936838e-07,
+          -1.9073486612342094e-07
+        ],
+        [
+          230.8000030517578,
+          40.099998474121094,
+          2.799999952316284
+        ]
+      ],
+      "size_mm": [
+        225.6,
+        40.1,
+        2.8
+      ],
+      "volume_mm3": 15308.927,
+      "components": 1,
+      "expected_components": 1,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "f60d4be126b1ceff46bcc77e67145a161ad45fd8172832bc93a8e4ec22e49f8e",
+      "passed": true
+    },
+    {
+      "file": "common\\ac-cable-cover.stl",
+      "triangles": 688,
+      "bounds_mm": [
+        [
+          8.0,
+          0.0,
+          0.0
+        ],
+        [
+          84.0,
+          40.0,
+          2.3999996185302734
+        ]
+      ],
+      "size_mm": [
+        76.0,
+        40.0,
+        2.4
+      ],
+      "volume_mm3": 6777.041,
+      "components": 1,
+      "expected_components": 1,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "451bb63b0268cb1d7ca91f33e6418ccff3a83bed04817215ad60e3a8c6d5492a",
+      "passed": true
+    },
+    {
+      "file": "common\\reel-retainer.stl",
+      "triangles": 748,
+      "bounds_mm": [
+        [
+          107.0,
+          3.814697322468419e-07,
+          0.0
+        ],
+        [
+          235.0,
+          38.79999923706055,
+          3.0
+        ]
+      ],
+      "size_mm": [
+        128.0,
+        38.8,
+        3.0
+      ],
+      "volume_mm3": 9999.921,
+      "components": 1,
+      "expected_components": 1,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "0f9e9ce0c48ea1c40553335809a4cba89aee09607cdf209ff5bcd0bff554c421",
+      "passed": true
+    },
+    {
+      "file": "common\\screen-rear-v3.stl",
+      "triangles": 3492,
+      "bounds_mm": [
+        [
+          -47.43000030517578,
+          -47.43000030517578,
+          0.0
+        ],
+        [
+          47.43000030517578,
+          47.43000030517578,
+          4.749999523162842
+        ]
+      ],
+      "size_mm": [
+        94.86,
+        94.86,
+        4.75
+      ],
+      "volume_mm3": 17706.093,
+      "components": 1,
+      "expected_components": 1,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "9056362d7d10ce9cfb7b948f19c68ca9b3e20d456a20b780d14488db78f86865",
+      "passed": true
+    },
+    {
+      "file": "adjustable\\top-hinge.stl",
+      "triangles": 1488,
+      "bounds_mm": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          236.0,
+          120.0,
+          22.399999618530273
+        ]
+      ],
+      "size_mm": [
+        236.0,
+        120.0,
+        22.4
+      ],
+      "volume_mm3": 67259.837,
+      "components": 1,
+      "expected_components": 1,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "4add5ebeee7b48316fc62078314e55b89ba4a83281ea1491746dc69800df9550",
+      "passed": true
+    },
+    {
+      "file": "adjustable\\screen-carrier.stl",
+      "triangles": 892,
+      "bounds_mm": [
+        [
+          -56.5,
+          6.10351571594947e-06,
+          0.0
+        ],
+        [
+          56.5,
+          112.05000305175781,
+          15.5
+        ]
+      ],
+      "size_mm": [
+        113.0,
+        112.05,
+        15.5
+      ],
+      "volume_mm3": 21437.67,
+      "components": 1,
+      "expected_components": 1,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "6662544d25f3c037bfc275712aa5d793fd4dcb7856705f2c0ddb65de16bbdcc1",
+      "passed": true
+    },
+    {
+      "file": "fit-first\\charger-gauge.stl",
+      "triangles": 176,
+      "bounds_mm": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          84.19999694824219,
+          41.19999694824219,
+          8.0
+        ]
+      ],
+      "size_mm": [
+        84.2,
+        41.2,
+        8.0
+      ],
+      "volume_mm3": 5668.245,
+      "components": 1,
+      "expected_components": 1,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "23d04705d09ee16085516635eedf6dbddc5ba24c342146adbc281959e17a718f",
+      "passed": true
+    },
+    {
+      "file": "fit-first\\reel-gauge.stl",
+      "triangles": 192,
+      "bounds_mm": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          58.0,
+          23.0,
+          8.0
+        ]
+      ],
+      "size_mm": [
+        58.0,
+        23.0,
+        8.0
+      ],
+      "volume_mm3": 4036.248,
+      "components": 1,
+      "expected_components": 1,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "cbb7a174d355e962fad979a150c2a7a79e1f43e79244a4d1532a00197e6a9608",
+      "passed": true
+    },
+    {
+      "file": "fit-first\\hinge-gauge.stl",
+      "triangles": 320,
+      "bounds_mm": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          72.0,
+          24.0,
+          9.25
+        ]
+      ],
+      "size_mm": [
+        72.0,
+        24.0,
+        9.25
+      ],
+      "volume_mm3": 12234.166,
+      "components": 2,
+      "expected_components": 2,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "33197063b94cc666e4fab6f264de1eb97343c3895f0dd82ff7be08805828d185",
+      "passed": true
+    },
+    {
+      "file": "fit-first\\screen-fit-v3.stl",
+      "triangles": 1872,
+      "bounds_mm": [
+        [
+          -49.349998474121094,
+          -49.349998474121094,
+          0.0
+        ],
+        [
+          49.349998474121094,
+          49.349998474121094,
+          2.59999942779541
+        ]
+      ],
+      "size_mm": [
+        98.7,
+        98.7,
+        2.6
+      ],
+      "volume_mm3": 2102.598,
+      "components": 1,
+      "expected_components": 1,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "inconsistent_edges": 0,
+      "degenerate_triangles": 0,
+      "sha256": "a8d531e6229f6aafa3fba2e9314d8d0e3c14dbe79650201aaaf7cf680563ab67",
+      "passed": true
+    }
+  ],
+  "intersections": [
+    {
+      "check": "collision-hinge-0",
+      "no_intersection": true,
+      "exit_code": 1
+    },
+    {
+      "check": "collision-hinge-60",
+      "no_intersection": true,
+      "exit_code": 1
+    },
+    {
+      "check": "collision-hinge-75",
+      "no_intersection": true,
+      "exit_code": 1
+    },
+    {
+      "check": "movement_collision-hinge-0",
+      "no_intersection": true,
+      "exit_code": 1
+    },
+    {
+      "check": "movement_collision-hinge-15",
+      "no_intersection": true,
+      "exit_code": 1
+    },
+    {
+      "check": "movement_collision-hinge-30",
+      "no_intersection": true,
+      "exit_code": 1
+    },
+    {
+      "check": "movement_collision-hinge-45",
+      "no_intersection": true,
+      "exit_code": 1
+    },
+    {
+      "check": "movement_collision-hinge-60",
+      "no_intersection": true,
+      "exit_code": 1
+    },
+    {
+      "check": "movement_collision-hinge-75",
+      "no_intersection": true,
+      "exit_code": 1
+    }
+  ],
+  "source_sha256": "8b5cd6ec955de8bf6457ecce3a47010b25cd4a5d04bc854767ca78a121b6aa1c",
+  "source_hashes": {
+    "workstation.scad": "8b5cd6ec955de8bf6457ecce3a47010b25cd4a5d04bc854767ca78a121b6aa1c",
+    "azoria-touch-v3-source.scad": "610b29fd3669748ab11d35a565c681a70e688892b2db7f1eb569e673bc8fc342",
+    "screen-fit.scad": "61b307c8064d0214c7fdff1538cfde8db0030ed8394b786466210e459d904e44",
+    "build_validate.py": "20dc2360e5c622a417e70fc82118a941e00c7e8a3aeb46ae3013238fc9a37c13",
+    "audit_rear.py": "570728ef4979254b60b8b01a1f41d577db5a4d570db2a8f3bd5969daf9d164b6"
+  },
+  "rear_features": {
+    "scope": "Exported rear-panel and screen-lid feature geometry",
+    "checks": {
+      "touch_notch_open_at_top": true,
+      "solid_3mm_bridge_below_touch_notch": true,
+      "rear_holes_and_side_ligaments": true,
+      "six_clearance_holes": true,
+      "six_countersunk_seats": true,
+      "matching_service_cover_holes": true,
+      "screen_usb_opening_continuous_and_shifted": true,
+      "screen_usb_opening_length_25_39mm": true
+    },
+    "passed": true,
+    "physical_fit_verified": false
+  },
+  "physical_fit_verified": false,
+  "thermal_verified": false,
+  "hinge_strength_verified": false,
+  "passed": true,
+  "source_format_note": "Trailing empty lines removed after validation; CAD content unchanged."
+}
