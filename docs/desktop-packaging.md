@@ -39,7 +39,7 @@ git push origin V1.0.2
 ### Linux
 
 ```bash
-sudo apt install ./release/YangCi-1.0.1-linux-amd64.deb
+sudo apt install ./release/YangCi-1.0.2-linux-amd64.deb
 ```
 
 随后在应用菜单搜索 **YangCi**，可以固定到 Dock。也可运行 `yangci-desktop`；主程序和 Electron 子进程都使用这个名称，旧命令 `azoria-desktop` 继续转到新程序。首次从开发版切换时先退出开发版，避免两个程序争用控制端口；安装版重复启动会激活已有窗口。

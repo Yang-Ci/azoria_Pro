@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## V1.0.2 - 2026-10-13
 
 - 新增 Windows NSIS、Linux DEB、macOS DMG / ZIP 三平台打包脚本，并通过版本标签自动生成 GitHub Release 附件与 SHA256 清单；
 - 修复 Windows 下 sidecar 进程环境变量、PlatformIO Python 路径与 esptool UTF-8 调用兼容性；
