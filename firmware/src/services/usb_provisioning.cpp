@@ -7,6 +7,8 @@
 #include "platform/board.h"
 #include "features/display_control/usage_view.h"
 #include "features/display_control/computer_view.h"
+#include "features/display_control/power_view.h"
+#include "features/display_control/screen.h"
 
 namespace {
 
@@ -219,6 +221,13 @@ void handleLine(String line) {
     Serial.println("AZORIA_PC_STATUS_CLOSED");
     return;
   }
+  if (line == "AZORIA_POWER") {
+    DisplayControl::wakeScreenTemporarily();
+    DisplayControl::UsageView::hide(); DisplayControl::ComputerView::hide(); DisplayControl::PowerView::show();
+    Serial.println(DisplayControl::PowerView::active() ? "AZORIA_POWER_READY" : "AZORIA_POWER_UNAVAILABLE");
+    return;
+  }
+  if (line == "AZORIA_POWER_CLOSE") { DisplayControl::PowerView::hide(); Serial.println("AZORIA_POWER_CLOSED"); return; }
   if (line == "AZORIA_REBOOT") {
     Serial.println("AZORIA_OK rebooting");
     Serial.flush();

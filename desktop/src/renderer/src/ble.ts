@@ -179,6 +179,15 @@ async function handleRequest(
       if (page === 0) computerBleSnapshot = { nonce, at: Date.now(), status: computerTouchStatus(await window.azoria.computer.snapshot()) }
       if (!computerBleSnapshot || computerBleSnapshot.nonce !== nonce || Date.now() - computerBleSnapshot.at > 10_000) throw new Error("computer snapshot expired")
       payload = computerBlePage(computerBleSnapshot.status, page)
+    } else if (fields[3] === "W" && fields.length === 6) {
+      const action = fields[4]
+      if (action === "status") {
+        const [power, data, sleep] = await Promise.all([window.azoria.power.externalState(), window.azoria.power.data(), window.azoria.touchSleep.settings()])
+        payload = `W|${power.supported ? 1 : 0}|${power.off ? 1 : 0}|${power.externalCount}|${power.linked ? 1 : 0}|${power.busy ? 1 : 0}|${data.batteryLevel ?? -1}|${data.batteryStatus}|${data.mode}|${sleep.enabled ? 1 : 0}|${sleep.startMinutes}|${sleep.endMinutes}`
+      } else if (action === "off" || action === "on" || action === "link-on" || action === "link-off") {
+        await window.azoria.power.externalControl(action)
+        payload = "W|1"
+      } else throw new Error("unsupported")
     } else if (fields[3] === "M" && fields.length === 6) {
       const current = await status()
       const page = fields[4]

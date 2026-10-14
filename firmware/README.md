@@ -7,6 +7,10 @@ Desktop 的 Touch 设置支持顺时针 90° 循环旋转，通过 Wi-Fi / BLE �
 的 8 行逻辑绘制缓冲，仅将变更区域旋转后写入空闲 LCD 缓冲；扫描边界结束后再同步
 另一块缓冲。两个 LCD 缓冲始终保留物理坐标，避免整帧在原地旋转和反向恢复。
 
+首页 Power 按钮打开电源页，通过 Wi-Fi / BLE 每 5 秒读取桌面端的真实电脑电量、电源模式与外接屏状态。SCREENS OFF 关闭外接显示输出并保留笔记本内屏，RESTORE 恢复原布局；LINK TOUCH SLEEP 开关沿用 Desktop 配置的定时息屏时段，默认关闭。独立外接屏息屏目前需要 Ubuntu / GNOME，未支持时按钮禁用。定时关闭 Touch 背光期间，轻触可临时唤醒 30 秒进入电源页；首次唤醒触摸不会误触按钮。
+
+USB `AZORIA_POWER` / `AZORIA_POWER_CLOSE` 可打开 / 关闭电源页，配合 `AZORIA_SCREENSHOT CURRENT` 验证真实画面。`python firmware/scripts/preview_controls.py` 可渲染 LVGL 电源页并检查入口与息屏命令。
+
 ## 构建
 
 AI 协作、备份、OTA 槽位核验和 Windows 烧录命令见根目录
@@ -53,7 +57,8 @@ Desktop 返回缓存结果以避免重复写入。Touch 不主动扫描局域网
 
 底部控制源区域一次显示四个方块，可横向滑动查看第 5 个 `PANEL` 内屏目标。选择内屏后，
 亮度改为控制笔记本内屏，音量和静音继续控制系统默认音频设备；选择外接输入源会切回
-外接显示器并发送对应的 DDC/CI 输入切换命令。
+由 Desktop 自动匹配的外接显示器；已经显示对应输入时只选择控制对象，只有需要切换
+输入接口时才发送 DDC/CI 命令。自动识别在 Desktop 执行，无需修改或重刷 Touch 固件。
 
 静态壁纸由 Desktop 转换为 `AZW1`、动态壁纸转换为 `AZW3` / `AZW4` JPEG 帧包，经 TCP `8732` 下载到存储设备。固件会校验
 包大小、帧结构和 SHA-256 后再启用。点击主界面 Music 字标下方的电脑图标可立即进入；

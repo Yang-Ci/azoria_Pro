@@ -39,6 +39,15 @@ imported monitor profiles. External-monitor audio and input support depend on
 the monitor. For Windows / Linux internal-panel targets, volume and mute control
 the system's default playback device, including headphones.
 
+Shortcuts automatically select the display currently using that input, or a
+display reporting support for it. Each button shows its target. Selecting an
+already connected screen changes the control target without writing its input
+source; AZORIA Touch uses the same routing without a firmware update. Detection
+uses reported inputs, capabilities, and connection information rather than fixed
+monitor models. USB-C can appear as DisplayPort in the OS, so kernel Type-C
+associations or advertised connection labels are used when available. If device
+information is missing or multiple screens match, choose a display explicitly.
+
 ### Linked brightness, computer status, and background operation
 
 Select displays on the Display page and save independent brightness baselines.

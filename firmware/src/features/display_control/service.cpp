@@ -86,6 +86,8 @@ uint8_t usage_provider_index = 0;
 bool usage_sync_requested = true;
 bool computer_view_active = false;
 bool computer_sync_requested = false;
+char pending_power_action[12]{};
+uint32_t pending_power_at = 0;
 
 bool isPrivateIpv4(const IPAddress &address) {
   const uint8_t first = address[0];
@@ -1205,7 +1207,26 @@ CommandResult runCommand(const Command &command) {
   return CommandResult::FinalFailed;
 }
 
+bool readPower() {
+  String response;
+  if (!request("GET", "/v1/power/status", nullptr, response, 5000)) return false;
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  remote_state.power_supported = jsonBool(response, "supported", false);
+  remote_state.external_screens_off = jsonBool(response, "off", false);
+  remote_state.external_power_linked = jsonBool(response, "linked", false);
+  remote_state.power_busy = jsonBool(response, "busy", false);
+  remote_state.external_screen_count = static_cast<uint8_t>(constrain(jsonInt(response, "externalCount", 0), 0, 255));
+  const int battery_start = jsonValueStart(response, "batteryLevel");
+  remote_state.battery_percent = battery_start < 0 || response[battery_start] == 'n' ? -1 : static_cast<int16_t>(constrain(jsonInt(response, "batteryLevel", -1), -1, 100));
+  strlcpy(remote_state.battery_status, jsonString(response, "batteryStatus", "unknown").c_str(), sizeof(remote_state.battery_status));
+  strlcpy(remote_state.power_mode, jsonString(response, "mode", "unknown").c_str(), sizeof(remote_state.power_mode));
+  ++remote_state.revision;
+  xSemaphoreGive(state_mutex);
+  return true;
+}
+
 void remoteTask(void *) {
+  uint32_t last_power = 0;
   uint32_t last_status = 0;
   uint32_t last_usage = 0;
   uint32_t last_computer = 0;
@@ -1250,6 +1271,27 @@ void remoteTask(void *) {
     }
 
     Command command{};
+    char power_action[12]{};
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+    if (pending_power_action[0]) {
+      if (millis() - pending_power_at < kFinalMaxAgeMs) strlcpy(power_action, pending_power_action, sizeof(power_action));
+      else { remote_state.power_pending=false; ++remote_state.revision; }
+      pending_power_action[0] = 0;
+    }
+    xSemaphoreGive(state_mutex);
+    if (power_action[0]) {
+      String response;
+      const String body = "{\"action\":\"" + String(power_action) + "\"}";
+      const bool success = request("POST", "/v1/power/control", body.c_str(), response, 15000);
+      updateMessage(success, success ? "Power command sent" : "Power command failed");
+      xSemaphoreTake(state_mutex, portMAX_DELAY);
+      remote_state.power_pending = pending_power_action[0] != 0;
+      ++remote_state.revision;
+      xSemaphoreGive(state_mutex);
+      readPower(); last_power = millis();
+      continue;
+    }
+    if (millis() - last_power >= 5000) { readPower(); last_power = millis(); }
     char music_action[16]{};
     uint32_t music_position_ms = 0;
     if (takeNextMusicCommand(music_action, sizeof(music_action), music_position_ms)) {
@@ -1344,6 +1386,15 @@ void startRemote(const DeviceConfig &config) {
     remote_task_handle = nullptr;
   }
   Serial.println("AZORIA Touch ready: waiting for Desktop discovery, BLE fallback enabled");
+}
+
+bool queuePowerControl(const char *action) {
+  if (!state_mutex || !action || (strcmp(action, "off") && strcmp(action, "on") && strcmp(action, "link-on") && strcmp(action, "link-off"))) return false;
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  strlcpy(pending_power_action, action, sizeof(pending_power_action));
+  pending_power_at = millis(); remote_state.power_pending = true; ++remote_state.revision;
+  xSemaphoreGive(state_mutex);
+  wakeRemoteTask(); return true;
 }
 
 DeviceConfig getDesktopConfig() {

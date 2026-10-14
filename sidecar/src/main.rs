@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 use std::env;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
+mod input_detection;
 mod network_stats;
 #[cfg(target_os = "windows")]
 use wmi::WMIConnection;
@@ -43,6 +44,14 @@ enum Request {
         transport: Transport,
     },
     Enumerate,
+    InputInfo {
+        display: usize,
+        display_id: Option<String>,
+    },
+    PowerInfo {
+        display: usize,
+        display_id: Option<String>,
+    },
     Get {
         transport: Transport,
         display: usize,
@@ -302,6 +311,42 @@ fn native_get(display: usize, display_id: Option<&str>, vcp: u8) -> Result<Value
     }))
 }
 
+fn native_input_info(display: usize, display_id: Option<&str>) -> Result<Value, String> {
+    native_feature_info(display, display_id, 0x60)
+}
+
+fn native_feature_info(
+    display: usize,
+    display_id: Option<&str>,
+    feature: u8,
+) -> Result<Value, String> {
+    let mut display = native_display(display, display_id)?;
+    let capability = display.handle.capabilities_string().ok().and_then(|bytes| {
+        if feature == 0x60 {
+            input_detection::input_capability(&bytes)
+        } else {
+            input_detection::feature_capability(&bytes, feature)
+        }
+    });
+    let supported = capability.as_ref().map(|(supported, _)| *supported);
+    // A few portable panels return their brightness for every VCP opcode.
+    // Never interpret that reply as an input if capabilities exclude 0x60.
+    let current = if supported == Some(false) {
+        None
+    } else {
+        display
+            .handle
+            .get_vcp_feature(feature)
+            .ok()
+            .map(|value| value.value())
+    };
+    Ok(json!({
+        "supported": supported,
+        "values": capability.map(|(_, values)| values).unwrap_or_default(),
+        "current": current
+    }))
+}
+
 fn native_set(
     display: usize,
     display_id: Option<&str>,
@@ -545,12 +590,16 @@ fn execute(request: Request) -> Result<Value, String> {
                 .into_iter()
                 .enumerate()
                 .map(|(index, display)| {
+                    let (connector, connection_type) =
+                        input_detection::display_connection(&display.info);
                     json!({
                         "display": index + 1,
                         "driver": display.info.backend.to_string(),
                         "id": display.info.id,
                         "manufacturer": display.info.manufacturer_id,
-                        "model": display.info.model_name
+                        "model": display.info.model_name,
+                        "connector": connector,
+                        "connection_type": connection_type
                     })
                 })
                 .collect();
@@ -603,6 +652,14 @@ fn execute(request: Request) -> Result<Value, String> {
             }
             Ok(Value::Array(displays))
         }
+        Request::InputInfo {
+            display,
+            display_id,
+        } => native_input_info(display, display_id.as_deref()),
+        Request::PowerInfo {
+            display,
+            display_id,
+        } => native_feature_info(display, display_id.as_deref(), 0xd6),
         Request::Get {
             transport: Transport::NativeDdc,
             display,
@@ -703,7 +760,12 @@ mod tests {
 
     #[test]
     fn optional_stable_ids_preserve_legacy_requests() {
-        assert!(serde_json::from_str::<Request>(r#"{"operation":"get","transport":"native-ddc","display":1,"vcp":16}"#).is_ok());
+        assert!(
+            serde_json::from_str::<Request>(
+                r#"{"operation":"get","transport":"native-ddc","display":1,"vcp":16}"#
+            )
+            .is_ok()
+        );
         assert!(serde_json::from_str::<Request>(r#"{"operation":"set","transport":"native-ddc","display":1,"display_id":"22799","vcp":16,"value":50}"#).is_ok());
     }
 

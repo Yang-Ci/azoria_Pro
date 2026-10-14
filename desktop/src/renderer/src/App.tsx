@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Activity, Battery, Bluetooth, Cable, Check, FileUp, Radio, RefreshCw, Router, Settings, ShieldCheck, Sun, Volume2, VolumeX, Zap } from "lucide-react"
-import type { ControlName, ControlTarget, DiagnosticsReport, FirmwareImage, LanDevice, MonitorConnectionInfo, MonitorDisplaySummary, MonitorStatus, MonitorSystem, MonitorTransport, UsbDevice } from "../../shared/contracts"
+import type { ControlName, ControlTarget, DiagnosticsReport, FirmwareImage, LanDevice, MonitorConnectionInfo, MonitorDisplaySummary, MonitorInputTarget, MonitorStatus, MonitorSystem, MonitorTransport, UsbDevice } from "../../shared/contracts"
 import { connectBle } from "./ble"
 import { YcBrand } from "./components/brand"
 import { ProfileWizard } from "./components/profile-wizard"
@@ -70,6 +70,7 @@ export default function App() {
   const [connection, setConnection] = useState(emptyConnection)
   const [displays, setDisplays] = useState<MonitorDisplaySummary[]>([])
   const [activeDisplayId, setActiveDisplayId] = useState("1")
+  const [inputTargets, setInputTargets] = useState<MonitorInputTarget[]>([])
   const [online, setOnline] = useState(false)
   const [busy, setBusy] = useState(false)
   const [pendingControls, setPendingControls] = useState<Set<ControlName>>(() => new Set())
@@ -99,13 +100,22 @@ export default function App() {
   }, [developerMode, tab])
 
   const refresh = useCallback(async () => {
-    try { setStatus(await window.azoria.monitor.status()); setOnline(true); setMessage("显示器已连接") }
-    catch (error) { setOnline(false); setMessage(error instanceof Error ? error.message : "显示器未连接") }
     try {
-      const next = await window.azoria.monitor.connection()
-      setConnection(next)
-      setActiveDisplayId(next.displayId)
-    } catch { /* Keep the last detected route visible. */ }
+      await window.azoria.monitor.status()
+      const next = await window.azoria.monitor.controlState()
+      if (pendingCountRef.current || editingRef.current) return
+      setStatus(next.status)
+      setConnection(next.connection)
+      setActiveDisplayId(next.connection.displayId)
+      setInputTargets(next.targets)
+      setOnline(next.connection.transport !== "unavailable")
+      setMessage("显示器已连接")
+    }
+    catch (error) {
+      if (pendingCountRef.current) return
+      setOnline(false)
+      setMessage(error instanceof Error ? error.message : "显示器未连接")
+    }
   }, [])
   const refreshDisplays = useCallback(async () => {
     try {
@@ -116,7 +126,15 @@ export default function App() {
     catch { /* DDC/CI enumeration is retried when the display page refreshes. */ }
   }, [])
   const refreshSnapshot = useCallback(async () => {
-    try { setStatus(await window.azoria.monitor.statusSnapshot()); setOnline(true) }
+    try {
+      const next = await window.azoria.monitor.controlState()
+      if (pendingCountRef.current || editingRef.current) return
+      setStatus(next.status)
+      setConnection(next.connection)
+      setActiveDisplayId(next.connection.displayId)
+      setInputTargets(next.targets)
+      setOnline(next.connection.transport !== "unavailable")
+    }
     catch { /* The background loop will retry the next DDC/CI read. */ }
   }, [])
   const detectUsb = useCallback(async () => {
@@ -145,6 +163,7 @@ export default function App() {
     }
   }, [])
   const changeDisplay = useCallback(async (displayId: string) => {
+    pendingCountRef.current++
     setBusy(true)
     try {
       const connection = await window.azoria.monitor.selectDisplay(displayId)
@@ -164,9 +183,11 @@ export default function App() {
       setMessage(error instanceof Error ? error.message : "显示器切换失败")
     }
     finally {
+      pendingCountRef.current--
       setBusy(false)
+      void refreshSnapshot()
     }
-  }, [])
+  }, [refreshSnapshot])
   const refreshLan = useCallback(async () => {
     try { setLanDevices(await window.azoria.device.listLan()) }
     catch { /* Preserve the last known device until its main-process lease expires. */ }
@@ -186,7 +207,7 @@ export default function App() {
     const statusTimer = window.setInterval(() => {
       if (!editingRef.current && pendingCountRef.current === 0) void refreshSnapshot()
     }, 2000)
-    const connectionTimer = window.setInterval(() => { void refresh() }, 30000)
+    const connectionTimer = window.setInterval(() => { if (!editingRef.current && pendingCountRef.current === 0) void refresh() }, 30000)
     const lanTimer = window.setInterval(() => void refreshLan(), 2000)
     const diagnosticsTimer = window.setInterval(() => void refreshDiagnostics(), 2000)
     void refreshDiagnostics()
@@ -204,15 +225,17 @@ export default function App() {
       const next = await window.azoria.monitor.control({ control, value, final: true })
       setStatus((current) => ({ ...current, [control]: next[control] }))
       if (control === "input") {
-        const [nextConnection, nextDisplays] = await Promise.all([
-          window.azoria.monitor.connection(), window.azoria.monitor.listDisplays(),
+        const [nextState, nextDisplays] = await Promise.all([
+          window.azoria.monitor.controlState(), window.azoria.monitor.listDisplays(),
         ])
-        setConnection(nextConnection)
+        setStatus(nextState.status)
+        setConnection(nextState.connection)
+        setInputTargets(nextState.targets)
         setDisplays(nextDisplays.displays)
-        setActiveDisplayId(nextDisplays.activeDisplayId)
+        setActiveDisplayId(nextState.connection.displayId)
       }
       setOnline(true)
-      setMessage("已保存到显示器")
+      setMessage(control === "input" ? "已切换控制目标" : "已保存到显示器")
     }
     catch (error) { setMessage(error instanceof Error ? error.message : "控制失败") }
     finally {
@@ -293,16 +316,33 @@ export default function App() {
                 <CardTitle>显示器控制</CardTitle>
                 <CardDescription>{connection.displayName}</CardDescription>
               </div>
-              <Select value={activeDisplayId} onValueChange={(value) => void changeDisplay(value)}>
+              <Select value={activeDisplayId} disabled={busy || pendingControls.size > 0} onValueChange={(value) => void changeDisplay(value)}>
                 <SelectTrigger className="w-56"><SelectValue placeholder="选择显示器" /></SelectTrigger>
                 <SelectContent>
                   {displays.map((display) => <SelectItem key={display.id} value={display.id}>{display.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </CardHeader>
-            <CardContent><MetricSlider icon={<Sun />} label="亮度" value={status.brightness} disabled={pendingControls.has("brightness") || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("brightness", value)} /><Separator />{internalPanel && <p className="text-sm text-muted-foreground">音量和静音控制当前默认播放设备（包括耳机）。</p>}<MetricSlider icon={<Volume2 />} label={internalPanel ? "系统音量" : "音量"} value={status.volume} disabled={pendingControls.has("volume") || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("volume", value)} /></CardContent>
+            <CardContent><MetricSlider icon={<Sun />} label="亮度" value={status.brightness} disabled={busy || pendingControls.size > 0 || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("brightness", value)} /><Separator />{internalPanel && <p className="text-sm text-muted-foreground">音量和静音控制当前默认播放设备（包括耳机）。</p>}<MetricSlider icon={<Volume2 />} label={internalPanel ? "系统音量" : "音量"} value={status.volume} disabled={busy || pendingControls.size > 0 || !online} onEditingChange={(editing) => { editingRef.current = editing }} onCommit={(value) => void setControl("volume", value)} /></CardContent>
           </Card>
-          <div className="grid gap-5"><Card><CardHeader><CardTitle>控制源</CardTitle></CardHeader><CardContent className="grid grid-cols-2 gap-2">{inputs.map((input) => <Button key={input.value} variant={status.input === input.value ? "default" : "outline"} className="h-12" disabled={pendingControls.has("input") || !online} onClick={() => void setControl("input", input.value)}>{status.input === input.value && <Check />}{input.label}</Button>)}</CardContent></Card><Card><CardContent className="pt-6"><Button variant={status.mute ? "default" : "outline"} className="h-12 w-full" disabled={pendingControls.has("mute") || !online} onClick={() => void setControl("mute", !status.mute)}>{status.mute ? <VolumeX /> : <Volume2 />}{status.mute ? "取消静音" : "静音"}</Button></CardContent></Card></div>
+          <div className="grid gap-5">
+            <Card>
+              <CardHeader><CardTitle>快捷控制</CardTitle><CardDescription>自动匹配显示器与输入源</CardDescription></CardHeader>
+              <CardContent className="grid grid-cols-2 gap-2">
+                {inputs.map((input) => {
+                  const target = inputTargets.find(item => item.input === input.value)
+                  const selected = status.input === input.value && target?.displayId === activeDisplayId
+                  return <Button key={input.value} variant={selected ? "default" : "outline"} aria-pressed={selected}
+                    className="h-auto min-h-16 flex-col gap-1 px-2 py-3" disabled={busy || pendingControls.size > 0 || !target || target.action === "unavailable"}
+                    onClick={() => void setControl("input", input.value)}>
+                    <span className="flex items-center gap-2">{selected && <Check />}{input.label}</span>
+                    <span className="max-w-full truncate text-xs opacity-65">{target?.displayName || "请选择匹配的显示器"}</span>
+                  </Button>
+                })}
+              </CardContent>
+            </Card>
+            <Card><CardContent className="pt-6"><Button variant={status.mute ? "default" : "outline"} className="h-12 w-full" disabled={busy || pendingControls.size > 0 || !online} onClick={() => void setControl("mute", !status.mute)}>{status.mute ? <VolumeX /> : <Volume2 />}{status.mute ? "取消静音" : "静音"}</Button></CardContent></Card>
+          </div>
           <div className="lg:col-span-2"><BrightnessLinkCard displays={displays} onMessage={setMessage} onChanged={() => void refreshSnapshot()} /></div>
         </TabsContent>
 

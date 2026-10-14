@@ -68,6 +68,122 @@ test('display enumeration exposes stable IDs and the active target', async () =>
   assert.equal(monitor.connectionSnapshot().displayId, 'stable-1')
 })
 
+test('startup does not wait for input capability probing', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'azoria-input-deferred-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await writeFile(path.join(directory, 'generic.json'), readFileSync(path.resolve(__dirname, '../profiles/generic-ddc.json')))
+
+  let releaseInput
+  let signalInputStarted
+  const inputStarted = new Promise(resolve => { signalInputStarted = resolve })
+  const inputGate = new Promise(resolve => { releaseInput = resolve })
+  const monitor = new MonitorController('stable-1', directory, directory)
+  monitor.sidecar = async request => {
+    if (request.operation === 'enumerate') {
+      return [{ display: 1, id: 'stable-1', manufacturer: 'GSM', model: '32UQ85R' }]
+    }
+    if (request.operation === 'probe') throw new Error('No USB HID display')
+    if (request.operation === 'get') return { current: 50, maximum: 100 }
+    if (request.operation === 'input_info') {
+      signalInputStarted()
+      await inputGate
+      return { supported: false }
+    }
+    throw new Error(`Unexpected sidecar operation: ${request.operation}`)
+  }
+
+  const initialized = monitor.initialize()
+  let timeout
+  const bounded = Promise.race([
+    initialized,
+    new Promise((_, reject) => {
+      timeout = setTimeout(() => reject(new Error('startup blocked on input probing')), 100)
+    }),
+  ])
+  try {
+    await bounded
+    await inputStarted
+    assert.equal(monitor.connectionSnapshot().transport, 'video-ddc')
+  } finally {
+    clearTimeout(timeout)
+    releaseInput()
+  }
+  await initialized
+})
+
+test('startup uses cached display topology without waiting for enumeration', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'azoria-display-cache-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await writeFile(path.join(directory, 'generic.json'), readFileSync(path.resolve(__dirname, '../profiles/generic-ddc.json')))
+  const cachedDisplay = { id: 'stable-1', index: 1, name: 'GSM 32UQ85R', manufacturer: 'GSM', model: '32UQ85R', connector: 'DP-1' }
+  await writeFile(path.join(directory, 'display-topology.cache'), JSON.stringify({ version: 1, displays: [cachedDisplay] }))
+
+  let releaseEnumerate
+  let signalEnumerateStarted
+  const enumerateStarted = new Promise(resolve => { signalEnumerateStarted = resolve })
+  const enumerateGate = new Promise(resolve => { releaseEnumerate = resolve })
+  const monitor = new MonitorController('stable-1', directory, directory)
+  monitor.sidecar = async request => {
+    if (request.operation === 'enumerate') {
+      signalEnumerateStarted()
+      await enumerateGate
+      return [{ display: 1, id: 'stable-1', manufacturer: 'GSM', model: '32UQ85R', connector: 'DP-1' }]
+    }
+    if (request.operation === 'probe') throw new Error('No USB HID display')
+    if (request.operation === 'get') return { current: 50, maximum: 100 }
+    if (request.operation === 'input_info') return { supported: false }
+    throw new Error(`Unexpected sidecar operation: ${request.operation}`)
+  }
+
+  let timeout
+  const initialized = monitor.initialize()
+  const bounded = Promise.race([
+    initialized,
+    new Promise((_, reject) => {
+      timeout = setTimeout(() => reject(new Error('startup blocked on display enumeration')), 100)
+    }),
+  ])
+  try {
+    await bounded
+    assert.equal(monitor.connectionSnapshot().transport, 'video-ddc')
+    await enumerateStarted
+  } finally {
+    clearTimeout(timeout)
+    releaseEnumerate()
+  }
+  await initialized
+  await monitor.displayTopologyRefresh
+})
+
+test('a stale cached display falls back to full enumeration', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'azoria-display-cache-stale-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await writeFile(path.join(directory, 'generic.json'), readFileSync(path.resolve(__dirname, '../profiles/generic-ddc.json')))
+  await writeFile(path.join(directory, 'display-topology.cache'), JSON.stringify({
+    version: 1,
+    displays: [{ id: 'gone', index: 1, name: 'Disconnected screen' }],
+  }))
+
+  const monitor = new MonitorController('gone', directory, directory)
+  monitor.sidecar = async request => {
+    if (request.operation === 'enumerate') {
+      return [{ display: 1, id: 'stable-1', manufacturer: 'GSM', model: '32UQ85R' }]
+    }
+    if (request.operation === 'probe') throw new Error('No USB HID display')
+    if (request.operation === 'get') {
+      if (request.display_id === 'gone') throw new Error('display ID gone was not found')
+      return { current: 50, maximum: 100 }
+    }
+    if (request.operation === 'input_info') return { supported: false }
+    throw new Error(`Unexpected sidecar operation: ${request.operation}`)
+  }
+
+  await monitor.initialize()
+  assert.equal(monitor.connectionSnapshot().displayId, 'stable-1')
+  assert.equal(monitor.connectionSnapshot().transport, 'video-ddc')
+  await monitor.displayTopologyRefresh
+})
+
 test('selecting another display re-routes native DDC requests and resets state', async () => {
   const { monitor, getDisplays } = fixture()
   await monitor.detect(true)
@@ -272,4 +388,137 @@ test('linked controllers reuse discovery and previews but refresh topology on ex
   monitor.brightnessControllers.get('stable-1').expiresAt = 0
   await assert.rejects(monitor.forDisplay('stable-1'), /断开/)
   assert.equal(monitor.brightnessControllers.has('stable-1'), false)
+})
+
+function automaticTargetFixture() {
+  const monitor = new MonitorController('desktop')
+  monitor.profiles = [internalPanelProfile, { ...fallbackProfile, ddc: {
+    inputReadValues: { '15': 'dp1', '17': 'hdmi1', '18': 'hdmi2', '27': 'usbc' },
+    inputWriteValues: { dp1: '15', hdmi1: '17', hdmi2: '18', usbc: '27' },
+    inputWriteFeature: 'input',
+  } }]
+  let connected = true, reversed = false, desktopInput = 18
+  const brightness = { desktop: 50, portable: 78, panel: 50 }
+  const writes = []
+  monitor.sidecar = async request => {
+    const screens = [
+      { id: 'desktop', manufacturer: 'XYZ', model: 'Office Screen', connector: 'HDMI-A-1' },
+      ...(connected ? [{ id: 'portable', manufacturer: 'QRS', model: 'Type_C', connector: 'DP-2' }] : []),
+      { id: 'panel', model: 'Internal', transport: 'internal-panel', system: 'linux' },
+    ]
+    if (reversed) screens.reverse()
+    if (request.operation === 'enumerate') return screens.map((display, index) => ({ ...display, display: index + 1 }))
+    if (request.operation === 'probe') throw new Error('No HID')
+    const id = request.display_id || screens[request.display - 1]?.id
+    if (request.operation === 'input_info') return id === 'desktop'
+      ? { supported: true, values: [15, 17, 18], current: desktopInput }
+      : { supported: false, values: [], current: 17 } // Broken panel returns brightness even for input.
+    if (request.operation === 'get') return { current: request.vcp === 96 ? (id === 'desktop' ? desktopInput : 17)
+      : request.vcp === 141 ? 2 : brightness[id], maximum: 100 }
+    if (request.operation === 'set') {
+      writes.push({ id, vcp: request.vcp, value: request.value })
+      if (request.vcp === 96 && id === 'desktop') desktopInput = request.value
+      if (request.vcp === 16) brightness[id] = request.value
+      return {}
+    }
+    throw new Error('Unexpected operation')
+  }
+  return { monitor, writes, disconnect: () => { connected = false }, reverse: () => { reversed = true } }
+}
+
+test('shortcuts automatically select the connected USB-C display without writing its input', async () => {
+  const { monitor, writes } = automaticTargetFixture()
+  await monitor.detect(true)
+  const state = monitor.controlState()
+  assert.equal(state.targets.find(target => target.input === 'usbc').displayId, 'portable')
+  assert.equal(state.targets.find(target => target.input === 'dp1').displayId, 'desktop')
+  const status = await monitor.control({ control: 'input', value: 'usbc' }, 'touch')
+  assert.equal(monitor.connectionSnapshot().displayId, 'portable')
+  assert.equal(status.input, 'usbc')
+  assert.equal(status.brightness, 78)
+  assert.deepEqual(writes, [])
+  assert.equal((await monitor.status()).input, 'usbc')
+  assert.equal((await monitor.status()).brightness, 78)
+  await monitor.control({ control: 'brightness', value: 42 }, 'touch')
+  assert.equal(writes[0].id, 'portable')
+})
+
+test('DP and HDMI shortcuts return to the screen advertising those inputs', async () => {
+  const { monitor, writes } = automaticTargetFixture()
+  await monitor.detect(true)
+  await monitor.control({ control: 'input', value: 'usbc' }, 'desktop-ui')
+  await monitor.control({ control: 'input', value: 'dp1' }, 'touch')
+  assert.equal(monitor.connectionSnapshot().displayId, 'desktop')
+  assert.deepEqual(writes, [{ id: 'desktop', vcp: 96, value: 15 }])
+  await monitor.control({ control: 'input', value: 'hdmi2' }, 'touch')
+  assert.deepEqual(writes.at(-1), { id: 'desktop', vcp: 96, value: 18 })
+})
+
+test('disconnected USB-C targets do not fall through to another monitor', async () => {
+  const { monitor, writes, disconnect } = automaticTargetFixture()
+  await monitor.detect(true)
+  disconnect()
+  await assert.rejects(monitor.control({ control: 'input', value: 'usbc' }), /匹配的显示器/)
+  assert.deepEqual(writes, [])
+})
+
+test('automatic routing survives enumeration reordering and an internal-panel selection', async () => {
+  const { monitor, writes, reverse } = automaticTargetFixture()
+  await monitor.detect(true)
+  await monitor.control({ control: 'input', value: 'internal' })
+  reverse()
+  await monitor.control({ control: 'input', value: 'usbc' })
+  assert.equal(monitor.connectionSnapshot().displayId, 'portable')
+  await monitor.control({ control: 'input', value: 'hdmi1' })
+  assert.deepEqual(writes, [{ id: 'desktop', vcp: 96, value: 17 }])
+})
+
+test('queued shortcut changes execute in order without discarding the second target', async () => {
+  const { monitor, writes } = automaticTargetFixture()
+  await monitor.detect(true)
+  await Promise.all([
+    monitor.control({ control: 'input', value: 'usbc' }, 'touch'),
+    monitor.control({ control: 'input', value: 'dp1' }, 'touch'),
+  ])
+  assert.equal(monitor.connectionSnapshot().displayId, 'desktop')
+  assert.deepEqual(writes, [{ id: 'desktop', vcp: 96, value: 15 }])
+})
+
+test('duplicate input matches require an explicit dropdown choice', async () => {
+  const { monitor } = automaticTargetFixture()
+  await monitor.detect(true)
+  monitor.displays.push({ id: 'portable-2', index: 4, name: 'Other screen' })
+  monitor.inputDetection.set('portable-2', { current: 'usbc', supported: [], selectOnly: true })
+  assert.equal(monitor.controlState().targets.find(target => target.input === 'usbc').action, 'unavailable')
+  monitor.display = 'portable-2'
+  assert.equal(monitor.controlState().targets.find(target => target.input === 'usbc').displayId, 'portable-2')
+})
+
+test('kernel Type-C association works with any monitor name', async () => {
+  const { monitor } = automaticTargetFixture()
+  const original = monitor.sidecar
+  monitor.sidecar = async request => {
+    const result = await original(request)
+    if (request.operation === 'enumerate') {
+      const portable = result.find(display => display.id === 'portable')
+      portable.model = 'Any display name'
+      portable.connection_type = 'usbc'
+    }
+    return result
+  }
+  await monitor.detect(true)
+  assert.equal(monitor.controlState().targets.find(target => target.input === 'usbc').displayId, 'portable')
+})
+
+test('external power discovery skips hard-off-only panels and built-in screens', async () => {
+  const monitor = new MonitorController()
+  monitor.enumerateDisplays = async () => [
+    { id: 'hard-off', index: 1, name: 'Panel A', transport: 'video-ddc' },
+    { id: 'standby', index: 2, name: 'Panel B', transport: 'video-ddc' },
+    { id: 'builtin', index: 3, name: 'Laptop', transport: 'internal-panel' },
+  ]
+  const requests = []
+  monitor.sidecarValue = async request => { requests.push(request); return { supported: true, current: 1, values: request.display === 1 ? [1, 5] : [1, 2, 4, 5] } }
+  assert.deepEqual(await monitor.displayPowerTargets(), [{ id: 'standby', index: 2, name: 'Panel B', originalValue: 1, offValue: 2 }])
+  assert.equal(requests.length, 2)
 })

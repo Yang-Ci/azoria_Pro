@@ -61,7 +61,11 @@ DisplayControl::RemoteState fixture;
 struct Command { std::string control; int value; bool final_value; };
 std::vector<Command> commands;
 uint8_t applied_backlight = 0;
-namespace Board { void setBacklight(uint8_t value) { applied_backlight = value; } }
+namespace Board {
+void setBacklight(uint8_t value) { applied_backlight = value; }
+bool setRotation(uint16_t) { return true; }
+uint16_t rotation() { return 0; }
+}
 namespace DisplayControl {
 RemoteState getRemoteState() { return fixture; }
 bool queueNumericControl(const char *control, int value, bool final_value) {
@@ -70,9 +74,11 @@ bool queueNumericControl(const char *control, int value, bool final_value) {
 bool queueBooleanControl(const char *, bool) { return true; }
 bool queueStringControl(const char *, const char *) { return true; }
 bool queueMusicControl(const char *, uint32_t) { return true; }
+bool queuePowerControl(const char *action) { commands.push_back({action,0,true});return true; }
 void copyMusicArtwork(uint8_t *, size_t) {}
 void selectUsageProvider(uint8_t) {}
 void requestUsageSync() {}
+void setComputerViewActive(bool) {}
 }
 namespace Wallpaper {
 void createView(lv_obj_t *, lv_event_cb_t) {}
@@ -86,6 +92,12 @@ static tm *native_localtime(const time_t *t, tm *result) { *result = *std::local
 // Include production code so the preview can open the same gesture-driven panels.
 #include "features/display_control/screen.cpp"
 lv_color_t framebuffer[480 * 480], draw_pixels[480 * 48];
+lv_point_t pointer_point{};
+bool pointer_pressed = false;
+void readPointer(lv_indev_drv_t *, lv_indev_data_t *data) {
+  data->point = pointer_point;
+  data->state = pointer_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+}
 void flush(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *pixels) {
   for (int y = area->y1; y <= area->y2; ++y) for (int x = area->x1; x <= area->x2; ++x)
     framebuffer[y * 480 + x] = *pixels++;
@@ -108,6 +120,15 @@ void capture(const char *name) {
   }
   fclose(file);
 }
+void pointerAt(int x, int y, bool pressed) {
+  pointer_point = {static_cast<lv_coord_t>(x), static_cast<lv_coord_t>(y)};
+  pointer_pressed = pressed;
+  advance(40);
+}
+void assertHome() {
+  assert(!DisplayControl::UsageView::active());
+  assert(!DisplayControl::ComputerView::active());
+}
 void assertBounds(lv_obj_t *object) {
   lv_area_t a, p; lv_obj_get_coords(object, &a); lv_obj_get_coords(lv_obj_get_parent(object), &p);
   assert(a.x1 >= p.x1 && a.x2 <= p.x2 && a.y1 >= p.y1 && a.y2 <= p.y2);
@@ -118,6 +139,9 @@ int main() {
   lv_disp_drv_t driver; lv_disp_drv_init(&driver);
   driver.hor_res = 480; driver.ver_res = 480; driver.draw_buf = &draw; driver.flush_cb = flush;
   lv_disp_drv_register(&driver);
+  lv_indev_drv_t pointer_driver; lv_indev_drv_init(&pointer_driver);
+  pointer_driver.type = LV_INDEV_TYPE_POINTER; pointer_driver.read_cb = readPointer;
+  lv_indev_drv_register(&pointer_driver);
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x000000), 0);
   lv_obj_set_style_pad_all(lv_scr_act(), 0, 0);
   fixture.ready = fixture.online = fixture.music_available = fixture.music_playing = true;
@@ -131,8 +155,43 @@ int main() {
   fixture.music_artwork_accent = 0x80BFEA;
   using namespace DisplayControl;
   showScreen(); refresh(); advance(550);
+  // Exercise real pointer input, including LVGL's gesture/click ordering.
+  for (int x : {220, 360}) {
+    pointerAt(x, 40, true); pointerAt(x, 40, false);
+    assert(x == 220 ? UsageView::active() : ComputerView::active());
+    UsageView::hide(); ComputerView::hide(); advance(200);
+    pointerAt(x, 40, true); pointerAt(x + 4, 44, true); pointerAt(x + 4, 44, false);
+    assert(x == 220 ? UsageView::active() : ComputerView::active());
+    UsageView::hide(); ComputerView::hide(); advance(200);
+    // Short movement never reaches LVGL's gesture threshold, but is not a tap.
+    pointerAt(x, 35, true); pointerAt(x, 49, true); pointerAt(x, 49, false);
+    assertHome(); assert(lv_obj_has_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN));
+    // Moving away then returning must remain cancelled.
+    pointerAt(x, 35, true); pointerAt(x + 18, 35, true);
+    pointerAt(x, 35, true); pointerAt(x, 35, false); assertHome();
+    // Pull down from an entry and release while still within its original hit area.
+    pointerAt(x, 23, true); pointerAt(x, 90, true); pointerAt(x, 59, true);
+    pointerAt(x, 59, false); assertHome();
+    assert(!lv_obj_has_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN));
+    hideBacklightPanel(); advance(200);
+    // Pull down past the button, cross the overlay, then release.
+    pointerAt(x, 35, true); pointerAt(x, 65, true); pointerAt(x, 105, true);
+    pointerAt(x, 150, true); pointerAt(x, 150, false); assertHome();
+    assert(!lv_obj_has_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN));
+    hideBacklightPanel(); advance(200);
+    // A subsequent independent tap remains usable after a consumed swipe.
+    pointerAt(x, 40, true); pointerAt(x, 40, false);
+    assert(x == 220 ? UsageView::active() : ComputerView::active());
+    UsageView::hide(); ComputerView::hide(); advance(200);
+  }
   // The existing home layout is preserved apart from the native Linux icon.
   capture("touch-home.ppm");
+  fixture.power_supported=true;fixture.external_screen_count=2;fixture.battery_percent=100;
+  strcpy(fixture.battery_status,"full");strcpy(fixture.power_mode,"performance");
+  pointerAt(220,98,true);pointerAt(220,98,false);assert(PowerView::active());
+  refresh();advance(120);capture("touch-power.ppm");
+  pointerAt(120,250,true);pointerAt(120,250,false);assert(commands.back().control=="off");
+  PowerView::hide();commands.clear();advance(120);
   for (int value : {0, 100}) {
     fixture.brightness = fixture.volume = value; ++fixture.revision; refresh(); advance(120);
     assert(lv_slider_get_value(brightness_slider) == value);
@@ -186,7 +245,7 @@ int main() {
   lv_event_send(brightness_slider, LV_EVENT_VALUE_CHANGED, nullptr);
   lv_event_send(brightness_slider, LV_EVENT_RELEASED, nullptr);
   assert(commands.size() == 2 && commands.back().control == "brightness" && commands.back().value == 81 && commands.back().final_value);
-  puts("Actual LVGL controls preview passed: bounds, backlight limits, volume synchronization, final commits and animation interruption.");
+  puts("Actual LVGL controls preview passed: navigation taps/jitter, short drags, drag-return cancellation, pull-down consumption, bounds, backlight limits, volume synchronization, final commits and animation interruption.");
 }
 ''', encoding="utf-8")
 
@@ -197,7 +256,7 @@ base = list((lvgl / "src").rglob("*.c"))
 base += [root / "firmware/src/ui/assets" / name for name in [
     "azoria_font_zh_16.c", "azoria_font_zh_28.c", "azoria_font_latin_16.c", "azoria_font_latin_28.c", "azoria_font_din_condensed_48.c", "azoria_font_usage_80.c", "azoria_font_usage_110.c"]]
 extra = [root / "firmware/src/ui/assets" / name for name in ["azoria_font_din_condensed_16.c", "azoria_font_music_38.c", "icons.c"]]
-extra += [root / "firmware/src/ui/image.cpp", root / "firmware/src/ui/display_badge.cpp", root / "firmware/src/features/display_control/usage_view.cpp", build / "preview.cpp"]
+extra += [root / "firmware/src/ui/image.cpp", root / "firmware/src/ui/display_badge.cpp", root / "firmware/src/features/display_control/usage_view.cpp", root / "firmware/src/features/display_control/computer_view.cpp", root / "firmware/src/features/display_control/power_view.cpp", build / "preview.cpp"]
 
 def compile_one(pair):
     index, source = pair

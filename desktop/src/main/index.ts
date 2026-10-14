@@ -13,6 +13,8 @@ import { MonitorController } from "./monitor"
 import { WallpaperManager } from "./wallpaper"
 import { MusicManager } from "./music"
 import { TouchSleepManager } from "./touch-sleep"
+import { DisplayPowerManager } from "./display-power"
+import { PowerDataService } from "./power-data"
 import { TouchRotationManager } from "./touch-rotation"
 import { CodexQuotaService } from "./codex-quota"
 import { UsageProviderStore } from "./usage-provider-store"
@@ -133,6 +135,22 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   app.setAppLogsPath()
   const logger = new LocalLogger(app.getPath("logs"))
   await logger.initialize().catch(() => undefined)
+  const startupStartedAt = Date.now()
+  const measureStartup = async <T>(stage: string, operation: () => Promise<T>): Promise<T> => {
+    const startedAt = Date.now()
+    try {
+      const result = await operation()
+      logger.info("desktop.startup_stage", { stage, durationMs: Date.now() - startedAt })
+      return result
+    } catch (error) {
+      logger.error("desktop.startup_stage_failed", {
+        stage,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    }
+  }
   const monitor = new MonitorController(
     config.display,
     path.resolve(app.getAppPath(), "desktop/profiles"),
@@ -142,7 +160,7 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
       : path.join(process.resourcesPath, "sidecar", process.platform === "win32" ? "azoria-ddc-sidecar.exe" : "azoria-ddc-sidecar"),
     logger,
   )
-  await monitor.initialize()
+  await measureStartup("monitor", () => monitor.initialize())
   const initialConnection = monitor.connectionSnapshot()
   if (initialConnection.displayId !== config.display) {
     await saveDisplayPreference(app.getPath("userData"), initialConnection.displayId)
@@ -152,18 +170,23 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
     ? path.resolve(app.getAppPath(), "sidecar/target/release", process.platform === "win32" ? "azoria-ddc-sidecar.exe" : "azoria-ddc-sidecar")
     : path.join(process.resourcesPath, "sidecar", process.platform === "win32" ? "azoria-ddc-sidecar.exe" : "azoria-ddc-sidecar")
   const brightnessLink = new BrightnessLinkManager(app.getPath("userData"), monitor)
-  await brightnessLink.initialize()
+  await measureStartup("brightness-link", () => brightnessLink.initialize())
   const computer = new ComputerStatsService(sidecarBinary)
   computer.start()
   app.once("before-quit", () => computer.stop())
   const wallpaper = new WallpaperManager(app.getPath("userData"))
-  await wallpaper.initialize()
+  await measureStartup("wallpaper", () => wallpaper.initialize())
   wallpaper.start()
   app.once("before-quit", () => wallpaper.stop())
   const touchSleep = new TouchSleepManager(app.getPath("userData"))
-  await touchSleep.initialize()
+  await measureStartup("touch-sleep", () => touchSleep.initialize())
+  const displayPower = new DisplayPowerManager(app.getPath("userData"), touchSleep, monitor)
+  await measureStartup("display-power", () => displayPower.initialize())
+  displayPower.start()
+  app.once("before-quit", () => displayPower.stop())
+  const powerData = new PowerDataService()
   const touchRotation = new TouchRotationManager(app.getPath("userData"))
-  await touchRotation.initialize()
+  await measureStartup("touch-rotation", () => touchRotation.initialize())
   const music = new MusicManager(
     isDevelopment
       ? path.resolve(app.getAppPath(), "sidecar/target/release", process.platform === "win32" ? "azoria-ddc-sidecar.exe" : "azoria-ddc-sidecar")
@@ -181,8 +204,8 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   const touchUsage = new TouchUsageService(codexQuota, usageProviders, apiUsage)
   touchUsage.start()
   app.once("before-quit", () => touchUsage.stop())
-  const lan = new LanController(config.desktopId, monitor, wallpaper, music, touchSleep, touchUsage, computer, brightnessLink, touchRotation)
-  await lan.start()
+  const lan = new LanController(config.desktopId, monitor, wallpaper, music, touchSleep, touchUsage, computer, brightnessLink, touchRotation, displayPower, powerData)
+  await measureStartup("lan", () => lan.start())
   const devices = new TouchManager(config.token)
   const diagnostics = new DiagnosticsController(logger, monitor, lan)
 
@@ -201,7 +224,7 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   }
   const startupAvailable = app.isPackaged && ["win32", "darwin"].includes(process.platform)
   const startupOptions = { path: process.execPath, args: ["--hidden"] }
-  preferences = new DesktopPreferencesManager(app.getPath("userData"), {
+  const preferencesManager = new DesktopPreferencesManager(app.getPath("userData"), {
     startupAvailable,
     getStartup: () => startupAvailable && app.getLoginItemSettings(startupOptions).openAtLogin,
     setStartup: (enabled) => app.setLoginItemSettings({ ...startupOptions, openAtLogin: enabled }),
@@ -210,7 +233,8 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
     }),
     unregister: (key) => globalShortcut.unregister(key),
   })
-  await preferences.initialize()
+  preferences = preferencesManager
+  await measureStartup("preferences", () => preferencesManager.initialize())
   function refreshTray(): void {
     if (!tray) return
     const state = brightnessLink.snapshot()
@@ -260,8 +284,13 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
 
   ipcMain.handle("monitor:status", () => monitor.status())
   ipcMain.handle("monitor:status-snapshot", () => monitor.statusSnapshot())
+  ipcMain.handle("monitor:control-state", () => monitor.controlState())
   ipcMain.handle("monitor:relay-status", () => lan.relayStatus())
-  ipcMain.handle("monitor:control", (_event, request: ControlRequest) => brightnessLink.control(request, "desktop-ui"))
+  ipcMain.handle("monitor:control", (_event, request: ControlRequest) => {
+    if (displayPower.snapshot().off && monitor.connectionSnapshot().transport !== "internal-panel" &&
+        !(request.control === "input" && request.value === "internal")) throw new Error("外接屏已熄灭，请先在电源面板恢复外接屏")
+    return brightnessLink.control(request, "desktop-ui")
+  })
   ipcMain.handle("monitor:relay-control", (_event, request: ControlRequest, sourceNonce: string, sourceCommandId: string) =>
     lan.relayControl(request, sourceNonce, sourceCommandId))
   ipcMain.handle("monitor:connection", () => monitor.connection())
@@ -318,7 +347,14 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   ipcMain.handle("wallpaper:upload", (_event, input) => wallpaper.upload(input))
   ipcMain.handle("wallpaper:remove", () => wallpaper.remove())
   ipcMain.handle("touch-sleep:settings", () => touchSleep.settings())
-  ipcMain.handle("touch-sleep:update", (_event, input) => touchSleep.update(input))
+  ipcMain.handle("touch-sleep:update", async (_event, input) => {
+    const settings = await touchSleep.update(input)
+    await displayPower.sync()
+    return settings
+  })
+  ipcMain.handle("power:data", () => powerData.collect())
+  ipcMain.handle("power:external-state", () => displayPower.snapshot())
+  ipcMain.handle("power:external-control", (_event, action) => displayPower.control(action))
   ipcMain.handle("touch-rotation:settings", () => touchRotation.settings())
   ipcMain.handle("touch-rotation:rotate-clockwise", () => touchRotation.rotateClockwise())
   ipcMain.handle("security:sign", (_event, message: string) => {
@@ -347,6 +383,7 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
     })
   })
 
+  logger.info("desktop.startup_complete", { durationMs: Date.now() - startupStartedAt })
   windowReady = true
   createWindow()
   app.on("activate", showWindow)

@@ -8,6 +8,9 @@ import type { MonitorController } from "./monitor"
 import type { WallpaperManager } from "./wallpaper"
 import type { MusicManager } from "./music"
 import type { TouchSleepManager } from "./touch-sleep"
+import type { DisplayPowerManager } from "./display-power"
+import type { PowerDataService } from "./power-data"
+import type { ExternalPowerAction } from "../shared/contracts"
 import type { TouchRotationManager } from "./touch-rotation"
 import type { TouchUsageService } from "./touch-usage"
 import type { ComputerStatsService } from "./computer"
@@ -128,11 +131,17 @@ export class LanController {
     private readonly computer?: ComputerStatsService,
     private readonly brightnessLink?: BrightnessLinkManager,
     private readonly touchRotation?: TouchRotationManager,
+    private readonly displayPower?: DisplayPowerManager,
+    private readonly powerData?: PowerDataService,
   ) {
     activeControllers.add(this)
   }
 
   private control(request: ControlRequest, source: "touch" | "desktop-peer"): Promise<MonitorStatus> {
+    if (this.displayPower?.snapshot().off && this.monitor.connectionSnapshot().transport !== "internal-panel" &&
+        !(request.control === "input" && request.value === "internal")) {
+      return Promise.reject(new Error("外接屏已熄灭，请先在电源面板恢复外接屏"))
+    }
     return this.brightnessLink ? this.brightnessLink.control(request, source) : this.monitor.control(request, source)
   }
 
@@ -181,6 +190,9 @@ export class LanController {
   }
 
   private probeLocalReachability(maxAgeMs = reachabilityCacheMs): Promise<boolean> {
+    // Keep the host available to Touch when its video outputs are intentionally
+    // disabled; wake-up commands must not depend on DDC reachability.
+    if (this.displayPower?.snapshot().off) { this.reachable = true; this.lastProbeAt = Date.now(); return Promise.resolve(true) }
     if (Date.now() - this.lastProbeAt < maxAgeMs) return Promise.resolve(this.reachable)
     if (this.reachabilityProbe) return this.reachabilityProbe
     this.reachabilityProbe = this.monitor.reachable()
@@ -435,6 +447,7 @@ export class LanController {
         touchSleepEndMinutes: touchSleep?.endMinutes ?? 0,
         touchSleepActive: touchSleep?.active ?? false,
         touchRotationDegrees: touchRotation?.degrees ?? 0,
+        ...this.displayPower?.touchStatus(),
         ...this.music?.touchStatus(),
       }
     }
@@ -601,11 +614,25 @@ export class LanController {
           touchSleepEndMinutes: touchSleep?.endMinutes ?? 0,
           touchSleepActive: touchSleep?.active ?? false,
           touchRotationDegrees: touchRotation?.degrees ?? 0,
+          ...this.displayPower?.touchStatus(),
         })
       }
       if (request.method === "GET" && request.url === "/v1/computer/status") {
         if (!this.computer) return this.json(response, 404, { ok: false, error: "computer statistics unavailable" })
         return this.json(response, 200, this.computer.touchStatus())
+      }
+      if (request.method === "GET" && request.url === "/v1/power/status") {
+        if (!this.displayPower || !this.powerData) return this.json(response, 404, { error: "power unavailable" })
+        const data = await this.powerData.collect()
+        return this.json(response, 200, { ...this.displayPower.snapshot(), batteryLevel: data.batteryLevel,
+          batteryStatus: data.batteryStatus, mode: data.mode, ...this.touchSleep?.settings() })
+      }
+      if (request.method === "POST" && request.url === "/v1/power/control") {
+        if (!this.displayPower) return this.json(response, 404, { error: "power unavailable" })
+        const body = await this.body(request)
+        if (!["off", "on", "link-on", "link-off"].includes(String(body.action))) return this.json(response, 400, { error: "invalid power action" })
+        // This endpoint remains callable while external displays are off.
+        return this.json(response, 200, await this.displayPower.control(body.action as ExternalPowerAction))
       }
       if (request.method === "POST" && request.url === "/v1/music/control") {
         if (!this.music) return this.json(response, 404, { ok: false, error: "music unavailable" })

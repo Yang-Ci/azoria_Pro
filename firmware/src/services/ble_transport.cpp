@@ -719,6 +719,24 @@ bool bleTransportRequest(const char *method, const String &path,
     }
     return decodeStatus(wire, response);
   }
+  if ((!strcmp(method, "GET") && path == "/v1/power/status") ||
+      (!strcmp(method, "POST") && path == "/v1/power/control" && body)) {
+    const String action = !strcmp(method, "GET") ? "status" : jsonString(body, "action");
+    if (action != "status" && action != "off" && action != "on" && action != "link-on" && action != "link-off") return false;
+    unsigned_request += "|W|" + action;
+    if (!exchange(unsigned_request, request_id, wire, timeout_ms) || field(wire, 3) != "W") return false;
+    if (action != "status") { response = "{\"accepted\":true}"; return field(wire, 4) == "1"; }
+    if (fieldCount(wire) != 16) return false;
+    response = "{\"supported\":" + String(field(wire,4)=="1"?"true":"false") +
+      ",\"off\":" + String(field(wire,5)=="1"?"true":"false") +
+      ",\"externalCount\":" + field(wire,6) +
+      ",\"linked\":" + String(field(wire,7)=="1"?"true":"false") +
+      ",\"busy\":" + String(field(wire,8)=="1"?"true":"false") +
+      ",\"batteryLevel\":" + field(wire,9) +
+      ",\"batteryStatus\":\"" + field(wire,10) +
+      "\",\"mode\":\"" + field(wire,11) + "\"}";
+    return true;
+  }
   if (!strcmp(method, "GET") && path.startsWith("/v1/music/status/")) {
     const String page = path.substring(path.length() - 1);
     if (page != "0" && page != "1" && page != "2") return false;

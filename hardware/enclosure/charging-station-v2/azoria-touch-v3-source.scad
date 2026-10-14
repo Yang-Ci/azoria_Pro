@@ -34,6 +34,9 @@ case_depth = 15.5;
 outer_corner_radius = 4.5;
 window_size = 82;         // 1 mm overlap on each edge of the 84 mm glass
 window_corner_radius = 3;
+front_nut_pocket_af = 5.7;   // M3 low-profile nut, 0.1 mm per side clearance
+front_nut_pocket_depth = 1.8; // leaves 0.6 mm of front-skin material
+front_screw_clearance = 3.2;
 
 // Rear cover tuning. Increase pad_height if the board rattles after assembly.
 lid_clearance = 0.12;
@@ -102,6 +105,11 @@ module rounded_prism(size, radius, height) {
         rounded_rect_2d(size, radius);
 }
 
+module hex_nut_pocket_2d(size) {
+    rotate(30)
+        circle(r = size / sqrt(3), $fn = 6);
+}
+
 // A square PCB needs square internal clearance. A rounded pocket with the same
 // nominal width becomes much smaller at its corners and prevents insertion even
 // when every mounting hole is correctly located.
@@ -154,6 +162,21 @@ module front_shell() {
                      case_depth - port_opening_front_offset + 2 * epsilon],
                     center = true
                 );
+
+        // Captive M3 nuts on the display face. The 84 mm glass overlaps the
+        // 82 mm window by 1 mm, hiding these shallow pockets after assembly.
+        for (x = [-hole_offset, hole_offset])
+            for (y = [-hole_offset, hole_offset]) {
+                translate([x, y, -epsilon])
+                    linear_extrude(height = front_nut_pocket_depth + epsilon)
+                        hex_nut_pocket_2d(front_nut_pocket_af);
+
+                translate([x, y, front_nut_pocket_depth - epsilon])
+                    cylinder(
+                        d = front_screw_clearance,
+                        h = front_skin - front_nut_pocket_depth + 2 * epsilon
+                    );
+            }
     }
 }
 
@@ -210,9 +233,10 @@ module rear_lid() {
                     translate([x, y, lid_thickness - epsilon])
                         difference() {
                             cylinder(d = 6.2, h = pad_height + epsilon);
-                            translate([0, 0, -epsilon])
+                            // 3.5 mm gives a 0.25 mm radial clearance for M3.
+                            translate([0, 0, -lid_thickness])
                                 cylinder(d = mount_hole_diameter + 0.5,
-                                         h = pad_height + 3 * epsilon);
+                                         h = pad_height + lid_thickness + 3 * epsilon);
                         }
         }
 

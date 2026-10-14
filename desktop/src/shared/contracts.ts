@@ -12,6 +12,11 @@ export interface MonitorStatus {
   mute: boolean
   input: ControlTarget
   available?: boolean
+  externalPowerSupported?: boolean
+  externalScreensOff?: boolean
+  externalScreenCount?: number
+  externalPowerLinked?: boolean
+  externalPowerBusy?: boolean
   wallpaperHash?: string
   wallpaperSize?: number
   wallpaperIdleMinutes?: WallpaperIdleMinutes
@@ -63,6 +68,21 @@ export interface MonitorDisplaySummary {
   driver?: string
   system?: MonitorSystem
   transport?: MonitorTransport
+  connector?: string
+  connectionType?: InputSource
+}
+
+export interface MonitorInputTarget {
+  input: ControlTarget
+  displayId: string | null
+  displayName: string | null
+  action: "select-display" | "switch-input" | "unavailable"
+}
+
+export interface MonitorControlState {
+  status: MonitorStatus
+  connection: MonitorConnectionInfo
+  targets: MonitorInputTarget[]
 }
 
 export interface MonitorDisplayList {
@@ -346,6 +366,28 @@ export interface DiagnosticsReport {
 
 export type PowerMode = "performance" | "balanced" | "power-saver" | "unknown"
 
+export interface PowerData {
+  available: boolean
+  batteryLevel: number | null
+  batteryStatus: "charging" | "discharging" | "full" | "no-battery" | "unknown"
+  devices: Array<{ name: string; level: number | null }>
+  mode: PowerMode
+  sampledAt: number | null
+  error: string | null
+}
+
+export type ExternalPowerAction = "off" | "on" | "link-on" | "link-off"
+export interface ExternalPowerState {
+  supported: boolean
+  off: boolean
+  externalCount: number
+  internalAvailable: boolean
+  linked: boolean
+  scheduleActive: boolean
+  busy: boolean
+  error: string | null
+}
+
 export interface PowerApi {
   mode(): Promise<PowerMode>
 }
@@ -376,6 +418,7 @@ export interface DesktopApi {
   monitor: {
     status(): Promise<MonitorStatus>
     statusSnapshot(): Promise<MonitorStatus>
+    controlState(): Promise<MonitorControlState>
     relayStatus(): Promise<MonitorStatus>
     control(request: ControlRequest): Promise<MonitorStatus>
     relayControl(request: ControlRequest, sourceNonce: string, sourceCommandId: string): Promise<ControlRequest["value"]>
@@ -427,5 +470,8 @@ export interface DesktopApi {
   }
   power: {
     mode(): Promise<PowerMode>
+    data(): Promise<PowerData>
+    externalState(): Promise<ExternalPowerState>
+    externalControl(action: ExternalPowerAction): Promise<ExternalPowerState>
   }
 }

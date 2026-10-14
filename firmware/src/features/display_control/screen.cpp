@@ -10,6 +10,7 @@
 #include "features/display_control/service.h"
 #include "features/display_control/usage_view.h"
 #include "features/display_control/computer_view.h"
+#include "features/display_control/power_view.h"
 #include "features/wallpaper/wallpaper.h"
 #include "platform/board.h"
 #include "ui/display_badge.h"
@@ -63,12 +64,18 @@ int16_t pending_input = -1;
 int16_t pressed_input = -1;
 lv_point_t input_press_point{};
 uint32_t input_click_block_until = 0;
+lv_obj_t *navigation_press_target = nullptr;
+lv_point_t navigation_press_point{};
+bool navigation_tap_pending = false;
+constexpr int kNavigationTapSlop = 10;
 bool controls_enabled = false;
 int current_backlight_percent = 86;
 uint32_t last_interaction_at = 0;
 bool wallpaper_exit_requested = false;
 bool touch_sleep_applied = false;
+uint32_t touch_sleep_wake_until = 0;
 lv_obj_t *music_view = nullptr;
+lv_obj_t *power_open_button = nullptr;
 lv_obj_t *music_title = nullptr;
 lv_obj_t *music_artist = nullptr;
 lv_obj_t *music_status = nullptr;
@@ -726,7 +733,11 @@ void screenGesture(lv_event_t *) {
   if (!input) return;
   if (lv_indev_get_gesture_dir(input) != LV_DIR_BOTTOM) return;
   if (backlight_panel && !lv_obj_has_flag(backlight_panel, LV_OBJ_FLAG_HIDDEN)) return;
+  navigation_tap_pending = false;
   showBacklightPanel();
+  // Opening an overlay must consume the contact: LVGL otherwise emits CLICKED
+  // on the original button at release, which can immediately open another view.
+  lv_indev_wait_release(input);
 }
 
 void wallpaperButtonClicked(lv_event_t *) {
@@ -894,6 +905,7 @@ void showMusicView(lv_event_t *) {
   hideBacklightPanel();
   UsageView::hide();
   ComputerView::hide();
+  PowerView::hide();
   music_view_active = true;
   lv_obj_clear_flag(music_view, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(music_view);
@@ -904,6 +916,7 @@ void showMusicView(lv_event_t *) {
 void showUsageView(lv_event_t *) {
   hideBacklightPanel();
   ComputerView::hide();
+  PowerView::hide();
   UsageView::show();
   last_interaction_at = millis();
   scheduleFullRedraw();
@@ -913,9 +926,52 @@ void showComputerView(lv_event_t *) {
   hideBacklightPanel();
   hideMusicView(nullptr);
   UsageView::hide();
+  PowerView::hide();
   ComputerView::show();
   last_interaction_at = millis();
   scheduleFullRedraw();
+}
+
+void showPowerView(lv_event_t *) {
+  hideBacklightPanel(); hideMusicView(nullptr); UsageView::hide(); ComputerView::hide();
+  PowerView::show(); last_interaction_at=millis(); scheduleFullRedraw();
+}
+
+void navigationEntryEvent(lv_event_t *event) {
+  const lv_event_code_t code = lv_event_get_code(event);
+  lv_obj_t *target = lv_event_get_target(event);
+  lv_indev_t *input = lv_indev_get_act();
+  if (code == LV_EVENT_PRESSED) {
+    navigation_press_target = target;
+    navigation_tap_pending = input != nullptr;
+    if (input) lv_indev_get_point(input, &navigation_press_point);
+    return;
+  }
+  if (target != navigation_press_target) return;
+  if (code == LV_EVENT_PRESS_LOST) {
+    navigation_tap_pending = false;
+    navigation_press_target = nullptr;
+    return;
+  }
+  if (code != LV_EVENT_PRESSING && code != LV_EVENT_RELEASED &&
+      code != LV_EVENT_CLICKED) return;
+  if (input) {
+    lv_point_t point;
+    lv_indev_get_point(input, &point);
+    if (abs(point.x - navigation_press_point.x) > kNavigationTapSlop ||
+        abs(point.y - navigation_press_point.y) > kNavigationTapSlop) {
+      // Keep cancellation latched even if the finger returns to its start.
+      navigation_tap_pending = false;
+    }
+  }
+  if (code != LV_EVENT_CLICKED) return;
+  const bool open = navigation_tap_pending;
+  navigation_tap_pending = false;
+  navigation_press_target = nullptr;
+  if (!open) return;
+  if (target==power_open_button) showPowerView(event);
+  else if (lv_event_get_user_data(event)) showComputerView(event);
+  else showUsageView(event);
 }
 
 void hideImmersiveLyrics(lv_event_t *) {
@@ -1307,6 +1363,8 @@ void setControlsEnabled(bool enabled) {
 }  // namespace
 
 void showScreen() {
+  navigation_press_target = nullptr;
+  navigation_tap_pending = false;
   lv_obj_clean(lv_scr_act());
   controls = lv_scr_act();
   disableScrolling(controls);
@@ -1342,7 +1400,8 @@ void showScreen() {
   lv_obj_set_style_shadow_width(usage_open_button, 0, 0);
   lv_obj_set_style_radius(usage_open_button, 8, 0);
   disableScrolling(usage_open_button);
-  lv_obj_add_event_cb(usage_open_button, showUsageView, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_flag(usage_open_button, LV_OBJ_FLAG_PRESS_LOCK | LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(usage_open_button, navigationEntryEvent, LV_EVENT_ALL, nullptr);
   lv_obj_t *usage_open_label = staticLabel(usage_open_button, "Codex / API", 0, 0, &lv_font_montserrat_16, 0xFFC166);
   lv_obj_center(usage_open_label);
 
@@ -1354,9 +1413,20 @@ void showScreen() {
   lv_obj_set_style_shadow_width(computer_button, 0, 0);
   lv_obj_set_style_radius(computer_button, 8, 0);
   disableScrolling(computer_button);
-  lv_obj_add_event_cb(computer_button, showComputerView, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_flag(computer_button, LV_OBJ_FLAG_PRESS_LOCK | LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(computer_button, navigationEntryEvent, LV_EVENT_ALL, computer_button);
   lv_obj_t *computer_label = staticLabel(computer_button, "PC Status", 0, 0, &lv_font_montserrat_16, 0x20DFE5);
   lv_obj_center(computer_label);
+
+  lv_obj_t *power_button=lv_btn_create(controls);
+  power_open_button=power_button;
+  lv_obj_set_pos(power_button,155,76);lv_obj_set_size(power_button,130,44);
+  lv_obj_set_style_bg_color(power_button,color(0x142A2C),0);
+  lv_obj_set_style_border_width(power_button,0,0);lv_obj_set_style_shadow_width(power_button,0,0);
+  lv_obj_set_style_radius(power_button,8,0);disableScrolling(power_button);
+  lv_obj_add_flag(power_button,LV_OBJ_FLAG_PRESS_LOCK|LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(power_button,navigationEntryEvent,LV_EVENT_ALL,nullptr);
+  lv_obj_center(staticLabel(power_button,"Power",0,0,&lv_font_montserrat_16,0x20DFE5));
 
   status_dot = lv_obj_create(controls);
   lv_obj_set_pos(status_dot, 446, 20);
@@ -1485,6 +1555,7 @@ void showScreen() {
   createMusicView(controls);
   UsageView::create(controls);
   ComputerView::create(controls);
+  PowerView::create(controls);
   updateInputButtons();
   updateMuteVisual();
   updateBrightnessSegments(50);
@@ -1500,14 +1571,15 @@ void refresh() {
   if (!controls || !brightness_slider) return;
   RemoteState state = getRemoteState();
   applyRotation(state.touch_rotation_degrees);
-  applyTouchSleep(touchSleepActive(state));
+  applyTouchSleep(touchSleepActive(state) &&
+      (touch_sleep_wake_until==0 || static_cast<int32_t>(millis()-touch_sleep_wake_until)>=0));
   if (touch_sleep_applied) return;
   if (wallpaper_exit_requested) {
     wallpaper_exit_requested = false;
     Wallpaper::hide();
     scheduleFullRedraw();
   }
-  if (!Wallpaper::active() && !music_view_active && !UsageView::active() && !ComputerView::active() &&
+  if (!Wallpaper::active() && !music_view_active && !UsageView::active() && !ComputerView::active() && !PowerView::active() &&
       wallpaper_idle_minutes > 0 &&
       millis() - last_interaction_at >=
           static_cast<uint32_t>(wallpaper_idle_minutes) * 60UL * 1000UL) {
@@ -1520,6 +1592,7 @@ void refresh() {
   }
   UsageView::refresh(state);
   ComputerView::refresh(state);
+  PowerView::refresh(state);
   if (static_cast<int32_t>(millis() - next_clock_update) >= 0) {
     updateClock();
     next_clock_update = millis() + 1000;
@@ -1698,7 +1771,10 @@ bool takeFullRedrawRequest() {
 void noteInteraction() {
   last_interaction_at = millis();
   if (Wallpaper::active()) wallpaper_exit_requested = true;
+  if (touch_sleep_wake_until) touch_sleep_wake_until=millis()+30000;
 }
+
+void wakeScreenTemporarily() { touch_sleep_wake_until=millis()+30000; applyTouchSleep(false); noteInteraction(); }
 
 bool screenSleeping() {
   return touch_sleep_applied;

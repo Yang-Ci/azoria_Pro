@@ -173,12 +173,18 @@ void logMemory(const char *stage) {
 }
 
 void touchRead(lv_indev_drv_t *, lv_indev_data_t *data) {
+  static bool wake_contact_consumed=false;
   Board::TouchPoint point{};
   const int count = Board::readTouches(&point, 1);
   if (DisplayControl::screenSleeping()) {
+    if(count>0){DisplayControl::wakeScreenTemporarily();wake_contact_consumed=true;}
     touch_filter.reset();
     data->state = LV_INDEV_STATE_REL;
     return;
+  }
+  if(wake_contact_consumed){
+    if(count==0)wake_contact_consumed=false;
+    touch_filter.reset();data->state=LV_INDEV_STATE_REL;return;
   }
   if (touch_filter.update(count, point)) {
     DisplayControl::noteInteraction();

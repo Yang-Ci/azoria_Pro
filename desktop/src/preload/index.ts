@@ -40,6 +40,7 @@ const api: DesktopApi = {
   monitor: {
     status: () => ipcRenderer.invoke("monitor:status"),
     statusSnapshot: () => ipcRenderer.invoke("monitor:status-snapshot"),
+    controlState: () => ipcRenderer.invoke("monitor:control-state"),
     relayStatus: () => ipcRenderer.invoke("monitor:relay-status"),
     control: (request: ControlRequest) => ipcRenderer.invoke("monitor:control", request),
     relayControl: (request: ControlRequest, sourceNonce: string, sourceCommandId: string) =>
@@ -94,6 +95,9 @@ const api: DesktopApi = {
   },
   power: {
     mode: () => ipcRenderer.invoke("power:mode"),
+    data: () => ipcRenderer.invoke("power:data"),
+    externalState: () => ipcRenderer.invoke("power:external-state"),
+    externalControl: (action) => ipcRenderer.invoke("power:external-control", action),
   },
 }
 

@@ -67,6 +67,15 @@ struct RemoteState {
   bool volume_pending = false;
   bool mute_pending = false;
   bool input_pending = false;
+  bool power_supported = false;
+  bool external_screens_off = false;
+  bool external_power_linked = false;
+  bool power_pending = false;
+  bool power_busy = false;
+  uint8_t external_screen_count = 0;
+  int16_t battery_percent = -1;
+  char battery_status[16] = "unknown";
+  char power_mode[16] = "unknown";
   bool touch_sleep_enabled = false;
   uint16_t touch_sleep_start_minutes = 0;
   uint16_t touch_sleep_end_minutes = 0;
@@ -101,6 +110,7 @@ bool queueNumericControl(const char *control, int value, bool final_value = true
 bool queueBooleanControl(const char *control, bool value);
 bool queueStringControl(const char *control, const char *value);
 bool queueMusicControl(const char *action, uint32_t position_ms = 0);
+bool queuePowerControl(const char *action);
 void copyMusicArtwork(uint8_t *pixels, size_t size);
 
 }  // namespace DisplayControl
