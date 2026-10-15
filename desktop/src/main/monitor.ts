@@ -54,6 +54,20 @@ interface SidecarResponse {
   error?: string
 }
 
+interface CachedDisplayControl {
+  signature: string
+  at: number
+  profile: MonitorProfile
+  manualProfileId?: string
+  hid?: { vendorId: number; productId: number }
+  available: MonitorTransport[]
+  transport: MonitorTransport
+  status: MonitorStatus
+  statusReady: boolean
+  lastSuccessAt: number
+  selectedInputTarget?: { displayId: string; input: InputSource }
+}
+
 const initialStatus: MonitorStatus = { brightness: 50, volume: 20, mute: false, input: "usbc" }
 
 function isInput(value: unknown): value is InputSource {
@@ -154,6 +168,7 @@ export class MonitorController {
   private pendingControls = 0
   private lastControlAt = 0
   private backgroundPending = false
+  private externalPowerOff = false
   private readonly latestControl = new Map<ControlName, number>()
   private requestSequence = 0
   private displayGeneration = 0
@@ -163,6 +178,7 @@ export class MonitorController {
   private inputDetectionRefresh?: Promise<void>
   private displayTopologyRefresh?: Promise<void>
   private selectedInputTarget?: { displayId: string; input: InputSource }
+  private readonly displayControlCache = new Map<string, CachedDisplayControl>()
   private publishedControlState?: MonitorControlState
   private lastPreview?: { control: ControlName; value: ControlRequest["value"]; source: ControlSource; transport: MonitorTransport; at: number }
   private readonly brightnessControllers = new Map<string, { ready: Promise<MonitorController>; expiresAt: number }>()
@@ -225,6 +241,10 @@ export class MonitorController {
     this.pendingControls++
     this.lastControlAt = Date.now()
     return this.enqueue(operation).finally(() => { this.pendingControls--; this.lastControlAt = Date.now() })
+  }
+
+  setExternalPowerOff(off: boolean): void {
+    this.externalPowerOff = off
   }
 
   displayPowerTargets(): Promise<DisplayPowerTarget[]> {
@@ -372,6 +392,7 @@ export class MonitorController {
   }
 
   async listDisplays(): Promise<{ activeDisplayId: string; displays: MonitorDisplaySummary[] }> {
+    if (this.externalPowerOff) return { activeDisplayId: this.activeDisplayId(), displays: structuredClone(this.displays) }
     const displays = await this.enumerateDisplays()
     if (JSON.stringify(displays) !== JSON.stringify(this.displays)) this.brightnessControllers.clear()
     this.displays = displays
@@ -411,6 +432,7 @@ export class MonitorController {
 
   private async refreshInputDetectionNow(): Promise<void> {
     for (const display of this.displays) {
+      if (this.externalPowerOff) return
       if (display.transport === "internal-panel") continue
       const signature = JSON.stringify([display.name, display.connector, display.connectionType])
       const cached = this.inputDetection.get(display.id)
@@ -725,6 +747,15 @@ export class MonitorController {
 
   private activateDisplay(display: MonitorDisplaySummary, incrementGeneration = true): void {
     const current = this.activeDisplay()
+    if (current && this.profile && this.available.size && this.transportFailures === 0) {
+      this.displayControlCache.set(current.id, {
+        signature: this.displayControlSignature(current), at: Date.now(), profile: this.profile,
+        manualProfileId: this.manualProfileId, hid: this.detectedUsbHid,
+        available: [...this.available], transport: this.transport, status: this.snapshot(),
+        statusReady: this.statusReady, lastSuccessAt: this.lastTransportSuccessAt,
+        selectedInputTarget: this.selectedInputTarget,
+      })
+    }
     if (current?.transport !== "internal-panel" && isInput(this.lastStatus.input)) {
       this.lastExternalInput = this.lastStatus.input
     }
@@ -732,6 +763,32 @@ export class MonitorController {
     if (incrementGeneration && this.display !== display.id) this.displayGeneration++
     this.display = display.id
     this.resetActiveDisplayState()
+    // Shortcuts may revisit a recently verified route. Enumeration above still
+    // checks that the stable ID is connected; explicit dropdown selection keeps
+    // its existing full detection behavior.
+    const cached = this.displayControlCache.get(display.id)
+    if (!incrementGeneration && cached && Date.now() - cached.at < 30000 &&
+        cached.signature === this.displayControlSignature(display) && this.profiles.includes(cached.profile)) {
+      this.profile = cached.profile
+      this.manualProfileId = cached.manualProfileId
+      this.detectedUsbHid = cached.hid
+      this.available = new Set(cached.available)
+      this.transport = cached.transport
+      this.lastKnownTransport = cached.transport
+      this.lastTransportSuccessAt = cached.lastSuccessAt
+      this.detectedAt = cached.at
+      this.displayName = display.name
+      this.lastStatus = { ...cached.status }
+      this.statusReady = cached.statusReady
+      this.selectedInputTarget = cached.selectedInputTarget
+    }
+    for (const id of this.displayControlCache.keys()) {
+      if (!this.displays.some(item => item.id === id)) this.displayControlCache.delete(id)
+    }
+  }
+
+  private displayControlSignature(display: MonitorDisplaySummary): string {
+    return JSON.stringify([display.name, display.connector, display.connectionType, display.transport, display.system])
   }
 
   private resetActiveDisplayState(): void {
@@ -770,6 +827,7 @@ export class MonitorController {
   }
 
   async connection(force = false): Promise<MonitorConnectionInfo> {
+    if (this.externalPowerOff) return this.connectionSnapshot()
     if (force || !this.profile || (!this.controlsActive() && !this.recentlyReachable())) {
       await this.enqueue(() => this.detect(force))
     }
@@ -894,9 +952,11 @@ export class MonitorController {
   }
 
   private async readStatus(duringControl = false): Promise<MonitorStatus> {
+    if (this.externalPowerOff && !duringControl) return this.snapshot()
     if (!this.candidates().length) await this.detect()
     let success = 0
     for (const control of controls) {
+      if (this.externalPowerOff && !duringControl) return this.snapshot()
       if (this.activeDisplay()?.transport === "internal-panel" && control === "input") continue
       if (control === "input" && this.selectedInputTarget?.displayId === this.activeDisplayId()) continue
       const activeInput = this.inputDetection.get(this.activeDisplayId())
@@ -945,7 +1005,7 @@ export class MonitorController {
     let elapsed = 0
     this.backgroundTimer = setInterval(() => {
       elapsed += intervalMs
-      if (this.backgroundPending || this.controlsActive()) return
+      if (this.externalPowerOff || this.backgroundPending || this.controlsActive()) return
       const readFull = elapsed >= fullIntervalMs
       if (readFull) elapsed = 0
       this.backgroundPending = true
@@ -957,6 +1017,7 @@ export class MonitorController {
   }
 
   private async readFastStatus(): Promise<MonitorStatus> {
+    if (this.externalPowerOff) return this.snapshot()
     const value = await this.readStable("brightness")
     if (typeof value === "number") this.lastStatus.brightness = value
     this.statusReady = true
@@ -977,6 +1038,7 @@ export class MonitorController {
   }
 
   private async checkReachable(): Promise<boolean> {
+    if (this.externalPowerOff) return true
     if (this.recentlyReachable()) return true
     // Reuse the working route; forced discovery used to add a probe before
     // another two reads on every heartbeat reachability check.
@@ -1005,6 +1067,7 @@ export class MonitorController {
   }
 
   reachable(): Promise<boolean> {
+    if (this.externalPowerOff) return Promise.resolve(true)
     if (this.recentlyReachable()) return Promise.resolve(true)
     return this.enqueue(() => this.checkReachable())
   }
@@ -1047,10 +1110,10 @@ export class MonitorController {
       throw new Error(target === "internal" ? "未检测到笔记本内屏" : "未检测到外接显示器")
     }
     if (this.activeDisplayId() !== selected.id) {
-      this.activateDisplay(selected)
-      await this.detect(true)
+      this.activateDisplay(selected, false)
+      if (!this.candidates().length) await this.detect(true, this.displays, false)
     } else if (!this.profile || !this.candidates().length) {
-      await this.detect(true)
+      await this.detect(true, this.displays, false)
     }
     if (!this.candidates().length) {
       throw new Error(target === "internal" ? "笔记本内屏控制不可用" : "外接显示器控制不可用")
@@ -1071,7 +1134,7 @@ export class MonitorController {
     })
     if (control === "input" && value === "internal") {
       await this.activateControlTarget(value)
-      const status = await this.readStatus(true)
+      const status = this.statusReady ? this.snapshot() : await this.readStatus(true)
       this.lastStatus.input = "internal"
       this.logger?.info("control.success", {
         operation, source, control, requested: value, confirmed: value,
@@ -1090,12 +1153,12 @@ export class MonitorController {
         // Commands queued after a shortcut follow its destination. Explicit
         // dropdown changes still invalidate commands for the previous screen.
         this.activateDisplay(selected, false)
-        await this.detect(true, this.displays)
+        if (!this.candidates().length) await this.detect(true, this.displays, false)
       }
       if (target.action === "select-display") {
         if (!this.candidates().length) throw new Error("目标显示器控制不可用，请检查连接")
         if (this.inputDetection.get(selected.id)?.selectOnly) this.selectedInputTarget = { displayId: selected.id, input: value }
-        await this.readStatus(true)
+        if (!this.statusReady) await this.readStatus(true)
         this.lastStatus.input = value
         this.logger?.info("control.target_selected", { source, input: value, display: selected.id, displayName: selected.name })
         return this.snapshot()

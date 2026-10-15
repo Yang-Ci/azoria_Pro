@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process"
+import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
 
 const run = promisify(execFile)
@@ -11,6 +11,7 @@ export interface DisplayPowerBackend {
   capture(): Promise<DisplayLayout>
   isolate(layout: DisplayLayout): Promise<void>
   restore(layout: DisplayLayout): Promise<void>
+  watchChanges?(changed: () => void): () => void
 }
 
 const mutterScript = String.raw`
@@ -71,6 +72,25 @@ print(json.dumps({"ok":True}))
 `
 
 export class GnomeDisplayPowerBackend implements DisplayPowerBackend {
+  watchChanges(changed: () => void): () => void {
+    if (process.platform !== "linux") return () => undefined
+    const watcher = spawn("/usr/bin/python3", ["-c", String.raw`
+from gi.repository import Gio, GLib
+bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+bus.signal_subscribe("org.gnome.Mutter.DisplayConfig", "org.gnome.Mutter.DisplayConfig", "MonitorsChanged",
+    "/org/gnome/Mutter/DisplayConfig", None, Gio.DBusSignalFlags.NONE, lambda *args: print("changed", flush=True))
+GLib.MainLoop().run()
+`], { stdio: ["ignore", "pipe", "ignore"] })
+    let debounce: NodeJS.Timeout | undefined
+    watcher.stdout.on("data", () => {
+      if (debounce) clearTimeout(debounce)
+      debounce = setTimeout(changed, 200)
+    })
+    // Periodic checks remain available if the session bus watcher exits.
+    watcher.on("error", () => undefined)
+    return () => { if (debounce) clearTimeout(debounce); watcher.kill() }
+  }
+
   private async command(action: string, layout?: DisplayLayout): Promise<string> {
     if (process.platform !== "linux") throw new Error("外接屏一键息屏目前需要 Ubuntu / GNOME 桌面")
     try {

@@ -2,6 +2,8 @@ import type { ControlRequest, MonitorStatus, MusicControlRequest } from "../../s
 import { touchUsageBlePage } from "../../shared/touch-usage"
 import type { TouchUsageStatus } from "../../shared/touch-usage"
 import { computerBlePage, computerTouchStatus } from "../../shared/computer"
+import { touchBluetoothStatus, maxTouchBluetoothDevices } from "../../shared/touch-power"
+import { touchSleepDeviceEnabled } from "../../shared/touch-sleep"
 
 const SERVICE = "7a6f0001-4e6d-4a9b-8f41-3c41588fee68"
 const REQUEST = "7a6f0002-4e6d-4a9b-8f41-3c41588fee68"
@@ -181,9 +183,16 @@ async function handleRequest(
       payload = computerBlePage(computerBleSnapshot.status, page)
     } else if (fields[3] === "W" && fields.length === 6) {
       const action = fields[4]
-      if (action === "status") {
+      if (action === "status" || /^status-\d{1,3}$/.test(action || "")) {
+        const index = action === "status" ? 0 : Number(action!.slice(7))
+        if (index >= maxTouchBluetoothDevices) throw new Error("unsupported")
         const [power, data, sleep] = await Promise.all([window.azoria.power.externalState(), window.azoria.power.data(), window.azoria.touchSleep.settings()])
-        payload = `W|${power.supported ? 1 : 0}|${power.off ? 1 : 0}|${power.externalCount}|${power.linked ? 1 : 0}|${power.busy ? 1 : 0}|${data.batteryLevel ?? -1}|${data.batteryStatus}|${data.mode}|${sleep.enabled ? 1 : 0}|${sleep.startMinutes}|${sleep.endMinutes}`
+        payload = `W|${power.supported ? 1 : 0}|${power.off ? 1 : 0}|${power.externalCount}|${power.linked ? 1 : 0}|${power.busy ? 1 : 0}|${data.batteryLevel ?? -1}|${data.batteryStatus}|${data.mode}|${touchSleepDeviceEnabled(sleep) ? 1 : 0}|${sleep.startMinutes}|${sleep.endMinutes}`
+        // Keep the legacy status reply unchanged for older firmware.
+        if (action !== "status") {
+          const bluetooth = touchBluetoothStatus(data, index)
+          payload += `|${data.available ? 1 : 0}|${bluetooth.bluetoothCount}|${bluetooth.bluetoothIndex}|${bluetooth.bluetoothName}|${bluetooth.bluetoothLevel}`
+        }
       } else if (action === "off" || action === "on" || action === "link-on" || action === "link-off") {
         await window.azoria.power.externalControl(action)
         payload = "W|1"

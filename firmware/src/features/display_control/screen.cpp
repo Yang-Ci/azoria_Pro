@@ -463,7 +463,10 @@ lv_obj_t *adjustmentPanel(lv_obj_t *parent, const char *title, const char *subti
 }
 
 void setFooter(const char *text) {
-  if (footer_text) lv_label_set_text(footer_text, text);
+  if (footer_text) {
+    lv_label_set_text(footer_text, text);
+    lv_obj_set_style_text_color(footer_text, color(0xFF6B6B), 0);
+  }
 }
 
 void scheduleFullRedraw() {
@@ -500,7 +503,8 @@ int inputIndex(const char *value) {
 void updateInputButtons(bool pending = false) {
   for (int index = 0; index < kInputCount; ++index) {
     if (!input_buttons[index]) continue;
-    bool selected = index == active_input;
+    const int selected_input = pending && pending_input >= 0 ? pending_input : active_input;
+    bool selected = index == selected_input;
     lv_color_t button_color =
         color(selected ? 0xE1F4FF : 0x1D1D1D);
     lv_obj_set_style_bg_color(input_buttons[index], button_color, 0);
@@ -650,7 +654,8 @@ void inputClicked(lv_event_t *event) {
     return;
   }
   pressed_input = -1;
-  if (index < 0 || index >= kInputCount || index == active_input) return;
+  const int selected_input = pending_input >= 0 ? pending_input : active_input;
+  if (index < 0 || index >= kInputCount || index == selected_input) return;
   if (brightness_dragging || volume_dragging) return;
   if (!queueStringControl("input", kInputValues[index])) {
     setFooter("切换失败");
@@ -658,7 +663,8 @@ void inputClicked(lv_event_t *event) {
   }
   pending_input = static_cast<int16_t>(index);
   updateInputButtons(true);
-  setFooter("");
+  setFooter("正在切换信号源");
+  lv_obj_set_style_text_color(footer_text, color(0xFFC166), 0);
   Serial.printf("INPUT_COMMIT,INDEX=%d,VALUE=%s\n",
                 index, kInputValues[index]);
   scheduleFullRedraw();
@@ -1426,7 +1432,7 @@ void showScreen() {
   lv_obj_set_style_radius(power_button,8,0);disableScrolling(power_button);
   lv_obj_add_flag(power_button,LV_OBJ_FLAG_PRESS_LOCK|LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_add_event_cb(power_button,navigationEntryEvent,LV_EVENT_ALL,nullptr);
-  lv_obj_center(staticLabel(power_button,"Power",0,0,&lv_font_montserrat_16,0x20DFE5));
+  lv_obj_center(staticLabel(power_button,"电源",0,0,&azoria_font_zh_16,0x20DFE5));
 
   status_dot = lv_obj_create(controls);
   lv_obj_set_pos(status_dot, 446, 20);
@@ -1751,7 +1757,8 @@ void refresh() {
     else lv_obj_add_flag(button, LV_OBJ_FLAG_HIDDEN);
   }
 
-  const char *message = localizedMessage(state.message);
+  const char *message = state.input_pending ? "正在切换信号源" : localizedMessage(state.message);
+  if (footer_text) lv_obj_set_style_text_color(footer_text, color(state.input_pending ? 0xFFC166 : 0xFF6B6B), 0);
   if (footer_text && strcmp(lv_label_get_text(footer_text), message)) {
     lv_label_set_text(footer_text, message);
     lv_obj_align(footer_text, LV_ALIGN_TOP_RIGHT, -16, 132);

@@ -719,14 +719,16 @@ bool bleTransportRequest(const char *method, const String &path,
     }
     return decodeStatus(wire, response);
   }
-  if ((!strcmp(method, "GET") && path == "/v1/power/status") ||
+  if ((!strcmp(method, "GET") && (path == "/v1/power/status" || path.startsWith("/v1/power/status?device="))) ||
       (!strcmp(method, "POST") && path == "/v1/power/control" && body)) {
-    const String action = !strcmp(method, "GET") ? "status" : jsonString(body, "action");
-    if (action != "status" && action != "off" && action != "on" && action != "link-on" && action != "link-off") return false;
+    const bool reading = !strcmp(method, "GET");
+    const String action = reading ? (path.indexOf('?') >= 0 ? String("status-") + path.substring(path.indexOf('=') + 1) : String("status")) : jsonString(body, "action");
+    if (!reading && action != "off" && action != "on" && action != "link-on" && action != "link-off") return false;
     unsigned_request += "|W|" + action;
     if (!exchange(unsigned_request, request_id, wire, timeout_ms) || field(wire, 3) != "W") return false;
-    if (action != "status") { response = "{\"accepted\":true}"; return field(wire, 4) == "1"; }
-    if (fieldCount(wire) != 16) return false;
+    if (!reading) { response = "{\"accepted\":true}"; return field(wire, 4) == "1"; }
+    const int count = fieldCount(wire);
+    if (count != 16 && count != 21) return false;
     response = "{\"supported\":" + String(field(wire,4)=="1"?"true":"false") +
       ",\"off\":" + String(field(wire,5)=="1"?"true":"false") +
       ",\"externalCount\":" + field(wire,6) +
@@ -734,7 +736,14 @@ bool bleTransportRequest(const char *method, const String &path,
       ",\"busy\":" + String(field(wire,8)=="1"?"true":"false") +
       ",\"batteryLevel\":" + field(wire,9) +
       ",\"batteryStatus\":\"" + field(wire,10) +
-      "\",\"mode\":\"" + field(wire,11) + "\"}";
+      "\",\"mode\":\"" + field(wire,11) + "\"";
+    if (count == 21) {
+      response += ",\"dataAvailable\":" + String(field(wire,15)=="1"?"true":"false") +
+        ",\"bluetoothAvailable\":" + String(field(wire,15)=="1"?"true":"false") +
+        ",\"bluetoothCount\":" + field(wire,16) + ",\"bluetoothIndex\":" + field(wire,17) +
+        ",\"bluetoothName\":\"" + field(wire,18) + "\",\"bluetoothLevel\":" + field(wire,19);
+    }
+    response += "}";
     return true;
   }
   if (!strcmp(method, "GET") && path.startsWith("/v1/music/status/")) {

@@ -24,6 +24,8 @@ export class DisplayPowerManager {
   private busy = false
   private error: string | null = null
   private timer?: NodeJS.Timeout
+  private stopWatching?: () => void
+  private topologySync?: Promise<ExternalPowerState>
   private queue: Promise<unknown> = Promise.resolve()
   constructor(directory: string, private readonly sleep: TouchSleepManager, private readonly monitor: MonitorController,
     private readonly backend: DisplayPowerBackend = new GnomeDisplayPowerBackend()) { this.filename = path.join(directory, "external-display-power.json") }
@@ -33,12 +35,25 @@ export class DisplayPowerManager {
       if (typeof data.linked !== "boolean" || typeof data.off !== "boolean" || !Array.isArray(data.targets) || data.off && !data.layout) throw new Error("invalid power settings")
       this.state = { ...defaults, ...data }
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.error = "外接屏恢复配置读取失败，原文件已保留" }
+    this.monitor.setExternalPowerOff?.(this.state.off)
     let capturedLayout: DisplayLayout | undefined
     try { this.layout = await this.backend.capture(); this.supported = true; capturedLayout = this.layout } catch { this.error = "当前桌面不支持外接屏独立息屏" }
     await this.syncNow(new Date(), capturedLayout).catch(() => undefined)
   }
-  start(): void { this.timer ??= setInterval(() => { void this.sync().catch(() => undefined) }, 10000) }
-  stop(): void { if (this.timer) clearInterval(this.timer); this.timer = undefined }
+  start(): void {
+    if (this.timer) return
+    this.timer = setInterval(() => { void this.sync().catch(() => undefined) }, 10000)
+    this.stopWatching = this.backend.watchChanges?.(() => {
+      if (!this.state.off || this.topologySync) return
+      this.topologySync = this.sync()
+      void this.topologySync.catch(() => undefined).finally(() => { this.topologySync = undefined })
+    })
+  }
+  stop(): void {
+    if (this.timer) clearInterval(this.timer)
+    this.timer = undefined
+    this.stopWatching?.(); this.stopWatching = undefined
+  }
   snapshot(now = new Date()): ExternalPowerState {
     const layout = this.state.off ? this.state.layout : this.layout
     return { supported: this.supported, off: this.state.off, linked: this.state.linked,
@@ -54,10 +69,26 @@ export class DisplayPowerManager {
   private serial<T>(work: () => Promise<T>): Promise<T> {
     const next = this.queue.then(work, work); this.queue = next.catch(() => undefined); return next
   }
-  private async store(next: SavedPower): Promise<void> { await writeAtomicJson(this.filename, next); this.state = next }
+  private async store(next: SavedPower): Promise<void> {
+    await writeAtomicJson(this.filename, next)
+    this.state = next
+    this.monitor.setExternalPowerOff?.(next.off)
+  }
+  private async maintainOff(current?: DisplayLayout): Promise<void> {
+    if (!this.supported || !this.state.layout) return
+    const actual = current ?? await this.backend.capture()
+    const active = new Set(actual.groups.flatMap(group => group.monitors.map(monitor => monitor.connector)))
+    const internalActive = actual.monitors.some(monitor => monitor.builtin && active.has(monitor.connector))
+    const externalActive = actual.monitors.some(monitor => !monitor.builtin && active.has(monitor.connector))
+    if (internalActive && !externalActive) return
+    // Hotplug and desktop reconfiguration can re-enable outputs without a restore
+    // command. Keep the original recovery layout and only reapply OS isolation.
+    await this.monitor.coordinateBrightness(() => this.backend.isolate(this.state.layout!))
+  }
   private async off(reason: "manual" | "schedule"): Promise<void> {
     if (this.state.off) {
       if (reason === "manual" && this.state.reason !== "manual") await this.store({ ...this.state, reason })
+      await this.maintainOff()
       return
     }
     if (!this.supported) throw new Error("当前桌面不支持外接屏独立息屏")
@@ -106,6 +137,7 @@ export class DisplayPowerManager {
     const active = this.sleep.settings(now).active
     if (this.state.linked && active && now.getTime() >= this.state.wakeUntil) await this.off("schedule")
     else if (this.state.off && this.state.reason === "schedule" && (!active || !this.state.linked)) await this.on(false, now)
+    else if (this.state.off) await this.maintainOff(capturedLayout)
   }
   sync(now = new Date()): Promise<ExternalPowerState> { return this.perform(() => this.syncNow(now), now) }
   control(action: ExternalPowerAction, now = new Date()): Promise<ExternalPowerState> {

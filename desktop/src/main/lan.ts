@@ -10,6 +10,8 @@ import type { MusicManager } from "./music"
 import type { TouchSleepManager } from "./touch-sleep"
 import type { DisplayPowerManager } from "./display-power"
 import type { PowerDataService } from "./power-data"
+import { touchBluetoothStatus, maxTouchBluetoothDevices } from "../shared/touch-power"
+import { touchSleepDeviceEnabled } from "../shared/touch-sleep"
 import type { ExternalPowerAction } from "../shared/contracts"
 import type { TouchRotationManager } from "./touch-rotation"
 import type { TouchUsageService } from "./touch-usage"
@@ -442,7 +444,7 @@ export class LanController {
         wallpaperHash: wallpaper?.sha256 || "",
         wallpaperSize: wallpaper?.size || 0,
         wallpaperIdleMinutes: this.wallpaper?.settings().idleMinutes ?? 5,
-        touchSleepEnabled: touchSleep?.enabled ?? false,
+        touchSleepEnabled: touchSleep ? touchSleepDeviceEnabled(touchSleep) : false,
         touchSleepStartMinutes: touchSleep?.startMinutes ?? 0,
         touchSleepEndMinutes: touchSleep?.endMinutes ?? 0,
         touchSleepActive: touchSleep?.active ?? false,
@@ -609,7 +611,7 @@ export class LanController {
           wallpaperKind: wallpaper?.kind || "",
           ...this.music?.touchStatus(),
           wallpaperIdleMinutes: this.wallpaper?.settings().idleMinutes ?? 5,
-          touchSleepEnabled: touchSleep?.enabled ?? false,
+          touchSleepEnabled: touchSleep ? touchSleepDeviceEnabled(touchSleep) : false,
           touchSleepStartMinutes: touchSleep?.startMinutes ?? 0,
           touchSleepEndMinutes: touchSleep?.endMinutes ?? 0,
           touchSleepActive: touchSleep?.active ?? false,
@@ -621,11 +623,16 @@ export class LanController {
         if (!this.computer) return this.json(response, 404, { ok: false, error: "computer statistics unavailable" })
         return this.json(response, 200, this.computer.touchStatus())
       }
-      if (request.method === "GET" && request.url === "/v1/power/status") {
+      if (request.method === "GET" && request.url?.startsWith("/v1/power/status")) {
+        const url = new URL(request.url, "http://localhost")
+        if (url.pathname !== "/v1/power/status") return this.json(response, 404, { error: "power unavailable" })
         if (!this.displayPower || !this.powerData) return this.json(response, 404, { error: "power unavailable" })
+        const index = Number(url.searchParams.get("device") ?? 0)
+        if (!Number.isInteger(index) || index < 0 || index >= maxTouchBluetoothDevices) return this.json(response, 400, { error: "invalid device index" })
         const data = await this.powerData.collect()
         return this.json(response, 200, { ...this.displayPower.snapshot(), batteryLevel: data.batteryLevel,
-          batteryStatus: data.batteryStatus, mode: data.mode, ...this.touchSleep?.settings() })
+          batteryStatus: data.batteryStatus, mode: data.mode, dataAvailable: data.available,
+          ...touchBluetoothStatus(data, index), ...this.touchSleep?.settings() })
       }
       if (request.method === "POST" && request.url === "/v1/power/control") {
         if (!this.displayPower) return this.json(response, 404, { error: "power unavailable" })

@@ -56,6 +56,31 @@ function fixture(activeDisplay = 'stable-1') {
   return { monitor, getDisplays }
 }
 
+test('sleeping outputs suspend passive DDC reads and discovery until manual restore', async () => {
+  const { monitor } = fixture()
+  await monitor.detect(true)
+  await monitor.status()
+  const saved = monitor.snapshot()
+  const originalSidecar = monitor.sidecar
+  let requests = 0
+  monitor.sidecar = async request => { requests++; return originalSidecar(request) }
+  monitor.setExternalPowerOff(true)
+  monitor.startBackgroundStatus(5, 10)
+  try {
+    assert.deepEqual(await monitor.status(), saved)
+    await monitor.readFastStatus()
+    await monitor.connection(true)
+    await monitor.listDisplays()
+    await monitor.refreshInputDetectionNow()
+    assert.equal(await monitor.reachable(), true)
+    await new Promise(resolve => setTimeout(resolve, 35))
+    assert.equal(requests, 0, 'Background polling and UI refreshes must not probe sleeping outputs')
+    monitor.setExternalPowerOff(false)
+    await monitor.status()
+    assert.ok(requests > 0, 'Hardware polling resumes after restore')
+  } finally { clearInterval(monitor.backgroundTimer) }
+})
+
 test('display enumeration exposes stable IDs and the active target', async () => {
   const { monitor } = fixture()
   await monitor.detect(true)
@@ -482,6 +507,65 @@ test('queued shortcut changes execute in order without discarding the second tar
   ])
   assert.equal(monitor.connectionSnapshot().displayId, 'desktop')
   assert.deepEqual(writes, [{ id: 'desktop', vcp: 96, value: 15 }])
+})
+
+test('recent Touch targets reuse verified routes and values without another probe or status sweep', async () => {
+  const { monitor, writes } = automaticTargetFixture()
+  await monitor.detect(true)
+  await monitor.status()
+  await monitor.control({ control: 'input', value: 'usbc' }, 'touch')
+  await monitor.control({ control: 'input', value: 'internal' }, 'touch')
+  const sidecar = monitor.sidecar
+  const operations = []
+  monitor.sidecar = async request => {
+    operations.push(request.operation)
+    if (['get', 'probe', 'input_info'].includes(request.operation)) throw new Error('Unexpected foreground read')
+    return sidecar(request)
+  }
+  const portable = await monitor.control({ control: 'input', value: 'usbc' }, 'touch')
+  assert.equal(portable.input, 'usbc')
+  assert.equal(portable.brightness, 78)
+  assert.deepEqual(operations, ['enumerate'])
+  operations.length = 0
+  await monitor.control({ control: 'input', value: 'dp1' }, 'touch')
+  assert.deepEqual(operations, ['enumerate', 'set'])
+  assert.deepEqual(writes, [{ id: 'desktop', vcp: 96, value: 15 }])
+})
+
+test('an expired Touch target cache detects and refreshes the display again', async () => {
+  const { monitor } = automaticTargetFixture()
+  await monitor.detect(true)
+  await monitor.control({ control: 'input', value: 'usbc' }, 'touch')
+  await monitor.control({ control: 'input', value: 'internal' }, 'touch')
+  monitor.displayControlCache.get('portable').at = 0
+  const sidecar = monitor.sidecar
+  const operations = []
+  monitor.sidecar = async request => { operations.push(request.operation); return sidecar(request) }
+  assert.equal((await monitor.control({ control: 'input', value: 'usbc' }, 'touch')).brightness, 78)
+  assert.ok(operations.includes('probe'))
+  assert.ok(operations.includes('get'))
+})
+
+test('a cached Touch target still detects connector changes and rejects a disconnected display', async () => {
+  const { monitor, disconnect, writes } = automaticTargetFixture()
+  await monitor.detect(true)
+  await monitor.control({ control: 'input', value: 'usbc' }, 'touch')
+  await monitor.control({ control: 'input', value: 'internal' }, 'touch')
+  const sidecar = monitor.sidecar
+  let probes = 0
+  monitor.sidecar = async request => {
+    if (request.operation === 'probe') probes++
+    const result = await sidecar(request)
+    if (request.operation === 'enumerate') result.find(display => display.id === 'portable').connector = 'DP-3'
+    return result
+  }
+  await monitor.control({ control: 'input', value: 'usbc' }, 'touch')
+  assert.ok(probes > 0)
+  await monitor.control({ control: 'input', value: 'internal' }, 'touch')
+  monitor.sidecar = sidecar
+  disconnect()
+  await assert.rejects(monitor.control({ control: 'input', value: 'usbc' }, 'touch'), /匹配的显示器/)
+  assert.deepEqual(writes, [])
 })
 
 test('duplicate input matches require an explicit dropdown choice', async () => {

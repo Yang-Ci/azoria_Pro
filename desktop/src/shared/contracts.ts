@@ -223,6 +223,8 @@ export interface TouchSleepSettings {
   enabled: boolean
   startMinutes: number
   endMinutes: number
+  weekdays: number[]
+  resumeDate: string | null
   active: boolean
 }
 
@@ -230,6 +232,8 @@ export interface TouchSleepUpdate {
   enabled: boolean
   startMinutes: number
   endMinutes: number
+  weekdays: number[]
+  resumeDate: string | null
 }
 
 export interface TouchRotationSettings {

@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import { TouchSleepCard } from "./touch-sleep-card"
+import { isTouchSleepPaused, sleepWeekdaysText } from "../../../shared/touch-sleep"
 import type { ExternalPowerAction, ExternalPowerState, PowerData, PowerMode, TouchSleepSettings } from "../../../shared/contracts"
 
 const modeNames: Record<PowerMode, string> = { performance: "性能模式", balanced: "均衡模式", "power-saver": "节电模式", unknown: "未提供电源模式" }
@@ -60,11 +62,12 @@ export function PowerPage() {
           <div><Label htmlFor="external-power-link">与 Touch 定时息屏联动</Label><p className="mt-1 text-sm text-zinc-500">时间段开始熄灭，结束自动恢复。手动恢复后本次时间段内保持亮屏。</p></div>
           <Switch id="external-power-link" checked={external.linked} disabled={disabled || !external.internalAvailable} onCheckedChange={value => void control(value ? "link-on" : "link-off")} />
         </div>
-        <p className="text-sm text-zinc-500">{sleep?.enabled ? `Touch 息屏时间：${timeText(sleep.startMinutes)}–${timeText(sleep.endMinutes)}` : "Touch 定时息屏尚未开启，可在 AZORIA Touch 页设置时间。"}</p>
+        <p className="text-sm text-zinc-500">{sleep?.enabled ? `Touch 息屏：${sleepWeekdaysText(sleep.weekdays)} · ${timeText(sleep.startMinutes)}–${sleep.startMinutes > sleep.endMinutes ? "次日 " : ""}${timeText(sleep.endMinutes)}${isTouchSleepPaused(sleep) ? ` · 暂停至 ${sleep.resumeDate}` : ""}` : "Touch 定时息屏尚未开启，可在下方设置计划。"}</p>
         {!external.supported && <p className="text-sm text-zinc-500">{external.error || "正在检测显示器电源控制"}</p>}
         <p role="status" aria-live="polite" className="text-sm text-zinc-300">{notice || external.error}</p>
       </CardContent>
     </Card>
+    <TouchSleepCard onMessage={setNotice} showRotation={false} />
     <Card><CardHeader><CardTitle className="flex items-center gap-2"><Battery />电脑电池</CardTitle><CardDescription>读取系统数据，每 5 秒刷新。</CardDescription></CardHeader><CardContent className="space-y-4">
       <BatteryBar value={data.batteryLevel} /><div className="flex items-center justify-between"><span className="text-sm text-zinc-400">{batteryNames[data.batteryStatus]}</span><span className="font-mono">{data.batteryLevel === null ? "--" : `${data.batteryLevel}%`}</span></div>
       {data.error && <p role="status" className="text-sm text-zinc-500">{data.error}</p>}

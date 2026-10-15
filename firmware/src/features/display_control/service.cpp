@@ -88,6 +88,9 @@ bool computer_view_active = false;
 bool computer_sync_requested = false;
 char pending_power_action[12]{};
 uint32_t pending_power_at = 0;
+uint8_t bluetooth_device_index = 0;
+bool power_sync_requested = false;
+bool power_view_active = false;
 
 bool isPrivateIpv4(const IPAddress &address) {
   const uint8_t first = address[0];
@@ -991,6 +994,14 @@ bool takeNextCommand(Command &command) {
   return true;
 }
 
+bool hasQueuedControl() {
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  bool queued = pending_power_action[0] != 0;
+  for (bool available : command_available) queued = queued || available;
+  xSemaphoreGive(state_mutex);
+  return queued;
+}
+
 bool takeNextMusicCommand(char *action, size_t action_size, uint32_t &position_ms) {
   if (!state_mutex || music_command_count == 0) return false;
   xSemaphoreTake(state_mutex, portMAX_DELAY);
@@ -1066,6 +1077,7 @@ bool broadcastCommand(const Command &command, String &response,
   uint32_t started = millis();
   uint32_t last_send = started;
   while (millis() - started < timeout_ms) {
+    if (!isLatestCommand(command) || commandExpired(command)) break;
     handlePassiveDiscovery();
     if (pending_result_ready) {
       response = pending_result_response;
@@ -1120,6 +1132,8 @@ bool applyAcceptedResponse(const Command &command, const String &response) {
 }
 
 CommandResult runCommand(const Command &command) {
+  Serial.printf("CONTROL_DEQUEUED,CONTROL=%s,QUEUE_MS=%lu\n", controlName(command.kind),
+                static_cast<unsigned long>(millis() - command.queued_at_ms));
   if (commandExpired(command)) {
     Serial.printf("DDC_EXPIRED,CONTROL=%s,SEQ=%lu\n",
                   controlName(command.kind),
@@ -1208,8 +1222,25 @@ CommandResult runCommand(const Command &command) {
 }
 
 bool readPower() {
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  const uint8_t index = bluetooth_device_index;
+  power_sync_requested = false;
+  xSemaphoreGive(state_mutex);
   String response;
-  if (!request("GET", "/v1/power/status", nullptr, response, 5000)) return false;
+  if (!request("GET", String("/v1/power/status?device=") + index, nullptr, response, 5000)) {
+    // Older Desktop builds only expose the unparameterized endpoint.
+    if (!request("GET", "/v1/power/status", nullptr, response, 5000)) {
+      xSemaphoreTake(state_mutex, portMAX_DELAY);
+      remote_state.power_data_available = false;
+      if (index == bluetooth_device_index) {
+        remote_state.bluetooth_pending = false;
+        remote_state.bluetooth_available = false;
+      }
+      ++remote_state.revision;
+      xSemaphoreGive(state_mutex);
+      return false;
+    }
+  }
   xSemaphoreTake(state_mutex, portMAX_DELAY);
   remote_state.power_supported = jsonBool(response, "supported", false);
   remote_state.external_screens_off = jsonBool(response, "off", false);
@@ -1220,6 +1251,17 @@ bool readPower() {
   remote_state.battery_percent = battery_start < 0 || response[battery_start] == 'n' ? -1 : static_cast<int16_t>(constrain(jsonInt(response, "batteryLevel", -1), -1, 100));
   strlcpy(remote_state.battery_status, jsonString(response, "batteryStatus", "unknown").c_str(), sizeof(remote_state.battery_status));
   strlcpy(remote_state.power_mode, jsonString(response, "mode", "unknown").c_str(), sizeof(remote_state.power_mode));
+  remote_state.power_data_available = jsonBool(response, "dataAvailable", true);
+  if (index == bluetooth_device_index) {
+    remote_state.bluetooth_available = jsonBool(response, "bluetoothAvailable", false);
+    remote_state.bluetooth_pending = false;
+    remote_state.bluetooth_count = constrain(jsonInt(response, "bluetoothCount", 0), 0, 255);
+    remote_state.bluetooth_index = constrain(jsonInt(response, "bluetoothIndex", 0), 0,
+      max(0, static_cast<int>(remote_state.bluetooth_count) - 1));
+    bluetooth_device_index = remote_state.bluetooth_index;
+    strlcpy(remote_state.bluetooth_name, jsonString(response, "bluetoothName", "").c_str(), sizeof(remote_state.bluetooth_name));
+    remote_state.bluetooth_percent = constrain(jsonInt(response, "bluetoothLevel", -1), -1, 100);
+  }
   ++remote_state.revision;
   xSemaphoreGive(state_mutex);
   return true;
@@ -1248,6 +1290,14 @@ void remoteTask(void *) {
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
       continue;
     }
+    // User input runs before registration and all background reads. A pending
+    // target change must not sit behind the power collector or a status poll.
+    Command command{};
+    if (takeNextCommand(command)) {
+      runCommand(command);
+      last_status = millis();
+      continue;
+    }
     if (!desktop_verified) {
       if (wifi_ready && !remote_config.host.isEmpty()) {
         registerDevice();
@@ -1270,7 +1320,6 @@ void remoteTask(void *) {
       last_registration = millis();
     }
 
-    Command command{};
     char power_action[12]{};
     xSemaphoreTake(state_mutex, portMAX_DELAY);
     if (pending_power_action[0]) {
@@ -1291,7 +1340,12 @@ void remoteTask(void *) {
       readPower(); last_power = millis();
       continue;
     }
-    if (millis() - last_power >= 5000) { readPower(); last_power = millis(); }
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+    const bool sync_power = power_view_active && (power_sync_requested || millis() - last_power >= 5000);
+    xSemaphoreGive(state_mutex);
+    if (hasQueuedControl()) continue;
+    if (sync_power) { readPower(); last_power = millis(); }
+    if (hasQueuedControl()) continue;
     char music_action[16]{};
     uint32_t music_position_ms = 0;
     if (takeNextMusicCommand(music_action, sizeof(music_action), music_position_ms)) {
@@ -1316,6 +1370,7 @@ void remoteTask(void *) {
       }
       last_status = millis();
     }
+    if (hasQueuedControl()) continue;
     xSemaphoreTake(state_mutex, portMAX_DELAY);
     const bool sync_usage = usage_sync_requested;
     xSemaphoreGive(state_mutex);
@@ -1323,6 +1378,7 @@ void remoteTask(void *) {
       readUsage();
       last_usage = millis();
     }
+    if (hasQueuedControl()) continue;
     xSemaphoreTake(state_mutex, portMAX_DELAY);
     const bool sync_computer = computer_view_active && (computer_sync_requested || millis() - last_computer >= 2000);
     computer_sync_requested = false;
@@ -1395,6 +1451,28 @@ bool queuePowerControl(const char *action) {
   pending_power_at = millis(); remote_state.power_pending = true; ++remote_state.revision;
   xSemaphoreGive(state_mutex);
   wakeRemoteTask(); return true;
+}
+
+void selectBluetoothDevice(uint8_t index) {
+  if (!state_mutex) return;
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  if (index < remote_state.bluetooth_count) {
+    bluetooth_device_index = index;
+    remote_state.bluetooth_pending = true;
+    power_sync_requested = true;
+    ++remote_state.revision;
+  }
+  xSemaphoreGive(state_mutex);
+  wakeRemoteTask();
+}
+
+void setPowerViewActive(bool active) {
+  if (!state_mutex) return;
+  xSemaphoreTake(state_mutex, portMAX_DELAY);
+  power_view_active = active;
+  if (active) power_sync_requested = true;
+  xSemaphoreGive(state_mutex);
+  wakeRemoteTask();
 }
 
 DeviceConfig getDesktopConfig() {

@@ -61,6 +61,9 @@ DisplayControl::RemoteState fixture;
 struct Command { std::string control; int value; bool final_value; };
 std::vector<Command> commands;
 uint8_t applied_backlight = 0;
+int selected_bluetooth_device = -1;
+bool power_view_active = false;
+std::vector<std::string> input_requests;
 namespace Board {
 void setBacklight(uint8_t value) { applied_backlight = value; }
 bool setRotation(uint16_t) { return true; }
@@ -72,13 +75,22 @@ bool queueNumericControl(const char *control, int value, bool final_value) {
   commands.push_back({control, value, final_value}); return true;
 }
 bool queueBooleanControl(const char *, bool) { return true; }
-bool queueStringControl(const char *, const char *) { return true; }
+bool queueStringControl(const char *control, const char *value) {
+  assert(!strcmp(control,"input"));input_requests.push_back(value);
+  fixture.input_pending=true;++fixture.revision;return true;
+}
 bool queueMusicControl(const char *, uint32_t) { return true; }
-bool queuePowerControl(const char *action) { commands.push_back({action,0,true});return true; }
+bool queuePowerControl(const char *action) {
+  commands.push_back({action,0,true}); fixture.power_pending = true; return true;
+}
+void selectBluetoothDevice(uint8_t index) {
+  selected_bluetooth_device = index; fixture.bluetooth_pending = true;
+}
 void copyMusicArtwork(uint8_t *, size_t) {}
 void selectUsageProvider(uint8_t) {}
 void requestUsageSync() {}
 void setComputerViewActive(bool) {}
+void setPowerViewActive(bool active) { power_view_active=active; }
 }
 namespace Wallpaper {
 void createView(lv_obj_t *, lv_event_cb_t) {}
@@ -133,6 +145,31 @@ void assertBounds(lv_obj_t *object) {
   lv_area_t a, p; lv_obj_get_coords(object, &a); lv_obj_get_coords(lv_obj_get_parent(object), &p);
   assert(a.x1 >= p.x1 && a.x2 <= p.x2 && a.y1 >= p.y1 && a.y2 <= p.y2);
 }
+lv_obj_t *findLabel(lv_obj_t *parent, const char *value) {
+  if (lv_obj_has_flag(parent, LV_OBJ_FLAG_HIDDEN)) return nullptr;
+  if (lv_obj_check_type(parent, &lv_label_class) && !strcmp(lv_label_get_text(parent), value)) return parent;
+  for (uint32_t i = 0; i < lv_obj_get_child_cnt(parent); ++i) {
+    if (auto *found = findLabel(lv_obj_get_child(parent, i), value)) return found;
+  }
+  return nullptr;
+}
+void assertLabel(const char *value) {
+  auto *label = findLabel(lv_scr_act(), value); assert(label); assertBounds(label);
+  assert(lv_obj_get_width(label) >= lv_txt_get_width(value, strlen(value),
+    lv_obj_get_style_text_font(label, 0), lv_obj_get_style_text_letter_space(label, 0), LV_TEXT_FLAG_NONE));
+}
+void assertPowerButtons(bool off_disabled, bool on_disabled, bool link_disabled) {
+  const char *labels[] = {"熄灭外接屏", "恢复外接屏", "与 Touch 定时息屏联动"};
+  const bool expected[] = {off_disabled, on_disabled, link_disabled};
+  for (int i = 0; i < 3; ++i) {
+    auto *label = findLabel(lv_scr_act(), labels[i]); assert(label);
+    assert(lv_obj_has_state(lv_obj_get_parent(label), LV_STATE_DISABLED) == expected[i]);
+  }
+}
+void renderPower(const char *name) {
+  DisplayControl::PowerView::refresh(fixture); advance(120); capture(name);
+  for (const char *value : {"电源管理", "外接屏电源", "电脑电池", "电源模式", "与 Touch 定时息屏联动"}) assertLabel(value);
+}
 int main() {
   lv_init();
   lv_disp_draw_buf_t draw; lv_disp_draw_buf_init(&draw, draw_pixels, nullptr, 480 * 48);
@@ -186,12 +223,100 @@ int main() {
   }
   // The existing home layout is preserved apart from the native Linux icon.
   capture("touch-home.ppm");
+  // A source tap highlights immediately while RemoteState retains the last ACK.
+  pointerAt(185,410,true);pointerAt(185,410,false);
+  assert(input_requests.size()==1 && input_requests.back()=="hdmi1");
+  assert(pending_input==1 && active_input==3 && !strcmp(fixture.input,"usbc"));
+  assert(lv_obj_get_style_bg_color(input_buttons[1],0).full==lv_color_hex(0xE1F4FF).full);
+  assert(lv_obj_get_style_bg_color(input_buttons[3],0).full==lv_color_hex(0x1D1D1D).full);
+  assert(!strcmp(lv_label_get_text(footer_text),"正在切换信号源"));
+  refresh();advance(120);capture("touch-input-pending.ppm");
+  assert(pending_input==1);  // An old heartbeat cannot undo a pending selection.
+  pointerAt(185,410,true);pointerAt(185,410,false);assert(input_requests.size()==1);
+  // A second choice, including a return to the acknowledged source, is immediate.
+  pointerAt(300,410,true);pointerAt(300,410,false);assert(input_requests.back()=="hdmi2");
+  pointerAt(65,410,true);pointerAt(65,410,false);assert(input_requests.back()=="usbc" && pending_input==3);
+  fixture.input_pending=false;++fixture.revision;refresh();assert(pending_input==-1 && active_input==3);
+  pointerAt(185,410,true);pointerAt(185,410,false);
+  fixture.input_pending=false;strcpy(fixture.message,"input verification failed");++fixture.revision;refresh();
+  assert(pending_input==-1 && active_input==3);
+  assert(lv_obj_get_style_bg_color(input_buttons[3],0).full==lv_color_hex(0xE1F4FF).full);
+  assert(!strcmp(lv_label_get_text(footer_text),"切换失败"));capture("touch-input-failed.ppm");
+  // A horizontal drag remains a scroll, with no source command on release.
+  auto inputs_before=input_requests.size();
+  pointerAt(185,410,true);pointerAt(160,410,true);pointerAt(130,410,false);advance(400);
+  assert(input_requests.size()==inputs_before);
+  lv_obj_scroll_to_x(input_strip,0,LV_ANIM_OFF);advance(400);
+  strcpy(fixture.message,"DDC connected");++fixture.revision;refresh();
   fixture.power_supported=true;fixture.external_screen_count=2;fixture.battery_percent=100;
+  fixture.power_data_available=true;fixture.bluetooth_available=true;fixture.bluetooth_count=3;
+  fixture.bluetooth_percent=86;strcpy(fixture.bluetooth_name,"罗技 MX Master 3S");
   strcpy(fixture.battery_status,"full");strcpy(fixture.power_mode,"performance");
   pointerAt(220,98,true);pointerAt(220,98,false);assert(PowerView::active());
-  refresh();advance(120);capture("touch-power.ppm");
-  pointerAt(120,250,true);pointerAt(120,250,false);assert(commands.back().control=="off");
-  PowerView::hide();commands.clear();advance(120);
+  assert(power_view_active);
+  renderPower("touch-power.ppm");
+  assertLabel("100%"); assertLabel("已充满"); assertLabel("性能模式");
+  assertLabel("2 块 · 正常显示"); assertPowerButtons(false, true, false);
+  assertLabel("蓝牙设备电量");assertLabel("罗技 MX Master 3S");assertLabel("86%");assertLabel("1 / 3");
+  pointerAt(420,382,true);pointerAt(420,382,false);assert(selected_bluetooth_device==1);
+  assertLabel("正在读取设备电量");
+  selected_bluetooth_device=-1;
+  pointerAt(420,382,true);pointerAt(420,382,false);assert(selected_bluetooth_device==-1);
+  fixture.bluetooth_pending=false;fixture.bluetooth_index=1;fixture.bluetooth_percent=-1;
+  strcpy(fixture.bluetooth_name,"蓝牙键盘");renderPower("touch-power-bluetooth-unknown.ppm");
+  assertLabel("2 / 3");assertLabel("未提供电量");
+  pointerAt(370,382,true);pointerAt(370,382,false);assert(selected_bluetooth_device==0);
+  fixture.bluetooth_pending=false;fixture.bluetooth_index=0;fixture.bluetooth_percent=0;
+  PowerView::refresh(fixture);advance(120);assertLabel("0%");
+  fixture.bluetooth_percent=86;strcpy(fixture.bluetooth_name,"罗技 MX Master 3S");PowerView::refresh(fixture);
+  // A tap in the overlay's empty space must not reach home controls behind it.
+  pointerAt(220,80,true);pointerAt(220,80,false);assert(PowerView::active());
+  assert(commands.empty());
+  pointerAt(120,206,true);pointerAt(120,206,false);assert(commands.back().control=="off");
+  assertLabel("正在应用设置"); assertPowerButtons(true, true, true);
+  pointerAt(120,206,true);pointerAt(120,206,false);assert(commands.size()==1);
+  renderPower("touch-power-pending.ppm");
+  fixture.power_pending=false;fixture.external_screens_off=true;
+  fixture.external_power_linked=true;fixture.touch_sleep_enabled=true;
+  fixture.touch_sleep_start_minutes=23*60+41;fixture.touch_sleep_end_minutes=11*60+42;
+  fixture.battery_percent=18;strcpy(fixture.battery_status,"discharging");strcpy(fixture.power_mode,"power-saver");
+  renderPower("touch-power-linked.ppm");
+  assertLabel("18%");assertLabel("使用电池");assertLabel("节电模式");assertLabel("2 块 · 已熄灭");
+  assertLabel("23:41 - 11:42 · 到时自动熄灭 / 恢复");assertPowerButtons(true,false,false);
+  pointerAt(340,206,true);pointerAt(340,206,false);assert(commands.back().control=="on");
+  fixture.power_pending=false;fixture.external_screens_off=false;PowerView::refresh(fixture);
+  // Swipe the actual touch viewport to reveal the schedule card; the header stays fixed.
+  auto *title=findLabel(lv_scr_act(),"电源管理");lv_area_t title_before;lv_obj_get_coords(title,&title_before);
+  auto *schedule=lv_obj_get_parent(findLabel(lv_scr_act(),"与 Touch 定时息屏联动"));
+  auto *scroll=lv_obj_get_parent(schedule);
+  auto count=commands.size();
+  pointerAt(100,440,true);pointerAt(100,380,true);pointerAt(100,300,true);pointerAt(100,220,true);pointerAt(100,220,false);
+  advance(400);assert(lv_obj_get_scroll_y(scroll)>0);assert(commands.size()==count);
+  lv_area_t title_after;lv_obj_get_coords(title,&title_after);assert(title_before.y1==title_after.y1);
+  lv_obj_scroll_to_view(schedule,LV_ANIM_OFF);advance(120);capture("touch-power-schedule.ppm");
+  pointerAt(420,398,true);pointerAt(420,398,false);assert(commands.back().control=="link-off");
+  fixture.power_pending=false;fixture.external_power_linked=false;PowerView::refresh(fixture);
+  pointerAt(170,430,true);pointerAt(170,430,false);assert(commands.back().control=="link-on");
+  fixture.power_pending=false;fixture.power_busy=true;
+  renderPower("touch-power-busy.ppm");assertPowerButtons(true,true,true);
+  fixture.power_busy=false;fixture.online=false;
+  renderPower("touch-power-offline.ppm");assertLabel("等待桌面端连接");assertPowerButtons(true,true,true);
+  count=commands.size();pointerAt(420,398,true);pointerAt(420,398,false);assert(commands.size()==count);
+  fixture.online=true;fixture.power_supported=false;
+  renderPower("touch-power-unsupported.ppm");assertLabel("外接屏控制暂不可用");assertPowerButtons(true,true,true);
+  assertLabel("18%");assertLabel("罗技 MX Master 3S");  // Battery data is independent of monitor control support.
+  fixture.power_supported=true;fixture.battery_percent=-1;fixture.external_screen_count=0;
+  strcpy(fixture.battery_status,"no-battery");strcpy(fixture.power_mode,"unknown");
+  renderPower("touch-power-empty.ppm");assertLabel("未检测到电池");assertLabel("暂未提供");
+  assertLabel("未连接外接屏");assertPowerButtons(true,true,false);
+  fixture.bluetooth_count=0;renderPower("touch-power-bluetooth-empty.ppm");assertLabel("暂无已连接的蓝牙设备");
+  fixture.bluetooth_available=false;renderPower("touch-power-bluetooth-unavailable.ppm");assertLabel("等待桌面端提供设备电量");
+  strcpy(fixture.battery_status,"unknown");renderPower("touch-power-unknown.ppm");assertLabel("电量暂不可用");
+  fixture.battery_percent=0;strcpy(fixture.battery_status,"charging");strcpy(fixture.power_mode,"balanced");
+  renderPower("touch-power-zero.ppm");assertLabel("0%");assertLabel("正在充电");assertLabel("均衡模式");
+  pointerAt(438,39,true);pointerAt(438,39,false);assert(!PowerView::active());
+  assert(!power_view_active);
+  commands.clear();advance(120);
   for (int value : {0, 100}) {
     fixture.brightness = fixture.volume = value; ++fixture.revision; refresh(); advance(120);
     assert(lv_slider_get_value(brightness_slider) == value);
@@ -245,7 +370,7 @@ int main() {
   lv_event_send(brightness_slider, LV_EVENT_VALUE_CHANGED, nullptr);
   lv_event_send(brightness_slider, LV_EVENT_RELEASED, nullptr);
   assert(commands.size() == 2 && commands.back().control == "brightness" && commands.back().value == 81 && commands.back().final_value);
-  puts("Actual LVGL controls preview passed: navigation taps/jitter, short drags, drag-return cancellation, pull-down consumption, bounds, backlight limits, volume synchronization, final commits and animation interruption.");
+  puts("Actual LVGL controls preview passed: immediate input selection, rapid retargeting, duplicate suppression, failure rollback, swipe cancellation, Chinese power states, Bluetooth devices, navigation, backlight, volume and final commits.");
 }
 ''', encoding="utf-8")
 

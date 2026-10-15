@@ -7,7 +7,7 @@ Desktop 的 Touch 设置支持顺时针 90° 循环旋转，通过 Wi-Fi / BLE �
 的 8 行逻辑绘制缓冲，仅将变更区域旋转后写入空闲 LCD 缓冲；扫描边界结束后再同步
 另一块缓冲。两个 LCD 缓冲始终保留物理坐标，避免整帧在原地旋转和反向恢复。
 
-首页 Power 按钮打开电源页，通过 Wi-Fi / BLE 每 5 秒读取桌面端的真实电脑电量、电源模式与外接屏状态。SCREENS OFF 关闭外接显示输出并保留笔记本内屏，RESTORE 恢复原布局；LINK TOUCH SLEEP 开关沿用 Desktop 配置的定时息屏时段，默认关闭。独立外接屏息屏目前需要 Ubuntu / GNOME，未支持时按钮禁用。定时关闭 Touch 背光期间，轻触可临时唤醒 30 秒进入电源页；首次唤醒触摸不会误触按钮。
+首页“电源”按钮打开中文电源页，在页面打开期间通过 Wi-Fi / BLE 每 5 秒读取桌面端的真实电脑电量、蓝牙设备电量、电源模式与外接屏状态；多台蓝牙设备可逐一切换查看，设备未提供电量时明确显示。“熄灭外接屏”关闭外接显示输出并保留笔记本内屏，“恢复外接屏”恢复原布局；“与 Touch 定时息屏联动”开关沿用 Desktop 配置的定时息屏计划，默认关闭。独立外接屏息屏目前需要 Ubuntu / GNOME，未支持时按钮禁用。定时关闭 Touch 背光期间，轻触可临时唤醒 30 秒进入电源页；首次唤醒触摸不会误触按钮。
 
 USB `AZORIA_POWER` / `AZORIA_POWER_CLOSE` 可打开 / 关闭电源页，配合 `AZORIA_SCREENSHOT CURRENT` 验证真实画面。`python firmware/scripts/preview_controls.py` 可渲染 LVGL 电源页并检查入口与息屏命令。
 

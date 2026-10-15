@@ -74,6 +74,13 @@ struct RemoteState {
   bool power_busy = false;
   uint8_t external_screen_count = 0;
   int16_t battery_percent = -1;
+  bool power_data_available = false;
+  bool bluetooth_available = false;
+  bool bluetooth_pending = false;
+  uint8_t bluetooth_count = 0;
+  uint8_t bluetooth_index = 0;
+  char bluetooth_name[64]{};
+  int16_t bluetooth_percent = -1;
   char battery_status[16] = "unknown";
   char power_mode[16] = "unknown";
   bool touch_sleep_enabled = false;
@@ -111,6 +118,8 @@ bool queueBooleanControl(const char *control, bool value);
 bool queueStringControl(const char *control, const char *value);
 bool queueMusicControl(const char *action, uint32_t position_ms = 0);
 bool queuePowerControl(const char *action);
+void selectBluetoothDevice(uint8_t index);
+void setPowerViewActive(bool active);
 void copyMusicArtwork(uint8_t *pixels, size_t size);
 
 }  // namespace DisplayControl
