@@ -1,8 +1,34 @@
 #include <array>
 #include <cassert>
+#include <vector>
+#include "features/wallpaper/frame_pixels.h"
 #include "features/wallpaper/jpeg_pixels.h"
 
 int main() {
+  for (int side : {240, 320}) {
+    std::vector<uint16_t> source(side * side);
+    for (int y = 0; y < side; ++y)
+      for (int x = 0; x < side; ++x) source[y * side + x] = y * 37 + x * 13;
+    for (uint16_t rotation : {0, 90, 180, 270}) {
+      std::vector<uint16_t> output(480 * 480 + 2, 0xbeef);
+      Wallpaper::expandFrame(source.data(), output.data() + 1,
+                             side, rotation);
+      assert(output.front() == 0xbeef && output.back() == 0xbeef);
+      for (int y = 0; y < 480; ++y) {
+        for (int x = 0; x < 480; ++x) {
+          const int px = x * side / 480, py = y * side / 480;
+          const int sx = rotation == 180 ? side - 1 - px
+                       : rotation == 90 ? py
+                       : rotation == 270 ? side - 1 - py : px;
+          const int sy = rotation == 180 ? side - 1 - py
+                       : rotation == 90 ? side - 1 - px
+                       : rotation == 270 ? px : py;
+          assert(output[1 + y * 480 + x] == source[sy * side + sx]);
+        }
+      }
+    }
+  }
+
   const uint8_t colors[] = {255, 0, 0, 0, 255, 0, 0, 0, 255,
                            255, 255, 255, 0, 0, 0, 128, 128, 128};
   std::array<uint16_t, 25> output;

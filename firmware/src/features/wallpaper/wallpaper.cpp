@@ -1,6 +1,8 @@
 #include "features/wallpaper/wallpaper.h"
 #include "features/wallpaper/playback_clock.h"
 #include "features/wallpaper/jpeg_pixels.h"
+#include "features/wallpaper/frame_pixels.h"
+#include <JPEGDEC.h>
 
 #include <HTTPClient.h>
 #include <LittleFS.h>
@@ -14,15 +16,17 @@
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
 #include <atomic>
+#include <memory>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
-#include <esp32s3/rom/tjpgd.h>
+#include <new>
 #include <mbedtls/sha256.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
 #include "platform/board.h"
+#include "platform/display_pixels.h"
 
 namespace Wallpaper {
 namespace {
@@ -34,6 +38,7 @@ constexpr size_t kHeaderSize = 20;
 constexpr size_t kFlashMaxPackageSize = 3200000;
 constexpr size_t kSdMaxPackageSize = 24 * 1024 * 1024;
 constexpr size_t kMaxFrameSize = 600000;
+constexpr size_t kDownloadBufferSize = 4096;
 constexpr uint16_t kWidth = 480;
 constexpr uint16_t kHeight = 480;
 constexpr uint16_t kLegacyAnimationWidth = 240;
@@ -68,9 +73,10 @@ size_t compressed_capacity = 0;
 size_t compressed_size = 0;
 uint16_t cached_frame_index = UINT16_MAX;
 uint32_t frame_offsets[120]{};
-// Keep IDCT/Huffman scratch data in internal RAM, and reuse it across frames.
-// 4096 bytes exceeds the ROM decoder's 3100-byte minimum working pool.
-alignas(4) uint8_t jpeg_workspace[4096];
+// Reuse the SIMD decoder in internal RAM; its working state must not compete
+// with LCD DMA for PSRAM bandwidth on every IDCT operation.
+JPEGDEC *jpeg_decoder = nullptr;
+bool direct_presentation = false;
 uint16_t animation_row[480];
 String installed_hash;
 std::atomic<uint32_t> asset_revision{0};
@@ -85,6 +91,9 @@ uint16_t animation_source_width = kWidth;
 uint32_t playback_decode_total_ms = 0;
 uint32_t playback_decode_max_ms = 0;
 uint16_t playback_decode_samples = 0;
+uint32_t playback_loop_started = 0;
+uint32_t last_jpeg_us = 0, last_expand_us = 0, last_present_us = 0;
+uint32_t jpeg_total_us = 0, expand_total_us = 0, present_total_us = 0;
 uint32_t playback_skipped_frames = 0;
 uint32_t last_recovery_log = 0;
 bool is_active = false;
@@ -154,13 +163,16 @@ bool readHeader(File &file, uint16_t &frames, uint16_t &delay,
   const bool optimized_animation = memcmp(header, "AZW3", 4) == 0 &&
                                    readU16(header + 4) == kAnimationWidth &&
                                    readU16(header + 6) == kAnimationHeight;
+  const bool fast_animation = memcmp(header, "AZW5", 4) == 0 &&
+                              readU16(header + 4) == kLegacyAnimationWidth &&
+                              readU16(header + 6) == kLegacyAnimationHeight;
   const bool stable_full_animation = memcmp(header, "AZW4", 4) == 0 &&
                                      readU16(header + 4) == kWidth &&
                                      readU16(header + 6) == kHeight;
   if (!full_resolution && !legacy_animation && !optimized_animation &&
-      !stable_full_animation) return false;
+      !stable_full_animation && !fast_animation) return false;
   source_width = full_resolution || stable_full_animation ? kWidth
-                                 : legacy_animation ? kLegacyAnimationWidth
+                                 : legacy_animation || fast_animation ? kLegacyAnimationWidth
                                                     : kAnimationWidth;
   frames = readU16(header + 8);
   delay = readU16(header + 10);
@@ -168,7 +180,7 @@ bool readHeader(File &file, uint16_t &frames, uint16_t &delay,
   return frames >= 1 && frames <= 120 &&
          !(!full_resolution && frames == 1) &&
          ((frames == 1 && delay == 0) ||
-          (frames > 1 && delay >= 100 && delay <= 2000)) &&
+          (frames > 1 && delay >= (fast_animation ? 33 : 100) && delay <= 2000)) &&
          payload_size == file.size() - kHeaderSize;
 }
 
@@ -278,46 +290,84 @@ bool indexFrames(File &file, uint16_t frames) {
   return static_cast<size_t>(file.position()) == file.size();
 }
 
-struct JpegDecodeState {
-  size_t read = 0;
-  uint16_t *output;
-  uint16_t side;
-};
-
-UINT jpegRead(JDEC *decoder, BYTE *buffer, UINT requested) {
-  auto *state = static_cast<JpegDecodeState *>(decoder->device);
-  const size_t remaining = compressed_size - state->read;
-  const size_t count = remaining < requested ? remaining : requested;
-  if (buffer) memcpy(buffer, compressed + state->read, count);
-  state->read += count;
-  return static_cast<UINT>(count);
+void setDirectPresentation(bool enabled) {
+  if (direct_presentation == enabled) return;
+  direct_presentation = enabled;
+  lv_disp_t *display = lv_disp_get_default();
+  if (!display || !display->refr_timer) return;
+  if (enabled) lv_timer_pause(display->refr_timer);
+  else {
+    lv_timer_resume(display->refr_timer);
+    lv_obj_invalidate(lv_scr_act());
+  }
 }
 
-UINT jpegWrite(JDEC *decoder, void *bitmap, JRECT *rect) {
-  auto *state = static_cast<JpegDecodeState *>(decoder->device);
-  return copyJpegBlock(static_cast<const uint8_t *>(bitmap), state->output,
-                       state->side, rect->left, rect->top,
-                       rect->right, rect->bottom) ? 1 : 0;
+struct JpegDecodeState {
+  uint16_t *output;
+  uint16_t side;
+  bool panel_output;
+  uint16_t rotation;
+};
+
+int jpegWrite(JPEGDRAW *block) {
+  auto *state = static_cast<JpegDecodeState *>(block->pUser);
+  if (!state || block->x < 0 || block->y < 0 || block->iWidthUsed < 1 ||
+      block->iWidthUsed > block->iWidth ||
+      block->x + block->iWidthUsed > state->side ||
+      block->y + block->iHeight > state->side) return 0;
+  if (state->panel_output) {
+    if (block->iWidthUsed != block->iWidth) return 0;
+    DisplayPixels::writeArea(block->pPixels, state->output, kWidth,
+        {static_cast<int16_t>(block->x), static_cast<int16_t>(block->y),
+         static_cast<int16_t>(block->x + block->iWidthUsed - 1),
+         static_cast<int16_t>(block->y + block->iHeight - 1)}, state->rotation);
+    return 1;
+  }
+  for (int y = 0; y < block->iHeight; ++y) {
+    memcpy(state->output + (block->y + y) * state->side + block->x,
+           block->pPixels + y * block->iWidth,
+           block->iWidthUsed * sizeof(uint16_t));
+  }
+  return 1;
 }
 
 bool decodePreparedFrame(bool animation, uint16_t source_width,
                          uint8_t *output_override = nullptr) {
-  if (compressed_size == 0) return false;
+  if (!jpeg_decoder || compressed_size == 0) return false;
   uint8_t *output_pixels = output_override ? output_override : pixels;
   if (!output_pixels) return false;
-  JDEC decoder{};
-  JpegDecodeState state{0, reinterpret_cast<uint16_t *>(output_pixels),
-                        source_width};
-  const uint16_t expected_width = source_width;
-  const uint16_t expected_height = expected_width;
-  // Use the same ESP32-S3 ROM decoder as esp_jpeg_decode(), with a row-copy
-  // output callback instead of the generic wrapper's per-pixel byte writes.
-  if (jd_prepare(&decoder, jpegRead, jpeg_workspace, sizeof(jpeg_workspace),
-                 &state) != JDR_OK ||
-      decoder.width != expected_width || decoder.height != expected_height ||
-      jd_decomp(&decoder, jpegWrite, 0) != JDR_OK) return false;
-  if (animation && expected_width < kWidth) {
-    upscaleAnimationFrame(output_pixels, expected_width, expected_height);
+  const bool native_direct = animation && source_width == kWidth && !output_override;
+  auto *target = static_cast<uint16_t *>(
+      Board::currentFrameBuffer() == Board::frameBuffer(0)
+          ? Board::frameBuffer(1) : Board::frameBuffer(0));
+  if (animation && !target) return false;
+  const uint32_t jpeg_started = micros();
+  last_expand_us = last_present_us = 0;
+  JpegDecodeState state{native_direct ? target : reinterpret_cast<uint16_t *>(output_pixels),
+                        source_width, native_direct, Board::rotation()};
+  if (!jpeg_decoder->openRAM(compressed, compressed_size, jpegWrite)) return false;
+  jpeg_decoder->setPixelType(RGB565_LITTLE_ENDIAN);
+  jpeg_decoder->setUserPointer(&state);
+  const bool decoded = jpeg_decoder->getWidth() == source_width &&
+                       jpeg_decoder->getHeight() == source_width &&
+                       jpeg_decoder->decode(0, 0, 0);
+  jpeg_decoder->close();
+  last_jpeg_us = micros() - jpeg_started;
+  if (!decoded) return false;
+  if (animation && !output_override) {
+    auto *source = reinterpret_cast<uint16_t *>(pixels);
+    const uint32_t expand_started = micros();
+    if (!native_direct) expandFrame(source, target, source_width, Board::rotation());
+    last_expand_us = micros() - expand_started;
+    setDirectPresentation(true);
+    const uint32_t present_started = micros();
+    const bool presented = Board::presentFrameBuffer(target);
+    last_present_us = micros() - present_started;
+    return presented;
+  }
+  setDirectPresentation(false);
+  if (animation && source_width < kWidth) {
+    upscaleAnimationFrame(output_pixels, source_width, source_width);
   }
   if (!output_override) {
     lv_img_cache_invalidate_src(&descriptor);
@@ -366,12 +416,14 @@ bool loadFirstFrame() {
   playback_decode_total_ms = 0;
   playback_decode_max_ms = 0;
   playback_decode_samples = 0;
+  playback_loop_started = millis();
   playback_skipped_frames = 0;
   next_frame_due = millis() + frame_delay_ms;
   return true;
 }
 
 void updateEmptyState(bool loaded) {
+  if (!loaded) setDirectPresentation(false);
   if (!empty_label || !image) return;
   if (loaded) {
     lv_obj_add_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
@@ -394,6 +446,16 @@ String hexDigest(const uint8_t digest[32]) {
 
 bool download(const String &host, uint16_t port, const String &expected_hash,
               size_t expected_size) {
+  // This runs inside readStatus() on ddc-network. Keep the transfer buffer off
+  // its stack so nested HTTP/LittleFS calls have room while replacing an asset.
+  std::unique_ptr<uint8_t, decltype(&heap_caps_free)> buffer(
+      static_cast<uint8_t *>(heap_caps_malloc(
+          kDownloadBufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)),
+      heap_caps_free);
+  if (!buffer) {
+    Serial.println("WALLPAPER_SYNC,rejected=memory");
+    return false;
+  }
   WiFiClient client;
   HTTPClient http;
   http.setConnectTimeout(2500);
@@ -415,7 +477,6 @@ bool download(const String &host, uint16_t port, const String &expected_hash,
   mbedtls_sha256_init(&sha);
   mbedtls_sha256_starts(&sha, 0);
   NetworkClient *stream = http.getStreamPtr();
-  uint8_t buffer[4096];
   size_t received = 0;
   uint32_t last_data = millis();
   bool ok = true;
@@ -429,14 +490,14 @@ bool download(const String &host, uint16_t port, const String &expected_hash,
       delay(2);
       continue;
     }
-    const size_t wanted = min(sizeof(buffer),
-                              min(available, expected_size - received));
-    const int count = stream->readBytes(buffer, wanted);
-    if (count <= 0 || file.write(buffer, count) != static_cast<size_t>(count)) {
+    const size_t wanted = min(kDownloadBufferSize,
+                             min(available, expected_size - received));
+    const int count = stream->readBytes(buffer.get(), wanted);
+    if (count <= 0 || file.write(buffer.get(), count) != static_cast<size_t>(count)) {
       ok = false;
       break;
     }
-    mbedtls_sha256_update(&sha, buffer, count);
+    mbedtls_sha256_update(&sha, buffer.get(), count);
     received += count;
     last_data = millis();
   }
@@ -728,6 +789,13 @@ bool tryMountSd() {
 }  // namespace
 
 bool begin() {
+  void *decoder_memory = heap_caps_malloc(sizeof(JPEGDEC),
+      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!decoder_memory) {
+    Serial.println("Wallpaper SIMD decoder allocation failed");
+    return false;
+  }
+  jpeg_decoder = new (decoder_memory) JPEGDEC();
   storage_mutex = xSemaphoreCreateMutex();
   if (!storage_mutex) {
     Serial.println("Wallpaper storage unavailable");
@@ -802,6 +870,7 @@ void show() {
 void hide() {
   if (!view || !is_active) return;
   is_active = false;
+  setDirectPresentation(false);
   xSemaphoreTake(storage_mutex, portMAX_DELAY);
   closePlaybackFileLocked();
   xSemaphoreGive(storage_mutex);
@@ -812,6 +881,8 @@ void hide() {
 bool active() {
   return is_active;
 }
+
+bool directPresentation() { return direct_presentation; }
 
 String currentHash() {
   if (!storage_mutex) return "";
@@ -910,6 +981,9 @@ void refresh() {
   playback_decode_total_ms += decode_ms;
   playback_decode_max_ms = max(playback_decode_max_ms, decode_ms);
   playback_decode_samples++;
+  jpeg_total_us += last_jpeg_us;
+  expand_total_us += last_expand_us;
+  present_total_us += last_present_us;
   playback_skipped_frames += step.skipped;
 
   // Keep the animation on its original clock. Decode and flash I/O time should
@@ -918,16 +992,23 @@ void refresh() {
 
   if (step.wrapped && playback_decode_samples > 0) {
     Serial.printf(
-        "WALLPAPER_PLAYBACK,loop=1,frames=%u,delay=%u,decode_avg_ms=%lu,decode_max_ms=%lu,skipped=%lu,storage=%s\n",
+        "WALLPAPER_PLAYBACK,loop=1,frames=%u,delay=%u,decode_avg_ms=%lu,decode_max_ms=%lu,skipped=%lu,fps_x100=%lu,jpeg_us=%lu,expand_us=%lu,present_us=%lu,storage=%s\n",
         static_cast<unsigned>(frame_count),
         static_cast<unsigned>(frame_delay_ms),
         static_cast<unsigned long>(playback_decode_total_ms /
                                    playback_decode_samples),
         static_cast<unsigned long>(playback_decode_max_ms),
-        static_cast<unsigned long>(playback_skipped_frames), storageKind());
+        static_cast<unsigned long>(playback_skipped_frames),
+        static_cast<unsigned long>(static_cast<uint32_t>(playback_decode_samples) *
+            100000UL / max(1UL, millis() - playback_loop_started)),
+        static_cast<unsigned long>(jpeg_total_us / playback_decode_samples),
+        static_cast<unsigned long>(expand_total_us / playback_decode_samples),
+        static_cast<unsigned long>(present_total_us / playback_decode_samples), storageKind());
     playback_decode_total_ms = 0;
     playback_decode_max_ms = 0;
     playback_decode_samples = 0;
+    playback_loop_started = millis();
+    jpeg_total_us = expand_total_us = present_total_us = 0;
     playback_skipped_frames = 0;
   }
 }
@@ -1022,9 +1103,10 @@ bool sync(const String &host, uint16_t port, const String &sha256,
   asset_revision.fetch_add(1);
   if (using_sd) clearSdStatusLed();
   xSemaphoreGive(storage_mutex);
-  Serial.printf("WALLPAPER_SYNC,ok=%d,size=%u,storage=%s\n",
+  Serial.printf("WALLPAPER_SYNC,ok=%d,size=%u,storage=%s,stack_free=%u\n",
                 committed ? 1 : 0, static_cast<unsigned>(size),
-                using_sd ? "tf" : "flash");
+                using_sd ? "tf" : "flash",
+                static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
   sync_in_progress.store(false);
   return committed;
 }

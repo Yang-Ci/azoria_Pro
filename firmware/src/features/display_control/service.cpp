@@ -54,6 +54,9 @@ constexpr uint32_t kConfirmedSettleMs = 2000;
 constexpr uint32_t kRegistrationIntervalMs = 30000;
 constexpr uint32_t kBleHealthIntervalMs = 5000;
 constexpr uint32_t kIdleStatusIntervalMs = 750;
+// Status polling can synchronously download and validate a replacement
+// wallpaper. Leave headroom for the nested HTTP and filesystem call chains.
+constexpr uint32_t kRemoteTaskStackSize = 12 * 1024;
 #ifndef AZORIA_FIRMWARE_VERSION
 #define AZORIA_FIRMWARE_VERSION "1.0.1"
 #endif
@@ -1436,8 +1439,8 @@ void startRemote(const DeviceConfig &config) {
   if (!startBleTransport(device_hostname, remote_config.token)) {
     Serial.println("BLE transport initialization failed");
   }
-  if (xTaskCreatePinnedToCore(remoteTask, "ddc-network", 8192, nullptr, 1,
-                              &remote_task_handle, 0) != pdPASS) {
+  if (xTaskCreatePinnedToCore(remoteTask, "ddc-network", kRemoteTaskStackSize,
+                            nullptr, 1, &remote_task_handle, 0) != pdPASS) {
     Serial.println("DDC network task creation failed");
     remote_task_handle = nullptr;
   }

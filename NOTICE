@@ -6,3 +6,8 @@ See LICENSE for the license notice and the official license URL.
 
 Third-party libraries, hardware names, platform names, trademarks and bundled
 assets remain subject to their respective owners' terms.
+
+The Touch firmware links JPEGDEC 1.8.3 by Larry Bank / BitBank Software,
+Copyright (c) 2020-2024 BitBank Software, Inc., under Apache License 2.0.
+Source: https://github.com/bitbank2/JPEGDEC/tree/1.8.3
+License: https://www.apache.org/licenses/LICENSE-2.0

@@ -1599,6 +1599,9 @@ void refresh() {
   UsageView::refresh(state);
   ComputerView::refresh(state);
   PowerView::refresh(state);
+  // The opaque power overlay owns the screen. Catch up the home controls and
+  // clock after returning, instead of redrawing hidden content while scrolling.
+  if (PowerView::active()) return;
   if (static_cast<int32_t>(millis() - next_clock_update) >= 0) {
     updateClock();
     next_clock_update = millis() + 1000;
@@ -1766,7 +1769,7 @@ void refresh() {
 }
 
 bool takeFullRedrawRequest() {
-  if (post_interaction_redraw_due == 0 ||
+  if (PowerView::active() || post_interaction_redraw_due == 0 ||
       brightness_dragging || volume_dragging ||
       static_cast<int32_t>(millis() - post_interaction_redraw_due) < 0) {
     return false;

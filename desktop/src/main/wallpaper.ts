@@ -15,7 +15,7 @@ type PackageValidation = {
   frameCount: number
   frameDelayMs: number
   durationMs: number
-  format: "AZW1" | "AZW2" | "AZW3" | "AZW4"
+  format: "AZW1" | "AZW2" | "AZW3" | "AZW4" | "AZW5"
 }
 
 function readUInt16(data: Uint8Array, offset: number): number {
@@ -34,7 +34,8 @@ function validatePackage(data: Uint8Array, kind: WallpaperKind): PackageValidati
   if (!((format === "AZW1" && sourceWidth === 480 && sourceHeight === 480) ||
         (format === "AZW2" && sourceWidth === 240 && sourceHeight === 240) ||
         (format === "AZW3" && sourceWidth === 320 && sourceHeight === 320) ||
-        (format === "AZW4" && sourceWidth === 480 && sourceHeight === 480))) {
+        (format === "AZW4" && sourceWidth === 480 && sourceHeight === 480) ||
+        (format === "AZW5" && sourceWidth === 240 && sourceHeight === 240))) {
     throw new Error("壁纸包格式无效")
   }
   const frameCount = readUInt16(data, 8)
@@ -42,7 +43,7 @@ function validatePackage(data: Uint8Array, kind: WallpaperKind): PackageValidati
   const payloadSize = readUInt32(data, 12)
   if (frameCount < 1 || frameCount > maxFrames || payloadSize !== data.byteLength - headerSize) throw new Error("壁纸帧信息无效")
   if ((kind === "image" && (frameCount !== 1 || frameDelayMs !== 0)) ||
-      (kind === "video" && (frameCount < 2 || frameDelayMs < 100 || frameDelayMs > 2000)) ||
+      (kind === "video" && (frameCount < 2 || frameDelayMs < (format === "AZW5" ? 33 : 100) || frameDelayMs > 2000)) ||
       (kind === "image" && format !== "AZW1")) {
     throw new Error("壁纸类型与动画帧不匹配")
   }

@@ -8,10 +8,12 @@
 #include <time.h>
 
 #include "features/display_control/screen.h"
+#include "features/display_control/power_view.h"
 #include "features/display_control/service.h"
 #include "features/wallpaper/wallpaper.h"
 #include "platform/board.h"
 #include "platform/touch_contact_filter.h"
+#include "platform/display_pixels.h"
 #include "services/device_config.h"
 #include "services/ble_transport.h"
 #include "services/usb_provisioning.h"
@@ -21,12 +23,21 @@ namespace {
 
 constexpr uint32_t kWidth = 480;
 constexpr uint32_t kHeight = 480;
-constexpr uint32_t kDrawRows = 8;
+// A 16-row SRAM strip avoids repeatedly decompressing 16-pixel glyphs
+// across eight-row clips while keeping the framebuffer itself in PSRAM.
+constexpr uint32_t kDrawRows = 16;
 constexpr uint32_t kBufferPixels = kWidth * kDrawRows;
 lv_disp_draw_buf_t draw_buffer;
 lv_color_t *draw_pixels = nullptr;
 lv_area_t pending_flush_area{};
 bool flush_area_pending = false;
+uint32_t ui_copy_us = 0, ui_sync_us = 0, ui_wait_us = 0;
+constexpr DisplayPixels::Area kPowerViewport{0, 82, 479, 479};
+bool ui_scroll_reused = false, idle_viewport_stale = false;
+bool last_frame_power = false;
+int16_t last_power_scroll = 0;
+uint32_t last_power_visual_revision = 0;
+uint16_t last_power_rotation = 0, stale_viewport_rotation = 0;
 bool provisioning = false;
 bool have_saved_config = false;
 bool remote_started = false;
@@ -68,38 +79,13 @@ IRAM_ATTR bool displayRefreshFinished(void *user_data) {
   return should_yield == pdTRUE;
 }
 
-void displayFlush(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *colors) {
-  void *previous_frame_buffer = Board::currentFrameBuffer();
-  void *target = previous_frame_buffer == Board::frameBuffer(0)
-                     ? Board::frameBuffer(1) : Board::frameBuffer(0);
-  if (!previous_frame_buffer || !target || !colors) {
-    Serial.println("LCD frame buffer unavailable");
-    Serial.flush();
-    delay(20);
-    ESP.restart();
-    return;
-  }
-  Board::copyDrawAreaToFrameBuffer(colors, target, area->x1, area->y1,
-                                  area->x2, area->y2);
-  if (!flush_area_pending) {
-    pending_flush_area = *area;
-    flush_area_pending = true;
-  } else {
-    pending_flush_area.x1 = min(pending_flush_area.x1, area->x1);
-    pending_flush_area.y1 = min(pending_flush_area.y1, area->y1);
-    pending_flush_area.x2 = max(pending_flush_area.x2, area->x2);
-    pending_flush_area.y2 = max(pending_flush_area.y2, area->y2);
-  }
-  if (!lv_disp_flush_is_last(driver)) {
-    lv_disp_flush_ready(driver);
-    return;
-  }
+bool presentFrame(void *target) {
   if (!Board::switchFrameBuffer(target)) {
     Serial.println("LCD frame switch failed");
     Serial.flush();
     delay(20);
     ESP.restart();
-    return;
+    return false;
   }
   // Match the panel library's supported double-buffer sequence. Never release
   // the off-screen buffer until a refresh boundary has actually completed.
@@ -116,7 +102,7 @@ void displayFlush(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *colo
       Serial.flush();
       delay(20);
       ESP.restart();
-      return;
+      return false;
     }
     ulTaskNotifyValueClear(nullptr, ULONG_MAX);
     if (ulTaskNotifyTake(pdTRUE, kFrameBoundaryTimeout) == 0) {
@@ -124,7 +110,7 @@ void displayFlush(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *colo
       Serial.flush();
       delay(20);
       ESP.restart();
-      return;
+      return false;
     }
     Serial.println("LCD RGB scan recovered");
     display_full_redraw_requested = true;
@@ -133,15 +119,108 @@ void displayFlush(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *colo
   if (wait_ticks > display_max_flush_wait_ticks) {
     display_max_flush_wait_ticks = wait_ticks;
   }
-  // The old front buffer is idle only after the completed scan boundary.
-  // Synchronize changed physical rows so both buffers remain ready for partial
-  // updates. No panel buffer is ever rotated back into logical coordinates.
   Board::commitFrameBufferForDisplay();
-  Board::syncFrameBufferArea(target, previous_frame_buffer,
-                             pending_flush_area.x1, pending_flush_area.y1,
-                             pending_flush_area.x2, pending_flush_area.y2);
+  return true;
+}
+
+void displayRenderStart(lv_disp_drv_t *) {
+  ui_scroll_reused = false;
+  lv_disp_t *display = lv_disp_get_default();
+  auto *source = static_cast<const uint16_t *>(Board::currentFrameBuffer());
+  auto *target = static_cast<uint16_t *>(Board::currentFrameBuffer() == Board::frameBuffer(0)
+                                           ? Board::frameBuffer(1) : Board::frameBuffer(0));
+  const bool power = DisplayControl::PowerView::active();
+  const int16_t scroll = DisplayControl::PowerView::scrollOffset();
+  const int delta = scroll - last_power_scroll;
+  const bool surface_unchanged = power && last_frame_power &&
+      last_power_rotation == Board::rotation() &&
+      last_power_visual_revision == DisplayControl::PowerView::visualRevision();
+  if (source && target && surface_unchanged && delta != 0 &&
+      display->inv_p == 1 && !display->inv_area_joined[0]) {
+    lv_area_t &area = display->inv_areas[0];
+    // Scroll invalidation includes a small external margin. Header controls
+    // have their own visual revision and therefore always use normal drawing.
+    if (area.x1 == 0 && area.x2 == 479 && area.y1 >= 74 && area.y2 == 479) {
+      const uint32_t started = micros();
+      ui_scroll_reused = DisplayPixels::copyScrolledArea(
+          source, target, 480, kPowerViewport, delta, Board::rotation());
+      ui_copy_us += micros() - started;
+      if (ui_scroll_reused) {
+        area = {0, static_cast<lv_coord_t>(delta > 0 ? 480 - delta : 82),
+                479, static_cast<lv_coord_t>(delta > 0 ? 479 : 81 - delta)};
+        return;
+      }
+    }
+  }
+  // A reused frame fully overwrites its viewport, so it needs no second copy
+  // after presentation. Before the next normal partial redraw, reconcile the
+  // idle viewport once. The visible framebuffer is never modified here.
+  if (idle_viewport_stale && source && target) {
+    const uint32_t started = micros();
+    DisplayPixels::syncArea(source, target, 480, kPowerViewport, stale_viewport_rotation);
+    ui_sync_us += micros() - started;
+    idle_viewport_stale = false;
+  }
+}
+
+void displayFlush(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *colors) {
+  void *previous_frame_buffer = Board::currentFrameBuffer();
+  void *target = previous_frame_buffer == Board::frameBuffer(0)
+                     ? Board::frameBuffer(1) : Board::frameBuffer(0);
+  if (!previous_frame_buffer || !target || !colors) {
+    Serial.println("LCD frame buffer unavailable");
+    Serial.flush();
+    delay(20);
+    ESP.restart();
+    return;
+  }
+  const uint32_t copy_started = micros();
+  Board::copyDrawAreaToFrameBuffer(colors, target, area->x1, area->y1,
+                                  area->x2, area->y2);
+  ui_copy_us += micros() - copy_started;
+  if (!flush_area_pending) {
+    pending_flush_area = *area;
+    flush_area_pending = true;
+  } else {
+    pending_flush_area.x1 = min(pending_flush_area.x1, area->x1);
+    pending_flush_area.y1 = min(pending_flush_area.y1, area->y1);
+    pending_flush_area.x2 = max(pending_flush_area.x2, area->x2);
+    pending_flush_area.y2 = max(pending_flush_area.y2, area->y2);
+  }
+  if (!lv_disp_flush_is_last(driver)) {
+    lv_disp_flush_ready(driver);
+    return;
+  }
+  const uint32_t wait_started = micros();
+  if (!Board::presentFrameBuffer(target)) return;
+  ui_wait_us += micros() - wait_started;
+  if (ui_scroll_reused) {
+    idle_viewport_stale = true;
+    stale_viewport_rotation = Board::rotation();
+  } else {
+    const uint32_t sync_started = micros();
+    Board::syncFrameBufferArea(target, previous_frame_buffer,
+                               pending_flush_area.x1, pending_flush_area.y1,
+                               pending_flush_area.x2, pending_flush_area.y2);
+    ui_sync_us += micros() - sync_started;
+  }
   flush_area_pending = false;
   lv_disp_flush_ready(driver);
+}
+
+void displayMonitor(lv_disp_drv_t *, uint32_t elapsed_ms, uint32_t pixels) {
+  if (DisplayControl::PowerView::scrollDiagnosticsActive() &&
+      (ui_scroll_reused || pixels >= 480 * 80)) {
+    Serial.printf("POWER_FRAME,ms=%lu,pixels=%lu,copy_us=%lu,sync_us=%lu,wait_us=%lu,reuse=%u\n",
+                  static_cast<unsigned long>(elapsed_ms), static_cast<unsigned long>(pixels),
+                  static_cast<unsigned long>(ui_copy_us), static_cast<unsigned long>(ui_sync_us),
+                  static_cast<unsigned long>(ui_wait_us), ui_scroll_reused ? 1 : 0);
+  }
+  last_frame_power = DisplayControl::PowerView::active();
+  last_power_scroll = DisplayControl::PowerView::scrollOffset();
+  last_power_visual_revision = DisplayControl::PowerView::visualRevision();
+  last_power_rotation = Board::rotation();
+  ui_copy_us = ui_sync_us = ui_wait_us = 0;
 }
 
 void logMemory(const char *stage) {
@@ -225,6 +304,8 @@ bool initLvgl() {
   display_driver.hor_res = kWidth;
   display_driver.ver_res = kHeight;
   display_driver.flush_cb = displayFlush;
+  display_driver.render_start_cb = displayRenderStart;
+  display_driver.monitor_cb = displayMonitor;
   display_driver.draw_buf = &draw_buffer;
   // LVGL renders small logical regions in SRAM. The flush path rotates only
   // those regions into the idle physical panel buffer and owns presentation.
@@ -285,6 +366,10 @@ void startProvisioning() {
 }
 
 }  // namespace
+
+namespace Board {
+bool presentFrameBuffer(void *buffer) { return presentFrame(buffer); }
+}  // namespace Board
 
 void setup() {
   Serial.begin(115200);
@@ -371,7 +456,8 @@ void loop() {
       (display != nullptr && display->driver != nullptr)
           ? display->driver->draw_buf
           : nullptr;
-  if (display_full_redraw_pending && display != nullptr &&
+  if (display_full_redraw_pending && !Wallpaper::directPresentation() &&
+      display != nullptr &&
       active_draw_buffer != nullptr && active_draw_buffer->buf1 != nullptr &&
       !display->rendering_in_progress &&
       !active_draw_buffer->flushing && lv_anim_count_running() == 0) {
@@ -385,5 +471,5 @@ void loop() {
     logMemory("runtime");
     next_runtime_diagnostics = millis() + kRuntimeDiagnosticIntervalMs;
   }
-  delay(5);
+  delay(Wallpaper::directPresentation() ? 1 : 5);
 }

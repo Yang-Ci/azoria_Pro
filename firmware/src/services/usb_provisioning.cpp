@@ -5,6 +5,7 @@
 
 #include "services/device_config.h"
 #include "platform/board.h"
+#include "features/wallpaper/wallpaper.h"
 #include "features/display_control/usage_view.h"
 #include "features/display_control/computer_view.h"
 #include "features/display_control/power_view.h"
@@ -200,6 +201,8 @@ void handleLine(String line) {
     sendScreenshot(Board::currentFrameBuffer());
     return;
   }
+  if (line == "AZORIA_WALLPAPER") { Wallpaper::show(); Serial.println("AZORIA_WALLPAPER_READY"); return; }
+  if (line == "AZORIA_WALLPAPER_CLOSE") { Wallpaper::hide(); Serial.println("AZORIA_WALLPAPER_CLOSED"); return; }
   if (line == "AZORIA_DISPLAY_STATE") {
     Serial.printf("AZORIA_DISPLAY_STATE rotation=%u frame_rotation=%u\n",
                   Board::rotation(), Board::currentFrameBufferRotation());
@@ -226,6 +229,10 @@ void handleLine(String line) {
     DisplayControl::UsageView::hide(); DisplayControl::ComputerView::hide(); DisplayControl::PowerView::show();
     Serial.println(DisplayControl::PowerView::active() ? "AZORIA_POWER_READY" : "AZORIA_POWER_UNAVAILABLE");
     return;
+  }
+  if (line == "AZORIA_POWER_SCROLL") {
+    DisplayControl::PowerView::runScrollDiagnostics();
+    Serial.println("AZORIA_POWER_SCROLL_READY"); return;
   }
   if (line == "AZORIA_POWER_CLOSE") { DisplayControl::PowerView::hide(); Serial.println("AZORIA_POWER_CLOSED"); return; }
   if (line == "AZORIA_REBOOT") {

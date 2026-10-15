@@ -24,9 +24,13 @@ if not gcc or not cxx:
 #include <algorithm>
 using String = std::string;
 using std::min;
+using std::max;
 template<class T> T constrain(T v, T lo, T hi) { return std::max(lo, std::min(v, hi)); }
 uint32_t millis();
-struct NativeSerial { template<class... T> void printf(const char *, T...) {} };
+struct NativeSerial { template<class... T> void printf(const char *, T...) {} void flush() {} void println(const char *) {} };
+inline void delay(uint32_t) {}
+struct NativeEsp { void restart() { abort(); } };
+inline NativeEsp ESP;
 inline NativeSerial Serial;
 ''', encoding="utf-8")
 (build / "Preferences.h").write_text('''#pragma once
@@ -55,8 +59,10 @@ inline void *heap_caps_calloc(size_t n, size_t size, int) { return calloc(n, siz
 #include <vector>
 #include "features/display_control/service.h"
 #include "features/wallpaper/wallpaper.h"
+#include "platform/display_pixels.h"
 uint32_t clock_ms = 100000;
 uint32_t millis() { return clock_ms; }
+uint32_t micros() { return clock_ms * 1000; }
 DisplayControl::RemoteState fixture;
 struct Command { std::string control; int value; bool final_value; };
 std::vector<Command> commands;
@@ -65,6 +71,17 @@ int selected_bluetooth_device = -1;
 bool power_view_active = false;
 std::vector<std::string> input_requests;
 namespace Board {
+lv_color_t panel_frames[2][480 * 480];
+int visible_frame = 0;
+void *frameBuffer(uint8_t index) { return panel_frames[index]; }
+void *currentFrameBuffer() { return panel_frames[visible_frame]; }
+bool presentFrameBuffer(void *target) { visible_frame = target == panel_frames[0] ? 0 : 1; return true; }
+void copyDrawAreaToFrameBuffer(const void *source, void *target, int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
+  DisplayPixels::writeArea(static_cast<const uint16_t *>(source), static_cast<uint16_t *>(target), 480, {x1,y1,x2,y2}, 0);
+}
+void syncFrameBufferArea(const void *source, void *target, int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
+  DisplayPixels::syncArea(static_cast<const uint16_t *>(source), static_cast<uint16_t *>(target), 480, {x1,y1,x2,y2}, 0);
+}
 void setBacklight(uint8_t value) { applied_backlight = value; }
 bool setRotation(uint16_t) { return true; }
 uint16_t rotation() { return 0; }
@@ -103,7 +120,13 @@ static tm *native_localtime(const time_t *t, tm *result) { *result = *std::local
 #define localtime_r native_localtime
 // Include production code so the preview can open the same gesture-driven panels.
 #include "features/display_control/screen.cpp"
-lv_color_t framebuffer[480 * 480], draw_pixels[480 * 48];
+lv_color_t draw_pixels[480 * 16];
+lv_area_t pending_flush_area{};
+bool flush_area_pending = false;
+// PRODUCTION_PRESENTATION_GLOBALS
+// PRODUCTION_PRESENTATION_CALLBACKS
+uint32_t checked_reuse_frames = 0;
+uint32_t rendered_frames = 0;
 lv_point_t pointer_point{};
 bool pointer_pressed = false;
 void readPointer(lv_indev_drv_t *, lv_indev_data_t *data) {
@@ -111,21 +134,35 @@ void readPointer(lv_indev_drv_t *, lv_indev_data_t *data) {
   data->state = pointer_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
 }
 void flush(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *pixels) {
-  for (int y = area->y1; y <= area->y2; ++y) for (int x = area->x1; x <= area->x2; ++x)
-    framebuffer[y * 480 + x] = *pixels++;
-  lv_disp_flush_ready(driver);
+  const bool last = lv_disp_flush_is_last(driver);
+  displayFlush(driver, area, pixels);
+  if (last) ++rendered_frames;
+}
+void checkMonitor(lv_disp_drv_t *driver, uint32_t elapsed, uint32_t pixels) {
+  displayMonitor(driver, elapsed, pixels);
+  if (!ui_scroll_reused) return;
+  // Compare the actual production presentation callbacks with an independent
+  // complete LVGL snapshot, not with another incremental-render implementation.
+  std::vector<lv_color_t> reference(480 * 480);
+  lv_img_dsc_t snapshot{};
+  assert(lv_snapshot_take_to_buf(lv_scr_act(), LV_IMG_CF_TRUE_COLOR, &snapshot,
+                                reference.data(), reference.size() * sizeof(lv_color_t)) == LV_RES_OK);
+  assert(!memcmp(reference.data(), Board::currentFrameBuffer(), reference.size() * sizeof(lv_color_t)));
+  ++checked_reuse_frames;
 }
 void advance(uint32_t duration) {
   while (duration) {
     const uint32_t step = std::min(duration, 20u);
     duration -= step; clock_ms += step; lv_tick_inc(step); lv_timer_handler();
+    if (DisplayControl::PowerView::active()) DisplayControl::refresh();
   }
 }
 void capture(const char *name) {
   lv_obj_update_layout(lv_scr_act()); lv_refr_now(nullptr);
   FILE *file = fopen(name, "wb"); assert(file);
   fprintf(file, "P6\n480 480\n255\n");
-  for (auto pixel : framebuffer) {
+  for (int index = 0; index < 480 * 480; ++index) {
+    const auto pixel = static_cast<lv_color_t *>(Board::currentFrameBuffer())[index];
     const uint16_t v = pixel.full;
     const uint8_t rgb[] = {uint8_t(((v >> 11) & 31) * 255 / 31), uint8_t(((v >> 5) & 63) * 255 / 63), uint8_t((v & 31) * 255 / 31)};
     fwrite(rgb, 1, 3, file);
@@ -172,9 +209,10 @@ void renderPower(const char *name) {
 }
 int main() {
   lv_init();
-  lv_disp_draw_buf_t draw; lv_disp_draw_buf_init(&draw, draw_pixels, nullptr, 480 * 48);
+  lv_disp_draw_buf_t draw; lv_disp_draw_buf_init(&draw, draw_pixels, nullptr, 480 * 16);
   lv_disp_drv_t driver; lv_disp_drv_init(&driver);
   driver.hor_res = 480; driver.ver_res = 480; driver.draw_buf = &draw; driver.flush_cb = flush;
+  driver.render_start_cb = displayRenderStart; driver.monitor_cb = checkMonitor;
   lv_disp_drv_register(&driver);
   lv_indev_drv_t pointer_driver; lv_indev_drv_init(&pointer_driver);
   pointer_driver.type = LV_INDEV_TYPE_POINTER; pointer_driver.read_cb = readPointer;
@@ -255,6 +293,22 @@ int main() {
   pointerAt(220,98,true);pointerAt(220,98,false);assert(PowerView::active());
   assert(power_view_active);
   renderPower("touch-power.ppm");
+  // A live but unchanged page must not continuously repaint while waiting for
+  // desktop samples. Unrelated music updates must not repaint behind the page.
+  advance(200);
+  const auto quiet_frames = rendered_frames;
+  for (int i = 0; i < 50; ++i) {
+    ++fixture.revision; fixture.music_position_ms += 20;
+    refresh(); advance(20);
+  }
+  printf("Power idle redraws in one second: %u\n", rendered_frames - quiet_frames);
+  fflush(stdout);
+  assert(rendered_frames == quiet_frames);
+  // Expanded hit area accepts a light tap outside the visible 44-pixel button.
+  pointerAt(405, 12, true); pointerAt(407, 14, true); pointerAt(407, 14, false);
+  assert(!PowerView::active()); assert(!power_view_active);
+  pointerAt(220,98,true);pointerAt(220,98,false);assert(PowerView::active());
+
   assertLabel("100%"); assertLabel("已充满"); assertLabel("性能模式");
   assertLabel("2 块 · 正常显示"); assertPowerButtons(false, true, false);
   assertLabel("蓝牙设备电量");assertLabel("罗技 MX Master 3S");assertLabel("86%");assertLabel("1 / 3");
@@ -314,7 +368,9 @@ int main() {
   strcpy(fixture.battery_status,"unknown");renderPower("touch-power-unknown.ppm");assertLabel("电量暂不可用");
   fixture.battery_percent=0;strcpy(fixture.battery_status,"charging");strcpy(fixture.power_mode,"balanced");
   renderPower("touch-power-zero.ppm");assertLabel("0%");assertLabel("正在充电");assertLabel("均衡模式");
-  pointerAt(438,39,true);pointerAt(438,39,false);assert(!PowerView::active());
+  // Returning remains usable immediately after scrolling, with small drift
+  // beyond the visible button. Keep the contact captured until release.
+  pointerAt(438,39,true);pointerAt(479,39,true);pointerAt(479,39,false);assert(!PowerView::active());
   assert(!power_view_active);
   commands.clear();advance(120);
   for (int value : {0, 100}) {
@@ -370,11 +426,20 @@ int main() {
   lv_event_send(brightness_slider, LV_EVENT_VALUE_CHANGED, nullptr);
   lv_event_send(brightness_slider, LV_EVENT_RELEASED, nullptr);
   assert(commands.size() == 2 && commands.back().control == "brightness" && commands.back().value == 81 && commands.back().final_value);
-  puts("Actual LVGL controls preview passed: immediate input selection, rapid retargeting, duplicate suppression, failure rollback, swipe cancellation, Chinese power states, Bluetooth devices, navigation, backlight, volume and final commits.");
+  assert(checked_reuse_frames > 0);
+  printf("Incremental scroll frames matched full LVGL snapshots: %u\n", checked_reuse_frames);
+  puts("Actual LVGL controls preview passed: immediate input selection, rapid retargeting, duplicate suppression, failure rollback, swipe cancellation, Chinese power states, unchanged-page redraw suppression, enlarged return target, scrolling, Bluetooth devices, navigation, backlight, volume and final commits.");
 }
 ''', encoding="utf-8")
 
-flags = ["-O1", "-DLV_CONF_SKIP", "-DLV_COLOR_DEPTH=16", "-DLV_COLOR_16_SWAP=0", "-DLV_MEM_CUSTOM=1", "-DLV_FONT_FMT_TXT_LARGE=1", "-DLV_USE_FONT_COMPRESSED=1"]
+main_source = (root / 'firmware/src/main.cpp').read_text(encoding='utf-8')
+globals_source = main_source[main_source.index('uint32_t ui_copy_us'):main_source.index('bool provisioning')]
+callbacks_source = main_source[main_source.index('void displayRenderStart('):main_source.index('void logMemory(')]
+preview_source = (build / 'preview.cpp').read_text(encoding='utf-8')
+preview_source = preview_source.replace('// PRODUCTION_PRESENTATION_GLOBALS', globals_source).replace('// PRODUCTION_PRESENTATION_CALLBACKS', callbacks_source)
+(build / 'preview.cpp').write_text(preview_source, encoding='utf-8')
+
+flags = ["-O1", "-DLV_USE_SNAPSHOT=1", "-DLV_CONF_SKIP", "-DLV_COLOR_DEPTH=16", "-DLV_COLOR_16_SWAP=0", "-DLV_MEM_CUSTOM=1", "-DLV_FONT_FMT_TXT_LARGE=1", "-DLV_USE_FONT_COMPRESSED=1"]
 flags += [f"-DLV_FONT_MONTSERRAT_{size}=1" for size in [14, 16, 18, 22, 28, 36, 48]]
 flags += ["-I", str(lvgl), "-I", str(build), "-I", str(root / "firmware/src")]
 base = list((lvgl / "src").rglob("*.c"))
@@ -385,13 +450,13 @@ extra += [root / "firmware/src/ui/image.cpp", root / "firmware/src/ui/display_ba
 
 def compile_one(pair):
     index, source = pair
-    if index < len(base):
+    if index < len(base) and source.name != "lv_snapshot.c":
         cached = root / "out/touch-usage-preview" / f"part-{index}.o"
         if cached.exists() and cached.stat().st_mtime >= source.stat().st_mtime:
             return str(cached)
     key = hashlib.sha256(str(source).encode()).hexdigest()[:12]
     target = build / f"{key}.o"
-    if not target.exists() or target.stat().st_mtime < source.stat().st_mtime or source.suffix == ".cpp":
+    if not target.exists() or target.stat().st_mtime < source.stat().st_mtime or source.suffix == ".cpp" or source.name == "lv_snapshot.c":
         command = [cxx if source.suffix == ".cpp" else gcc] + flags
         if source.suffix == ".cpp": command += ["-std=c++17"]
         result = subprocess.run(command + ["-c", str(source), "-o", str(target)], capture_output=True, text=True)

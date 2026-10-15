@@ -10,6 +10,7 @@ void createView(lv_obj_t *parent, lv_event_cb_t exit_callback);
 void show();
 void hide();
 bool active();
+bool directPresentation();
 String currentHash();
 const char *storageKind();
 size_t packageLimit();

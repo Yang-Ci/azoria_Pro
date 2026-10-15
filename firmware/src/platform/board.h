@@ -55,6 +55,8 @@ void syncFrameBufferArea(const void *source, void *destination,
 void *frameBuffer(uint8_t index);
 void *currentFrameBuffer();
 bool switchFrameBuffer(void *buffer);
+// Main UI task only: switch and wait for a real scan boundary before reuse.
+bool presentFrameBuffer(void *buffer);
 bool restartRgbScan();
 bool attachRefreshFinishCallback(RefreshFinishCallback callback, void *user_data);
 

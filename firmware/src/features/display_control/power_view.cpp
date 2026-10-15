@@ -13,6 +13,8 @@ constexpr uint32_t kAccent = 0x20DFE5;
 constexpr uint32_t kGreen = 0x35D07F;
 constexpr uint32_t kAmber = 0xFFC166;
 
+uint32_t visual_revision = 0;
+
 lv_obj_t *view, *status, *status_dot, *battery, *battery_state, *battery_bar;
 lv_obj_t *mode, *screens, *off_button, *on_button, *link_button, *link_track, *link_knob, *timer_text;
 lv_obj_t *content, *bluetooth_name, *bluetooth_level, *bluetooth_bar, *bluetooth_page, *previous_device, *next_device;
@@ -45,6 +47,16 @@ void outline(lv_obj_t *object) {
   lv_obj_set_style_border_width(object, 1, 0);
 }
 
+void buttonVisualChanged(lv_event_t *event) {
+  switch (lv_event_get_code(event)) {
+    case LV_EVENT_PRESSED:
+    case LV_EVENT_RELEASED:
+    case LV_EVENT_PRESS_LOST:
+      ++visual_revision; break;
+    default: break;
+  }
+}
+
 lv_obj_t *button(lv_obj_t *parent, int x, int y, int width, int height,
                  uint32_t ink) {
   lv_obj_t *object = lv_btn_create(parent);
@@ -57,12 +69,51 @@ lv_obj_t *button(lv_obj_t *parent, int x, int y, int width, int height,
   lv_obj_set_style_bg_color(object, lv_color_hex(ink == kText ? 0xC8CDD2 : 0x292E38), LV_STATE_PRESSED);
   lv_obj_set_style_opa(object, LV_OPA_40, LV_STATE_DISABLED);
   lv_obj_clear_flag(object, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(object, buttonVisualChanged, LV_EVENT_ALL, nullptr);
   return object;
 }
 
 void disabled(lv_obj_t *object, bool value) {
+  if (lv_obj_has_state(object, LV_STATE_DISABLED) == value) return;
+  ++visual_revision;
   if (value) lv_obj_add_state(object, LV_STATE_DISABLED);
   else lv_obj_clear_state(object, LV_STATE_DISABLED);
+}
+
+// LVGL invalidates even when text/styles are set to their current values.
+// This page is polled from the UI loop; leave unchanged widgets untouched so
+// input and scroll drawing do not compete with continuous status redraws.
+void setText(lv_obj_t *object, const char *value) {
+  if (strcmp(lv_label_get_text(object), value)) {
+    ++visual_revision; lv_label_set_text(object, value);
+  }
+}
+
+void setBackground(lv_obj_t *object, lv_color_t value) {
+  if (lv_obj_get_style_bg_color(object, 0).full != value.full)
+    { ++visual_revision; lv_obj_set_style_bg_color(object, value, 0); }
+}
+
+void setInk(lv_obj_t *object, lv_color_t value) {
+  if (lv_obj_get_style_text_color(object, 0).full != value.full)
+    { ++visual_revision; lv_obj_set_style_text_color(object, value, 0); }
+}
+
+void setWidth(lv_obj_t *object, int value) {
+  if (lv_obj_get_style_width(object, 0) != value) {
+    ++visual_revision; lv_obj_set_width(object, value);
+  }
+}
+
+void setHidden(lv_obj_t *object, bool hidden) {
+  if (lv_obj_has_flag(object, LV_OBJ_FLAG_HIDDEN) == hidden) return;
+  ++visual_revision;
+  if (hidden) lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
+  else lv_obj_clear_flag(object, LV_OBJ_FLAG_HIDDEN);
+}
+
+void diagnosticScroll(void *object, int32_t y) {
+  lv_obj_scroll_to_y(static_cast<lv_obj_t *>(object), y, LV_ANIM_OFF);
 }
 
 void back(lv_event_t *) { hide(); }
@@ -116,6 +167,10 @@ void create(lv_obj_t *parent) {
   text(view, "上滑查看更多", 300, 55, &azoria_font_zh_16, kMuted);
   lv_obj_t *back_button = button(view, 416, 17, 44, 44, kCard);
   outline(back_button);
+  // Keep the visual size but use the free header space for a forgiving hit
+  // target. Retain the contact if a finger drifts outside before release.
+  lv_obj_set_ext_click_area(back_button, 16);
+  lv_obj_add_flag(back_button, LV_OBJ_FLAG_PRESS_LOCK);
   lv_obj_add_event_cb(back_button, back, LV_EVENT_CLICKED, nullptr);
   lv_obj_center(text(back_button, LV_SYMBOL_LEFT, 0, 0, &lv_font_montserrat_18));
 
@@ -123,7 +178,7 @@ void create(lv_obj_t *parent) {
   lv_obj_add_flag(content, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
   lv_obj_clear_flag(content, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_set_scroll_dir(content, LV_DIR_VER);
-  lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
+  lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_OFF);
   lv_obj_set_style_pad_bottom(content, 20, 0);
   lv_obj_set_style_bg_color(content, lv_color_hex(kBorder), LV_PART_SCROLLBAR);
   lv_obj_set_style_width(content, 3, LV_PART_SCROLLBAR);
@@ -206,24 +261,49 @@ void show() {
 }
 
 void hide() {
+  if (content) lv_anim_del(content, diagnosticScroll);
   setPowerViewActive(false);
   if (view) lv_obj_add_flag(view, LV_OBJ_FLAG_HIDDEN);
   noteInteraction();
 }
 
+void runScrollDiagnostics() {
+  if (!active()) show();
+  lv_obj_update_layout(content);
+  lv_obj_scroll_to_y(content, 0, LV_ANIM_OFF);
+  lv_anim_del(content, diagnosticScroll);
+  lv_anim_t animation;
+  lv_anim_init(&animation);
+  lv_anim_set_var(&animation, content);
+  lv_anim_set_exec_cb(&animation, diagnosticScroll);
+  lv_anim_set_values(&animation, 0, lv_obj_get_scroll_bottom(content));
+  lv_anim_set_time(&animation, 800);
+  lv_anim_set_playback_time(&animation, 800);
+  lv_anim_set_repeat_count(&animation, 2);
+  lv_anim_start(&animation);
+}
+
 bool active() { return view && !lv_obj_has_flag(view, LV_OBJ_FLAG_HIDDEN); }
+
+bool scrollDiagnosticsActive() { return content && lv_anim_get(content, diagnosticScroll); }
+
+int16_t scrollOffset() { return content ? lv_obj_get_scroll_y(content) : 0; }
+uint32_t visualRevision() { return visual_revision; }
 
 void refresh(const RemoteState &state) {
   if (!active()) return;
+  // Keep the scroll surface stable during a drag/inertia. Latest desktop data
+  // is applied immediately after motion ends; control presses still refresh.
+  if (lv_obj_is_scrolling(content) || lv_anim_get(content, diagnosticScroll)) return;
   const bool available = state.online && state.power_supported;
   const bool busy = state.power_pending || state.power_busy;
   const bool blocked = !available || busy;
   const uint32_t status_ink = !available ? kMuted : busy ? kAmber : kGreen;
-  lv_label_set_text(status, !state.online ? "等待桌面端连接" :
+  setText(status, !state.online ? "等待桌面端连接" :
                     !state.power_supported ? "外接屏控制暂不可用" :
                     busy ? "正在应用设置" : "已连接桌面端 · 实时同步");
-  lv_obj_set_style_bg_color(status_dot, lv_color_hex(status_ink), 0);
-  lv_obj_set_style_text_color(status, lv_color_hex(status_ink), 0);
+  setBackground(status_dot, lv_color_hex(status_ink));
+  setInk(status, lv_color_hex(status_ink));
 
   char buffer[100];
   const bool data_available = state.online && state.power_data_available;
@@ -231,51 +311,55 @@ void refresh(const RemoteState &state) {
                            strcmp(state.battery_status, "no-battery");
   const int level = has_battery ? std::min<int>(state.battery_percent, 100) : 0;
   snprintf(buffer, sizeof(buffer), "%d%%", level);
-  lv_label_set_text(battery, has_battery ? buffer : "--");
-  lv_label_set_text(battery_state, data_available ? batteryName(state.battery_status) : "等待同步");
-  lv_obj_set_width(battery_bar, level * 252 / 100);
-  if (level == 0) lv_obj_add_flag(battery_bar, LV_OBJ_FLAG_HIDDEN);
-  else lv_obj_clear_flag(battery_bar, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_set_style_bg_color(battery_bar, lv_color_hex(level <= 20 ? kAmber : kGreen), 0);
-  lv_label_set_text(mode, data_available ? modeName(state.power_mode) : "等待同步");
+  setText(battery, has_battery ? buffer : "--");
+  setText(battery_state, data_available ? batteryName(state.battery_status) : "等待同步");
+  setWidth(battery_bar, level * 252 / 100);
+  setHidden(battery_bar, level == 0);
+  setBackground(battery_bar, lv_color_hex(level <= 20 ? kAmber : kGreen));
+  setText(mode, data_available ? modeName(state.power_mode) : "等待同步");
 
   const bool bluetooth_available = state.online && state.bluetooth_available;
   const bool has_device = bluetooth_available && state.bluetooth_count > 0;
   const bool has_level = has_device && state.bluetooth_percent >= 0;
-  lv_label_set_text(bluetooth_name, !state.online ? "连接桌面端后同步设备电量" :
+  setText(bluetooth_name, !state.online ? "连接桌面端后同步设备电量" :
                     !bluetooth_available ? "等待桌面端提供设备电量" :
                     !has_device ? "暂无已连接的蓝牙设备" :
                     state.bluetooth_pending ? "正在读取设备电量" : state.bluetooth_name);
   snprintf(buffer, sizeof(buffer), "%d%%", state.bluetooth_percent);
-  lv_label_set_text(bluetooth_level, !has_device || state.bluetooth_pending ? "--" : has_level ? buffer : "未提供电量");
+  setText(bluetooth_level, !has_device || state.bluetooth_pending ? "--" : has_level ? buffer : "未提供电量");
   snprintf(buffer, sizeof(buffer), "%u / %u", state.bluetooth_index + 1, state.bluetooth_count);
-  lv_label_set_text(bluetooth_page, has_device ? buffer : "--");
+  setText(bluetooth_page, has_device ? buffer : "--");
   const int device_level = has_level && !state.bluetooth_pending ? std::min<int>(state.bluetooth_percent, 100) : 0;
-  lv_obj_set_width(bluetooth_bar, device_level * 408 / 100);
-  if (device_level == 0) lv_obj_add_flag(bluetooth_bar, LV_OBJ_FLAG_HIDDEN);
-  else lv_obj_clear_flag(bluetooth_bar, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_set_style_bg_color(bluetooth_bar, lv_color_hex(device_level <= 20 ? kAmber : kAccent), 0);
+  setWidth(bluetooth_bar, device_level * 408 / 100);
+  setHidden(bluetooth_bar, device_level == 0);
+  setBackground(bluetooth_bar, lv_color_hex(device_level <= 20 ? kAmber : kAccent));
   disabled(previous_device, !has_device || state.bluetooth_pending || state.bluetooth_index == 0);
   disabled(next_device, !has_device || state.bluetooth_pending || state.bluetooth_index + 1 >= state.bluetooth_count);
 
   snprintf(buffer, sizeof(buffer), "%u 块 · %s", state.external_screen_count,
            state.external_screens_off ? "已熄灭" : "正常显示");
-  lv_label_set_text(screens, !available ? "等待同步" : state.external_screen_count == 0 ? "未连接外接屏" : buffer);
-  lv_obj_set_style_text_color(screens, lv_color_hex(!available || state.external_screen_count == 0 ? kMuted :
-                               state.external_screens_off ? kAmber : kAccent), 0);
+  setText(screens, !available ? "等待同步" : state.external_screen_count == 0 ? "未连接外接屏" : buffer);
+  setInk(screens, lv_color_hex(!available || state.external_screen_count == 0 ? kMuted :
+                               state.external_screens_off ? kAmber : kAccent));
   disabled(off_button, blocked || state.external_screens_off || state.external_screen_count == 0);
   disabled(on_button, blocked || !state.external_screens_off);
   disabled(link_button, blocked);
-  lv_obj_set_style_opa(link_track, blocked ? LV_OPA_40 : LV_OPA_COVER, 0);
-  lv_obj_set_style_bg_color(link_track, lv_color_hex(state.external_power_linked ? kAccent : kBorder), 0);
-  lv_obj_set_style_bg_color(link_knob, lv_color_hex(state.external_power_linked ? kBackground : kText), 0);
-  lv_obj_set_x(link_knob, state.external_power_linked ? 30 : 4);
+  const lv_opa_t link_opacity = blocked ? LV_OPA_40 : LV_OPA_COVER;
+  if (lv_obj_get_style_opa(link_track, 0) != link_opacity) {
+    ++visual_revision; lv_obj_set_style_opa(link_track, link_opacity, 0);
+  }
+  setBackground(link_track, lv_color_hex(state.external_power_linked ? kAccent : kBorder));
+  setBackground(link_knob, lv_color_hex(state.external_power_linked ? kBackground : kText));
+  const int knob_x = state.external_power_linked ? 30 : 4;
+  if (lv_obj_get_style_x(link_knob, 0) != knob_x) {
+    ++visual_revision; lv_obj_set_x(link_knob, knob_x);
+  }
 
   snprintf(buffer, sizeof(buffer), "%02u:%02u - %02u:%02u · %s",
            state.touch_sleep_start_minutes / 60, state.touch_sleep_start_minutes % 60,
            state.touch_sleep_end_minutes / 60, state.touch_sleep_end_minutes % 60,
            state.external_power_linked ? "到时自动熄灭 / 恢复" : "联动未开启");
-  lv_label_set_text(timer_text, !available ? "连接桌面端后同步息屏设置" :
+  setText(timer_text, !available ? "连接桌面端后同步息屏设置" :
                     state.touch_sleep_enabled ? buffer : "请在桌面端开启定时息屏");
 }
 }  // namespace DisplayControl::PowerView

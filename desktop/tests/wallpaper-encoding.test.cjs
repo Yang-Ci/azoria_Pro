@@ -47,49 +47,44 @@ function encoder(duration, jpegSize = () => 128) {
     document: { createElement: tag => tag === 'video' ? new Video() : canvas },
   })
   return {
-    encode: (limit, mode = 'detail') => compiled.exports.createWallpaperUpload({ name: 'clip.mp4', type: 'video/mp4' }, limit, undefined, value => progress.push(value), mode),
-    encodeDefault: () => compiled.exports.createWallpaperUpload({ name: 'clip.mp4', type: 'video/mp4' }),
+    encode: limit => compiled.exports.createWallpaperUpload({ name: 'clip.mp4', type: 'video/mp4' }, limit, undefined, value => progress.push(value)),
     seeks, qualities, progress, canvas,
     released: () => cleanedUp && revoked,
   }
 }
 
-test('10-second video retains full resolution and produces 50 frames at 5 fps', async () => {
-  const fixture = encoder(10)
+test('native video retains the first 10 seconds at the accepted six-frame cadence', async () => {
+  const fixture = encoder(30)
   const upload = await fixture.encode()
   const header = new DataView(upload.data.buffer)
   assert.equal(Buffer.from(upload.data.subarray(0, 4)).toString(), 'AZW4')
   assert.equal(header.getUint16(4, true), 480)
   assert.equal(header.getUint16(6, true), 480)
-  assert.equal(header.getUint16(8, true), 50)
-  assert.equal(header.getUint16(10, true), 200)
-  assert.equal(fixture.seeks.at(-1), 9.8)
+  assert.equal(header.getUint16(8, true), 60)
+  assert.equal(header.getUint16(10, true), 166)
+  assert.equal(fixture.seeks.at(-1), 9.794)
+  assert.ok(header.getUint16(8, true) * header.getUint16(10, true) <= 10_000)
   assert.equal(header.getUint32(12, true), upload.data.length - 20)
   assert.equal(fixture.progress.at(-1), 100)
   assert.ok(fixture.released())
 })
 
-test('default smooth mode preserves 10 seconds at 320 pixels and 10 fps', async () => {
-  const fixture = encoder(10)
-  const upload = await fixture.encodeDefault()
-  const header = new DataView(upload.data.buffer)
-  assert.equal(Buffer.from(upload.data.subarray(0, 4)).toString(), 'AZW3')
-  assert.equal(header.getUint16(4, true), 320)
-  assert.equal(header.getUint16(6, true), 320)
-  assert.equal(header.getUint16(8, true), 100)
-  assert.equal(header.getUint16(10, true), 100)
-  assert.equal(fixture.seeks.at(-1), 9.9)
+test('storage pressure uses fine JPEG quality steps without truncating the loop', async () => {
+  const fixture = encoder(10, quality => quality > 0.74 ? 1200 : 600)
+  const upload = await fixture.encode(40_000)
+  assert.ok(upload.data.length <= 40_000)
+  assert.equal(new DataView(upload.data.buffer).getUint16(8, true), 60)
+  assert.equal(fixture.seeks.at(-1), 9.794)
+  assert.ok(fixture.qualities.includes(0.74))
+  assert.ok(!fixture.qualities.includes(0.66))
   assert.ok(fixture.released())
 })
 
-test('small storage budgets lower JPEG quality without truncating the loop', async () => {
-  const fixture = encoder(10, quality => quality > 0.66 ? 1200 : 600)
-  const upload = await fixture.encode(40_000)
-  assert.ok(upload.data.length <= 40_000)
-  assert.equal(new DataView(upload.data.buffer).getUint16(8, true), 50)
-  assert.equal(fixture.seeks.at(-1), 9.8)
-  assert.ok(fixture.qualities.includes(0.66))
-  assert.ok(fixture.released())
+test('sufficient storage preserves the accepted JPEG quality', async () => {
+  const fixture = encoder(10)
+  await fixture.encode()
+  assert.equal(fixture.qualities.length, 60)
+  assert.ok(fixture.qualities.every(quality => quality === 0.78))
 })
 
 test('unsatisfiable budgets reject the clip and release media resources', async () => {
@@ -99,15 +94,12 @@ test('unsatisfiable budgets reject the clip and release media resources', async 
   assert.notEqual(fixture.progress.at(-1), 100)
 })
 
-test('long videos stop at 10 seconds and short videos use valid frame intervals', async () => {
-  const long = encoder(30)
-  const longUpload = await long.encode()
-  assert.equal(new DataView(longUpload.data.buffer).getUint16(8, true), 50)
-  assert.equal(long.seeks.at(-1), 9.8)
-  const short = encoder(0.3)
-  const shortUpload = await short.encode()
-  const header = new DataView(shortUpload.data.buffer)
+test('short clips preserve their duration instead of being extended to ten seconds', async () => {
+  const fixture = encoder(0.3)
+  const upload = await fixture.encode()
+  const header = new DataView(upload.data.buffer)
   assert.equal(header.getUint16(8, true), 2)
   assert.equal(header.getUint16(10, true), 150)
-  assert.equal(short.seeks.at(-1), 0.15)
+  assert.equal(fixture.seeks.at(-1), 0.15)
+  assert.ok(fixture.released())
 })
