@@ -12,6 +12,7 @@ import type { DisplayPowerManager } from "./display-power"
 import type { PowerDataService } from "./power-data"
 import { touchBluetoothStatus, maxTouchBluetoothDevices } from "../shared/touch-power"
 import { touchSleepDeviceEnabled } from "../shared/touch-sleep"
+import { touchBacklightWire } from "../shared/touch-backlight"
 import type { ExternalPowerAction } from "../shared/contracts"
 import type { TouchRotationManager } from "./touch-rotation"
 import type { TouchUsageService } from "./touch-usage"
@@ -448,6 +449,7 @@ export class LanController {
         touchSleepStartMinutes: touchSleep?.startMinutes ?? 0,
         touchSleepEndMinutes: touchSleep?.endMinutes ?? 0,
         touchSleepActive: touchSleep?.active ?? false,
+        ...touchBacklightWire(this.displayPower?.snapshot().touchBacklight),
         touchRotationDegrees: touchRotation?.degrees ?? 0,
         ...this.displayPower?.touchStatus(),
         ...this.music?.touchStatus(),
@@ -520,7 +522,8 @@ export class LanController {
       this.masterId = this.desktopId
       const self = this.peers.get(this.desktopId)
       if (self) self.master = true
-      const result = `AZORIA_DESKTOP_RESULT_V1|${command.touchId}|${command.bootNonce}|${command.commandId}|${this.desktopId}|1|${command.finalValue}|${command.control}|${encoded}`
+      const confirmed = command.control === "input" ? "0" : command.finalValue
+      const result = `AZORIA_DESKTOP_RESULT_V1|${command.touchId}|${command.bootNonce}|${command.commandId}|${this.desktopId}|1|${confirmed}|${command.control}|${encoded}`
       const wire = this.broadcast(socket, network, result)
       this.commandResults.set(command.key, { wire, expiresAt: Date.now() + commandCacheMs })
       socket.send(Buffer.from(wire), discoveryPort, touchAddress)
@@ -615,6 +618,7 @@ export class LanController {
           touchSleepStartMinutes: touchSleep?.startMinutes ?? 0,
           touchSleepEndMinutes: touchSleep?.endMinutes ?? 0,
           touchSleepActive: touchSleep?.active ?? false,
+          ...touchBacklightWire(this.displayPower?.snapshot().touchBacklight),
           touchRotationDegrees: touchRotation?.degrees ?? 0,
           ...this.displayPower?.touchStatus(),
         })
@@ -637,9 +641,9 @@ export class LanController {
       if (request.method === "POST" && request.url === "/v1/power/control") {
         if (!this.displayPower) return this.json(response, 404, { error: "power unavailable" })
         const body = await this.body(request)
-        if (!["off", "on", "link-on", "link-off"].includes(String(body.action))) return this.json(response, 400, { error: "invalid power action" })
+        if (!["off", "on", "link-on", "link-off", "auto"].includes(String(body.action))) return this.json(response, 400, { error: "invalid power action" })
         // This endpoint remains callable while external displays are off.
-        return this.json(response, 200, await this.displayPower.control(body.action as ExternalPowerAction))
+        return this.json(response, 200, await this.displayPower.control(body.action as ExternalPowerAction, new Date(), body.holdMinutes as number | undefined))
       }
       if (request.method === "POST" && request.url === "/v1/music/control") {
         if (!this.music) return this.json(response, 404, { ok: false, error: "music unavailable" })
@@ -673,7 +677,7 @@ export class LanController {
         const control = payload.control
         if (!["brightness", "volume", "mute", "input"].includes(String(control))) return this.json(response, 400, { ok: false, error: "unsupported control" })
         const status = await this.control(payload as unknown as ControlRequest, "desktop-peer")
-        return this.json(response, 200, { accepted: true, confirmed: payload.final !== false, value: status[control as keyof typeof status] })
+        return this.json(response, 200, { accepted: true, confirmed: control !== "input" && payload.final !== false, value: status[control as keyof typeof status] })
       }
       if (request.method === "POST" && request.url === "/v1/device/register") {
         const payload = await this.body(request)

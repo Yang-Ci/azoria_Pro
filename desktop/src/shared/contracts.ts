@@ -226,6 +226,7 @@ export interface TouchSleepSettings {
   weekdays: number[]
   resumeDate: string | null
   active: boolean
+  externalFollow?: TouchBacklightState
 }
 
 export interface TouchSleepUpdate {
@@ -380,7 +381,36 @@ export interface PowerData {
   error: string | null
 }
 
-export type ExternalPowerAction = "off" | "on" | "link-on" | "link-off"
+export type ExternalPowerAction = "off" | "on" | "link-on" | "link-off" | "auto"
+export interface DisplayTimeRange { startMinutes: number; endMinutes: number }
+export interface DisplaySchedule {
+  revision: number
+  enabled: boolean
+  week: DisplayTimeRange[][]
+  resumeDate: string | null
+  activityDelayMinutes?: number
+  touchFollow?: boolean
+  touchWakeLeadMinutes?: number
+  touchSleepDelayMinutes?: number
+}
+export interface DisplayScheduleUpdate {
+  revision: number
+  enabled?: boolean
+  week?: DisplayTimeRange[][]
+  day?: number
+  periods?: DisplayTimeRange[]
+  copyTo?: number[]
+  resumeDate?: string | null
+  activityDelayMinutes?: number
+  touchFollow?: boolean
+  touchWakeLeadMinutes?: number
+  touchSleepDelayMinutes?: number
+}
+export interface TouchBacklightState {
+  awake: boolean
+  sleepAt: string | null
+  wakeAt: string | null
+}
 export interface ExternalPowerState {
   supported: boolean
   off: boolean
@@ -390,6 +420,14 @@ export interface ExternalPowerState {
   scheduleActive: boolean
   busy: boolean
   error: string | null
+  schedule?: DisplaySchedule
+  plannedOn?: boolean
+  nextChangeAt?: string | null
+  override?: { on: boolean; until: number | null } | null
+  deferredUntil?: string | null
+  activityAvailable?: boolean | null
+  activityLookbackSeconds?: number
+  touchBacklight?: TouchBacklightState
 }
 
 export interface PowerApi {
@@ -476,6 +514,7 @@ export interface DesktopApi {
     mode(): Promise<PowerMode>
     data(): Promise<PowerData>
     externalState(): Promise<ExternalPowerState>
-    externalControl(action: ExternalPowerAction): Promise<ExternalPowerState>
+    externalControl(action: ExternalPowerAction, holdMinutes?: number): Promise<ExternalPowerState>
+    updateSchedule(input: DisplayScheduleUpdate): Promise<ExternalPowerState>
   }
 }

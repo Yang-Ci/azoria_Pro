@@ -102,3 +102,28 @@ test('BLE power replies support selected devices within the characteristic and p
   assert.equal(largest[17], '254')
   assert.ok(Buffer.byteLength(largest[18]) <= 60)
 })
+
+test('linked Touch backlight uses the same resolved state over LAN and legacy BLE status', async t => {
+  const { LanController } = loadBundled('main/lan.ts')
+  const { handleRequest } = loadBundled('renderer/src/ble.ts', '\nexport { handleRequest }')
+  let awake = true
+  const screens = () => ({ supported: true, off: true, externalCount: 2, linked: false, busy: false, touchBacklight: { awake, sleepAt: null, wakeAt: null } })
+  const legacy = { enabled: true, startMinutes: 500, endMinutes: 501, weekdays: [0,1,2,3,4,5,6], resumeDate: null, active: false }
+  const lan = new LanController('touch-follow-test', { snapshot: () => ({ brightness: 50, volume: 20, input: 'usbc', mute: false }), hasStatus: () => true }, undefined, undefined, { settings: () => legacy }, undefined, undefined, undefined, undefined, { snapshot: screens, touchStatus: () => ({}) })
+  const before = global.window
+  const sign = value => require('node:crypto').createHmac('sha256', 'follow-test').update(value).digest('hex').slice(0,16)
+  global.window = { azoria: { security: { sign: async value => sign(value) }, power: { externalState: async () => screens(), data: async () => data }, touchSleep: { settings: async () => legacy } } }
+  t.after(() => { global.window = before; lan.stop() })
+  for (const value of [true,false,true]) {
+    awake = value
+    let wifi
+    await lan.handleHttp({method:'GET',url:'/v1/status',socket:{remoteAddress:'192.168.1.99'}},{writeHead: code => assert.equal(code,200),end: body => {wifi=JSON.parse(body)}})
+    assert.equal(wifi.touchSleepEnabled,!awake)
+    assert.equal(wifi.touchSleepActive,!awake)
+    let ble
+    const unsigned='Q|0123456789abcdef|55|W|status'
+    await handleRequest(unsigned+'|'+sign(unsigned), {writeValueWithResponse:async bytes=>{ble=new TextDecoder().decode(bytes)}}, async()=>{},async()=>{},async()=>{})
+    assert.equal(ble.split('|')[12],awake?'0':'1')
+    assert.ok(Buffer.byteLength(ble)<=244)
+  }
+})

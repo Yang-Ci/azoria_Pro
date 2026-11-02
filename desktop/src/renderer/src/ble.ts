@@ -4,6 +4,7 @@ import type { TouchUsageStatus } from "../../shared/touch-usage"
 import { computerBlePage, computerTouchStatus } from "../../shared/computer"
 import { touchBluetoothStatus, maxTouchBluetoothDevices } from "../../shared/touch-power"
 import { touchSleepDeviceEnabled } from "../../shared/touch-sleep"
+import { touchBacklightWire } from "../../shared/touch-backlight"
 
 const SERVICE = "7a6f0001-4e6d-4a9b-8f41-3c41588fee68"
 const REQUEST = "7a6f0002-4e6d-4a9b-8f41-3c41588fee68"
@@ -181,20 +182,21 @@ async function handleRequest(
       if (page === 0) computerBleSnapshot = { nonce, at: Date.now(), status: computerTouchStatus(await window.azoria.computer.snapshot()) }
       if (!computerBleSnapshot || computerBleSnapshot.nonce !== nonce || Date.now() - computerBleSnapshot.at > 10_000) throw new Error("computer snapshot expired")
       payload = computerBlePage(computerBleSnapshot.status, page)
-    } else if (fields[3] === "W" && fields.length === 6) {
+    } else if (fields[3] === "W" && (fields.length === 6 || fields.length === 7)) {
       const action = fields[4]
       if (action === "status" || /^status-\d{1,3}$/.test(action || "")) {
         const index = action === "status" ? 0 : Number(action!.slice(7))
         if (index >= maxTouchBluetoothDevices) throw new Error("unsupported")
         const [power, data, sleep] = await Promise.all([window.azoria.power.externalState(), window.azoria.power.data(), window.azoria.touchSleep.settings()])
-        payload = `W|${power.supported ? 1 : 0}|${power.off ? 1 : 0}|${power.externalCount}|${power.linked ? 1 : 0}|${power.busy ? 1 : 0}|${data.batteryLevel ?? -1}|${data.batteryStatus}|${data.mode}|${touchSleepDeviceEnabled(sleep) ? 1 : 0}|${sleep.startMinutes}|${sleep.endMinutes}`
+        const linkedSleep = touchBacklightWire(power.touchBacklight)
+        payload = `W|${power.supported ? 1 : 0}|${power.off ? 1 : 0}|${power.externalCount}|${power.linked ? 1 : 0}|${power.busy ? 1 : 0}|${data.batteryLevel ?? -1}|${data.batteryStatus}|${data.mode}|${(linkedSleep.touchSleepEnabled ?? touchSleepDeviceEnabled(sleep)) ? 1 : 0}|${linkedSleep.touchSleepStartMinutes ?? sleep.startMinutes}|${linkedSleep.touchSleepEndMinutes ?? sleep.endMinutes}`
         // Keep the legacy status reply unchanged for older firmware.
         if (action !== "status") {
           const bluetooth = touchBluetoothStatus(data, index)
           payload += `|${data.available ? 1 : 0}|${bluetooth.bluetoothCount}|${bluetooth.bluetoothIndex}|${bluetooth.bluetoothName}|${bluetooth.bluetoothLevel}`
         }
-      } else if (action === "off" || action === "on" || action === "link-on" || action === "link-off") {
-        await window.azoria.power.externalControl(action)
+      } else if (action === "off" || action === "on" || action === "link-on" || action === "link-off" || action === "auto") {
+        await window.azoria.power.externalControl(action, fields.length === 7 ? Number(fields[5]) : undefined)
         payload = "W|1"
       } else throw new Error("unsupported")
     } else if (fields[3] === "M" && fields.length === 6) {
@@ -216,7 +218,7 @@ async function handleRequest(
       const name = rawName as ControlRequest["control"]
       const value = name === "mute" ? raw === "1" : name === "input" ? raw : Number(raw)
       const returned = await control({ control: name, value, final: fields[6] === "1" } as ControlRequest, nonce, id)
-      payload = `C|1|1|${typeof returned === "boolean" ? (returned ? 1 : 0) : returned}`
+      payload = `C|1|${name === "input" ? 0 : 1}|${typeof returned === "boolean" ? (returned ? 1 : 0) : returned}`
     } else if (fields[3] === "U" && fields.length === 7) {
       const action = fields[4] || ""
       const current = await status()

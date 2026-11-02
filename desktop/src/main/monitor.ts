@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 import { existsSync } from "node:fs"
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { promisify } from "node:util"
 import type {
@@ -167,6 +167,8 @@ export class MonitorController {
   private controlSequence = 0
   private pendingControls = 0
   private lastControlAt = 0
+  private inputSettleUntil = 0
+  private topologySignature?: string
   private backgroundPending = false
   private externalPowerOff = false
   private readonly latestControl = new Map<ControlName, number>()
@@ -176,6 +178,7 @@ export class MonitorController {
   private lastExternalInput: InputSource = "usbc"
   private readonly inputDetection = new Map<string, { signature: string; at: number; current?: InputSource; supported: InputSource[] | null; selectOnly: boolean }>()
   private inputDetectionRefresh?: Promise<void>
+  private inputProbeAbort?: AbortController
   private displayTopologyRefresh?: Promise<void>
   private selectedInputTarget?: { displayId: string; input: InputSource }
   private readonly displayControlCache = new Map<string, CachedDisplayControl>()
@@ -296,12 +299,14 @@ export class MonitorController {
       if (this.selectFallbackDisplay()) await this.detect(true, this.displays, false)
     }
     if (!this.targetedBrightnessOnly) {
-      const refresh = usedCache
-        ? this.refreshDisplayTopology()
-        : this.saveDisplayCache().then(() => this.refreshInputDetection())
-      this.displayTopologyRefresh = refresh.finally(() => {
-        if (this.displayTopologyRefresh === refresh) this.displayTopologyRefresh = undefined
+      const refresh = this.enqueue(async () => {
+        if (usedCache) await this.refreshDisplayTopology()
+        else { await this.saveDisplayCache(); await this.refreshInputDetection(true) }
       })
+      const pending = refresh.finally(() => {
+        if (this.displayTopologyRefresh === pending) this.displayTopologyRefresh = undefined
+      })
+      this.displayTopologyRefresh = pending
       void this.displayTopologyRefresh.catch(() => undefined)
     }
   }
@@ -347,13 +352,13 @@ export class MonitorController {
     const displays = await this.enumerateDisplays()
     await this.saveDisplayCacheFor(displays)
     if (JSON.stringify(displays) === JSON.stringify(this.displays)) {
-      await this.refreshInputDetection()
+      await this.refreshInputDetection(true)
       return
     }
     this.brightnessControllers.clear()
     this.displays = displays
     if (this.selectFallbackDisplay()) await this.detect(true, displays, false)
-    await this.refreshInputDetection()
+    await this.refreshInputDetection(true)
   }
 
   private selectFallbackDisplay(): boolean {
@@ -392,12 +397,13 @@ export class MonitorController {
   }
 
   async listDisplays(): Promise<{ activeDisplayId: string; displays: MonitorDisplaySummary[] }> {
-    if (this.externalPowerOff) return { activeDisplayId: this.activeDisplayId(), displays: structuredClone(this.displays) }
-    const displays = await this.enumerateDisplays()
-    if (JSON.stringify(displays) !== JSON.stringify(this.displays)) this.brightnessControllers.clear()
-    this.displays = displays
-    if (!this.targetedBrightnessOnly) await this.refreshInputDetection()
-    return { activeDisplayId: this.activeDisplayId(), displays: this.displays }
+    return this.enqueue(async () => {
+      if (!this.externalPowerOff && !this.controlsActive()) {
+        await this.ensureInputTopology()
+        if (!this.targetedBrightnessOnly) await this.refreshInputDetection(true)
+      }
+      return { activeDisplayId: this.activeDisplayId(), displays: structuredClone(this.displays) }
+    })
   }
 
   async selectDisplay(displayId: string): Promise<MonitorConnectionInfo> {
@@ -423,18 +429,18 @@ export class MonitorController {
     return this.connectionSnapshot()
   }
 
-  private refreshInputDetection(): Promise<void> {
-    this.inputDetectionRefresh ??= this.refreshInputDetectionNow().finally(() => {
+  private refreshInputDetection(background = false): Promise<void> {
+    this.inputDetectionRefresh ??= this.refreshInputDetectionNow(background).finally(() => {
       this.inputDetectionRefresh = undefined
     })
     return this.inputDetectionRefresh
   }
 
-  private async refreshInputDetectionNow(): Promise<void> {
+  private async refreshInputDetectionNow(background = false): Promise<void> {
     for (const display of this.displays) {
-      if (this.externalPowerOff) return
+      if (this.externalPowerOff || background && this.controlsActive()) return
       if (display.transport === "internal-panel") continue
-      const signature = JSON.stringify([display.name, display.connector, display.connectionType])
+      const signature = this.inputSignature(display)
       const cached = this.inputDetection.get(display.id)
       if (cached?.signature === signature && Date.now() - cached.at < 60000) continue
       const profile = this.profiles.find(candidate => !candidate.fallback && candidate.match?.displayNamePattern &&
@@ -443,9 +449,11 @@ export class MonitorController {
       let supported: InputSource[] | null = null
       let current: InputSource | undefined
       let selectOnly = false
+      const abort = background ? new AbortController() : undefined
+      if (abort) this.inputProbeAbort = abort
       try {
         const info = await this.sidecarValue({ operation: "input_info", display: display.index,
-          ...(process.platform === "linux" ? { display_id: display.id } : {}) })
+          ...(process.platform === "linux" ? { display_id: display.id } : {}) }, abort?.signal)
         if (info.supported === false) { supported = []; selectOnly = true }
         if (info.supported === true && Array.isArray(info.values) && info.values.length) {
           supported = [...new Set(info.values.flatMap(raw => {
@@ -458,7 +466,12 @@ export class MonitorController {
         if (info.supported !== false && typeof info.current === "number") {
           current = profile?.ddc?.inputReadValues[String(info.current)]
         }
-      } catch { /* Older sidecars and monitors may not expose capabilities. */ }
+      } catch {
+        if (abort?.signal.aborted) return
+        // Older sidecars and monitors may not expose capabilities.
+      } finally {
+        if (this.inputProbeAbort === abort) this.inputProbeAbort = undefined
+      }
       // USB-C video commonly appears as DisplayPort in the OS. Use a kernel
       // Type-C association, or the device's advertised connection label, never
       // a list of monitor brands/models or the host's HDMI socket number.
@@ -466,7 +479,9 @@ export class MonitorController {
       const connectedInput = display.connectionType ||
         (advertisedUsbC && (!display.connector || /^DP-/i.test(display.connector)) ? "usbc" : undefined)
       if (display.connectionType || !current && connectedInput) { current = connectedInput; selectOnly = true }
-      this.inputDetection.set(display.id, { signature, at: Date.now(), current, supported, selectOnly })
+      if (this.displays.some(item => item.id === display.id && this.inputSignature(item) === signature)) {
+        this.inputDetection.set(display.id, { signature, at: Date.now(), current, supported, selectOnly })
+      }
     }
   }
 
@@ -524,7 +539,7 @@ export class MonitorController {
     return this.connectionSnapshot()
   }
 
-  private async command(binary: string, args: string[], timeout = 4000): Promise<string> {
+  private async command(binary: string, args: string[], timeout = 4000, signal?: AbortSignal): Promise<string> {
     const env: NodeJS.ProcessEnv = { ...process.env }
     if (process.platform !== "win32") {
       env.PATH = [
@@ -539,15 +554,16 @@ export class MonitorController {
       timeout, maxBuffer: 128 * 1024,
       env,
       windowsHide: true,
+      signal,
     })
     return stdout.trim()
   }
 
-  private async sidecar(request: Record<string, unknown>): Promise<unknown> {
+  private async sidecar(request: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     if (!existsSync(this.sidecarBinary)) throw new Error("显示器控制组件不可用")
     let output = ""
     try {
-      output = await this.command(this.sidecarBinary, [JSON.stringify(request)], 4000)
+      output = await this.command(this.sidecarBinary, [JSON.stringify(request)], 4000, signal)
     } catch (error) {
       output = String((error as { stdout?: string }).stdout || "").trim()
       if (!output) throw new Error("显示器控制组件执行失败")
@@ -573,8 +589,8 @@ export class MonitorController {
     return 0x60
   }
 
-  private async sidecarValue(request: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const result = await this.sidecar(request)
+  private async sidecarValue(request: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const result = await this.sidecar(request, signal)
     if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("DDC/CI 响应无效")
     return result as Record<string, unknown>
   }
@@ -582,7 +598,7 @@ export class MonitorController {
   private async enumerateDisplays(): Promise<MonitorDisplaySummary[]> {
     const result = await this.sidecar({ operation: "enumerate" })
     if (!Array.isArray(result)) return []
-    return result.flatMap((item, position) => {
+    const displays = result.flatMap((item, position) => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return []
       const display = item as { display?: unknown; id?: unknown; manufacturer?: unknown; model?: unknown; driver?: unknown; system?: unknown; transport?: unknown; connector?: unknown; connection_type?: unknown }
       const index = Number(display.display)
@@ -610,6 +626,54 @@ export class MonitorController {
         ...(isInput(display.connection_type) ? { connectionType: display.connection_type } : {}),
       }]
     })
+    this.topologySignature = await this.readTopologySignature(displays)
+    return displays
+  }
+
+  // The kernel already caches EDID. Reading it does not probe every I2C bus
+  // like Display::enumerate(), and detects a replacement on the same socket.
+  private async readTopologySignature(displays = this.displays): Promise<string | undefined> {
+    if (process.platform !== "linux") return undefined
+    try {
+      const entries = (await readdir("/sys/class/drm")).filter(name => /^card\d+-/.test(name)).sort()
+      const connected = await Promise.all(entries.map(async name => {
+        const directory = path.join("/sys/class/drm", name)
+        if ((await readFile(path.join(directory, "status"), "utf8")).trim() !== "connected") return undefined
+        const edid = await readFile(path.join(directory, "edid"))
+        let id = ""
+        try {
+          const bus = path.basename(await realpath(path.join(directory, "ddc")))
+          id = String((await stat(path.join("/dev", bus))).rdev)
+        } catch { /* Backlight-only panels need no I2C device. */ }
+        return { connector: name.replace(/^card\d+-/, ""), id, edid: edid.toString("base64") }
+      }))
+      const outputs = connected.filter(item => item !== undefined)
+      if (!displays.length || displays.some(display => display.transport !== "internal-panel" && (!display.connector || !outputs.some(output =>
+        output.connector === display.connector && output.id === display.id)))) return undefined
+      return JSON.stringify(outputs)
+    } catch { return undefined }
+  }
+
+  private async ensureInputTopology(): Promise<void> {
+    const signature = await this.readTopologySignature()
+    if (signature && signature === this.topologySignature && this.displays.length) return
+    const changed = signature !== undefined && signature !== this.topologySignature
+    this.displays = await this.enumerateDisplays()
+    if (changed) {
+      this.displayControlCache.clear()
+      this.inputDetection.clear()
+      this.resetActiveDisplayState()
+    }
+    // Capability discovery is only required for new/replaced outputs. Expiry
+    // of an unchanged monitor's capability cache must not block a shortcut.
+    for (const [id, info] of this.inputDetection) {
+      const display = this.displays.find(display => display.id === id)
+      if (!display || info.signature !== this.inputSignature(display)) this.inputDetection.delete(id)
+    }
+  }
+
+  private inputSignature(display: MonitorDisplaySummary): string {
+    return JSON.stringify([display.name, display.connector, display.connectionType])
   }
 
   private get(transport: "native-ddc" | "lg-hid-ddc" | "internal-panel", vcp: number): Promise<Record<string, unknown>> {
@@ -763,8 +827,8 @@ export class MonitorController {
     if (incrementGeneration && this.display !== display.id) this.displayGeneration++
     this.display = display.id
     this.resetActiveDisplayState()
-    // Shortcuts may revisit a recently verified route. Enumeration above still
-    // checks that the stable ID is connected; explicit dropdown selection keeps
+    // Shortcuts may revisit a recently verified route. The topology check still
+    // validates the connected stable ID; explicit dropdown selection keeps
     // its existing full detection behavior.
     const cached = this.displayControlCache.get(display.id)
     if (!incrementGeneration && cached && Date.now() - cached.at < 30000 &&
@@ -953,6 +1017,7 @@ export class MonitorController {
 
   private async readStatus(duringControl = false): Promise<MonitorStatus> {
     if (this.externalPowerOff && !duringControl) return this.snapshot()
+    if (!duringControl && Date.now() < this.inputSettleUntil) return this.snapshot()
     if (!this.candidates().length) await this.detect()
     let success = 0
     for (const control of controls) {
@@ -1009,15 +1074,21 @@ export class MonitorController {
       const readFull = elapsed >= fullIntervalMs
       if (readFull) elapsed = 0
       this.backgroundPending = true
-      void this.enqueue(() => this.controlsActive() ? Promise.resolve(this.snapshot()) :
-        readFull ? this.readStatus() : this.readFastStatus())
+      void this.enqueue(async () => {
+        if (this.controlsActive()) return this.snapshot()
+        if (readFull) {
+          await this.ensureInputTopology()
+          await this.refreshInputDetection(true)
+        }
+        return readFull ? this.readStatus() : this.readFastStatus()
+      })
         .catch(() => undefined)
         .finally(() => { this.backgroundPending = false })
     }, intervalMs)
   }
 
   private async readFastStatus(): Promise<MonitorStatus> {
-    if (this.externalPowerOff) return this.snapshot()
+    if (this.externalPowerOff || Date.now() < this.inputSettleUntil) return this.snapshot()
     const value = await this.readStable("brightness")
     if (typeof value === "number") this.lastStatus.brightness = value
     this.statusReady = true
@@ -1029,7 +1100,7 @@ export class MonitorController {
   }
 
   private controlsActive(): boolean {
-    return this.pendingControls > 0 || Date.now() - this.lastControlAt < 2000
+    return this.pendingControls > 0 || Date.now() - this.lastControlAt < 2000 || Date.now() < this.inputSettleUntil
   }
 
   private recentlyReachable(): boolean {
@@ -1101,7 +1172,7 @@ export class MonitorController {
   }
 
   private async activateControlTarget(target: ControlTarget): Promise<void> {
-    this.displays = await this.enumerateDisplays()
+    await this.ensureInputTopology()
     const selected = target === "internal"
       ? this.displays.find((display) => display.transport === "internal-panel")
       : this.displays.find((display) => display.id === this.externalDisplayId && display.transport !== "internal-panel") ||
@@ -1121,7 +1192,7 @@ export class MonitorController {
     if (target === "internal") this.lastStatus.input = "internal"
   }
 
-  private async applyControl(request: ControlRequest, source: ControlSource): Promise<MonitorStatus> {
+  private async applyControl(request: ControlRequest, source: ControlSource, sequence?: number): Promise<MonitorStatus> {
     const { control, value } = request
     if ((control === "brightness" || control === "volume") && (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 100)) throw new Error("数值控制必须是 0–100 的整数")
     if (control === "mute" && typeof value !== "boolean") throw new Error("静音值无效")
@@ -1144,8 +1215,11 @@ export class MonitorController {
       return { ...status, input: "internal" }
     }
     if (control === "input" && isInput(value) && this.displays.length) {
-      this.displays = await this.enumerateDisplays()
-      await this.refreshInputDetection()
+      await this.ensureInputTopology()
+      if (this.displays.some(display => display.transport !== "internal-panel" && !this.inputDetection.has(display.id))) {
+        await this.refreshInputDetection()
+      }
+      if (sequence !== undefined && this.latestControl.get("input") !== sequence) return this.snapshot()
       const target = this.resolveInputTarget(value)
       const selected = this.displays.find(display => display.id === target.displayId)
       if (!selected) throw new Error("未找到唯一匹配的显示器，请先在下拉框选择显示器")
@@ -1154,6 +1228,8 @@ export class MonitorController {
         // dropdown changes still invalidate commands for the previous screen.
         this.activateDisplay(selected, false)
         if (!this.candidates().length) await this.detect(true, this.displays, false)
+      } else if (!this.profile || !this.inputRoutes().length) {
+        await this.detect(true, this.displays, false)
       }
       if (target.action === "select-display") {
         if (!this.candidates().length) throw new Error("目标显示器控制不可用，请检查连接")
@@ -1198,7 +1274,9 @@ export class MonitorController {
           preview?.control === control && preview.value === value && preview.source === source &&
           preview.transport === transport && Date.now() - preview.at < 2000 && this.lastStatus[control] === value
         this.lastPreview = undefined
+        if (control === "input" && sequence !== undefined && this.latestControl.get("input") !== sequence) return this.snapshot()
         if (!reusePreview) await this.write(control, value, transport)
+        if (control === "input") this.inputSettleUntil = Date.now() + 2000
         this.selectTransport(transport)
         let confirmed = value
         let verification: "skipped" | "matched" | "unavailable" | "mismatch" =
@@ -1278,20 +1356,22 @@ export class MonitorController {
     const displayGeneration = this.displayGeneration
     const queuedAt = Date.now()
     this.latestControl.set(request.control, sequence)
+    this.inputProbeAbort?.abort()
     this.pendingControls++
     this.lastControlAt = queuedAt
     return this.enqueue(async () => {
       if (displayGeneration !== this.displayGeneration) return this.snapshot()
-      // A queued preview is obsolete once a newer value (including release)
-      // arrives. Never discard a final command or an in-flight transaction.
-      if (request.final === false && this.latestControl.get(request.control) !== sequence) {
+      // Keep slider releases, but collapse unstarted input choices and slider
+      // previews. An already-started hardware write always completes first.
+      if ((request.final === false || request.control === "input") && this.latestControl.get(request.control) !== sequence) {
         return this.snapshot()
       }
       this.logger?.info("control.dequeued", { source, control: request.control, queueMs: Date.now() - queuedAt })
-      return this.applyControl(request, source)
+      return this.applyControl(request, source, sequence)
     }).finally(() => {
       this.pendingControls--
       this.lastControlAt = Date.now()
     })
   }
+
 }

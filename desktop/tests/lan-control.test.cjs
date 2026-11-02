@@ -35,7 +35,7 @@ function fixture(t) {
   const remote = { address: '192.168.1.3', port: 8733 }
   const command = Buffer.from('AZORIA_TOUCH_COMMAND_V1|68F6578FEE68|1234abcd|42|brightness|73|1')
   const deliver = () => lan.handleCoordination(socket, network, command, remote)
-  return { lan, desktopId, writes, packets, release, deliver }
+  return { lan, desktopId, writes, packets, release, deliver, monitor, socket, network, remote }
 }
 
 test('broadcast, unicast and retries of one Touch command produce one monitor write', async t => {
@@ -70,4 +70,15 @@ test('a unicast copy sent to a non-master cannot execute the Touch command', asy
   await completion
   assert.deepEqual(f.writes, [])
   assert.equal(f.lan.inflightCommands.size, 0)
+})
+
+test('input delivery acknowledges the command without claiming that video is visible', async t => {
+  const f = fixture(t)
+  f.monitor.hasStatus = () => true
+  f.monitor.control = async request => ({ input: request.value })
+  const command = Buffer.from('AZORIA_TOUCH_COMMAND_V1|68F6578FEE68|1234abcd|43|input|hdmi2|1')
+  await f.lan.handleCoordination(f.socket, f.network, command, f.remote)
+  await new Promise(resolve => setImmediate(resolve))
+  const result = f.packets.find(packet => packet.port === 8733)
+  assert.ok(result.wire.endsWith('|1|0|input|hdmi2'))
 })

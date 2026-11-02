@@ -73,6 +73,16 @@ export function TouchSleepCard({ onMessage, showRotation = true }: { onMessage(m
     return () => window.clearInterval(timer)
   }, [])
 
+  useEffect(() => {
+    let mounted = true
+    const timer = window.setInterval(() => {
+      void window.azoria.touchSleep.settings().then(next => {
+        if (mounted) setSettings(current => ({ ...current, externalFollow: next.externalFollow }))
+      }).catch(() => undefined)
+    }, 5000)
+    return () => { mounted = false; window.clearInterval(timer) }
+  }, [])
+
   const update = async (enabled: boolean) => {
     const startMinutes = parseTime(start)
     const endMinutes = parseTime(end)
@@ -118,10 +128,11 @@ export function TouchSleepCard({ onMessage, showRotation = true }: { onMessage(m
     }
   }
 
-  const active = isTouchSleepActive(settings, now)
-  const paused = settings.enabled && isTouchSleepPaused(settings, now)
+  const following = Boolean(settings.externalFollow)
+  const active = settings.externalFollow ? !settings.externalFollow.awake : isTouchSleepActive(settings, now)
+  const paused = !following && settings.enabled && isTouchSleepPaused(settings, now)
   const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
-  const blocked = loading || saving
+  const blocked = loading || saving || following
   const resume = sleepResumeDate(resumeDate)
   const selectedResumeDate = holiday && (resumeDate !== settings.resumeDate || isTouchSleepPaused(settings, now)) ? resumeDate : null
   const invalidHoliday = selectedResumeDate !== null && (!resume || resume <= now)
@@ -135,12 +146,12 @@ export function TouchSleepCard({ onMessage, showRotation = true }: { onMessage(m
   return <Card>
     <CardHeader className="flex flex-row items-start justify-between space-y-0">
       <div>
-        <CardTitle className="flex items-center gap-2"><MoonStar />{showRotation ? "Touch 设置" : "定时息屏计划"}</CardTitle>
-        <CardDescription>{showRotation ? "调整屏幕方向，按星期安排息屏，放假时可暂停计划。" : "Touch 按此计划息屏；外接屏需开启上方的定时联动。"}</CardDescription>
+        <CardTitle className="flex items-center gap-2"><MoonStar />{showRotation ? "Touch 设置" : "Touch 背光息屏"}</CardTitle>
+        <CardDescription>{showRotation ? "调整屏幕方向，按星期安排息屏，放假时可暂停计划。" : "此处只控制 Touch 小屏背光；外接屏使用上方独立的每周计划。"}</CardDescription>
       </div>
       <Badge variant="outline" className="shrink-0 border-white/10">
         <span className={`h-1.5 w-1.5 rounded-full ${paused ? "bg-amber-400" : active ? "bg-blue-400" : "bg-zinc-600"}`} />
-        {!settings.enabled ? "未启用" : paused ? "假期暂停" : active ? "当前息屏" : "当前亮屏"}
+        {following ? active ? "跟随息屏" : "跟随亮屏" : !settings.enabled ? "未启用" : paused ? "假期暂停" : active ? "当前息屏" : "当前亮屏"}
       </Badge>
     </CardHeader>
     <CardContent className="space-y-5">
@@ -153,12 +164,13 @@ export function TouchSleepCard({ onMessage, showRotation = true }: { onMessage(m
           <RotateCw />{rotating ? "正在保存…" : "旋转 90°"}
         </Button>
       </div>}
+      {following && <p role="status" className="rounded-lg border border-cyan-400/20 p-3 text-sm text-cyan-200">Touch 当前跟随外接屏：提前亮屏、延后息屏。下方独立背光时段暂停使用，可在外接屏计划中调整联动。</p>}
       <div className="flex items-center justify-between rounded-lg border border-white/10 p-4">
         <div>
           <Label htmlFor={`${id}-enabled`}>启用定时息屏</Label>
           <p className="mt-1 text-sm text-zinc-500">在选中的日期开始息屏，结束后自动恢复。</p>
         </div>
-        <Switch id={`${id}-enabled`} checked={settings.enabled} disabled={loading || saving} onCheckedChange={(checked) => void update(checked)} />
+        <Switch id={`${id}-enabled`} checked={settings.enabled} disabled={blocked} onCheckedChange={(checked) => void update(checked)} />
       </div>
       <fieldset disabled={blocked} className="space-y-3">
         <legend className="mb-3 text-sm font-medium">重复日期</legend>
@@ -175,12 +187,12 @@ export function TouchSleepCard({ onMessage, showRotation = true }: { onMessage(m
       <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
         <div className="space-y-2">
           <Label htmlFor={`${id}-start`}>开始时间</Label>
-          <input id={`${id}-start`} type="time" value={start} disabled={loading || saving} onChange={(event) => setStart(event.target.value)} className="h-10 w-full rounded-md border border-white/10 bg-black px-3 text-sm outline-none focus:border-white/30" />
+          <input id={`${id}-start`} type="time" value={start} disabled={blocked} onChange={(event) => setStart(event.target.value)} className="h-10 w-full rounded-md border border-white/10 bg-black px-3 text-sm outline-none focus:border-white/30" />
         </div>
         <span className="pb-2 text-sm text-zinc-600">至</span>
         <div className="space-y-2">
           <Label htmlFor={`${id}-end`}>结束时间</Label>
-          <input id={`${id}-end`} type="time" value={end} disabled={loading || saving} onChange={(event) => setEnd(event.target.value)} className="h-10 w-full rounded-md border border-white/10 bg-black px-3 text-sm outline-none focus:border-white/30" />
+          <input id={`${id}-end`} type="time" value={end} disabled={blocked} onChange={(event) => setEnd(event.target.value)} className="h-10 w-full rounded-md border border-white/10 bg-black px-3 text-sm outline-none focus:border-white/30" />
         </div>
       </div>
       {(start === end || parseTime(start) === null || parseTime(end) === null) && <p role="alert" className="text-sm text-red-400">请选择不同的有效开始和结束时间。</p>}
@@ -197,7 +209,7 @@ export function TouchSleepCard({ onMessage, showRotation = true }: { onMessage(m
         </div>}
       </div>
       <div className="space-y-2 rounded-lg bg-white/[0.03] p-3 text-sm text-zinc-400">
-        <p>{sleepWeekdaysText(settings.weekdays)} · {timeValue(settings.startMinutes)} 至{settings.startMinutes > settings.endMinutes ? "次日 " : " "}{timeValue(settings.endMinutes)}</p>
+        <p>{following ? "独立计划（跟随期间不执行）：" : ""}{sleepWeekdaysText(settings.weekdays)} · {timeValue(settings.startMinutes)} 至{settings.startMinutes > settings.endMinutes ? "次日 " : " "}{timeValue(settings.endMinutes)}</p>
         {paused && <p className="text-amber-300">假期暂停中，{settings.resumeDate} 00:00 恢复。</p>}
         {dirty && <p role="status" className="text-amber-300">更改尚未保存</p>}
       </div>

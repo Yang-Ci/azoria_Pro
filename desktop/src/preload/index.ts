@@ -97,7 +97,8 @@ const api: DesktopApi = {
     mode: () => ipcRenderer.invoke("power:mode"),
     data: () => ipcRenderer.invoke("power:data"),
     externalState: () => ipcRenderer.invoke("power:external-state"),
-    externalControl: (action) => ipcRenderer.invoke("power:external-control", action),
+    externalControl: (action, holdMinutes) => ipcRenderer.invoke("power:external-control", action, holdMinutes),
+    updateSchedule: (input) => ipcRenderer.invoke("power:update-schedule", input),
   },
 }
 

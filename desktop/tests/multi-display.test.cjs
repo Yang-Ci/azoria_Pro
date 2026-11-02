@@ -479,6 +479,53 @@ test('DP and HDMI shortcuts return to the screen advertising those inputs', asyn
   assert.deepEqual(writes.at(-1), { id: 'desktop', vcp: 96, value: 18 })
 })
 
+test('unchanged kernel topology bypasses enumeration and expired capability queries', async () => {
+  const { monitor, writes } = automaticTargetFixture()
+  monitor.readTopologySignature = async () => 'same-connectors-and-edid'
+  await monitor.detect(true)
+  for (const info of monitor.inputDetection.values()) info.at = 0
+  const sidecar = monitor.sidecar
+  monitor.sidecar = async request => {
+    assert.ok(!['enumerate', 'input_info', 'probe', 'get'].includes(request.operation), `Unexpected foreground ${request.operation}`)
+    return sidecar(request)
+  }
+  await monitor.control({ control: 'input', value: 'dp1' }, 'touch')
+  await monitor.control({ control: 'input', value: 'hdmi1' }, 'touch')
+  assert.deepEqual(writes.map(write => write.value), [15, 17])
+})
+
+test('changed kernel topology invalidates routes and rejects a disconnected shortcut', async () => {
+  const { monitor, disconnect, writes } = automaticTargetFixture()
+  let topology = 'connected'
+  monitor.readTopologySignature = async () => topology
+  await monitor.detect(true)
+  disconnect()
+  topology = 'portable-unplugged'
+  await assert.rejects(monitor.control({ control: 'input', value: 'usbc' }), /匹配的显示器/)
+  assert.deepEqual(writes, [])
+  assert.equal(monitor.inputDetection.has('portable'), false)
+})
+
+test('a superseded input still discovering its target cannot perform a stale write', async () => {
+  const { monitor, writes } = automaticTargetFixture()
+  await monitor.detect(true)
+  const ensure = monitor.ensureInputTopology.bind(monitor)
+  let release, started
+  const gate = new Promise(resolve => { release = resolve })
+  const detecting = new Promise(resolve => { started = resolve })
+  let first = true
+  monitor.ensureInputTopology = async () => {
+    if (first) { first = false; started(); await gate }
+    await ensure()
+  }
+  const obsolete = monitor.control({ control: 'input', value: 'dp1' })
+  await detecting
+  const latest = monitor.control({ control: 'input', value: 'hdmi1' })
+  release()
+  await Promise.all([obsolete, latest])
+  assert.deepEqual(writes.map(write => write.value), [17])
+})
+
 test('disconnected USB-C targets do not fall through to another monitor', async () => {
   const { monitor, writes, disconnect } = automaticTargetFixture()
   await monitor.detect(true)
@@ -498,7 +545,7 @@ test('automatic routing survives enumeration reordering and an internal-panel se
   assert.deepEqual(writes, [{ id: 'desktop', vcp: 96, value: 17 }])
 })
 
-test('queued shortcut changes execute in order without discarding the second target', async () => {
+test('queued shortcuts keep the latest target when an earlier choice is superseded', async () => {
   const { monitor, writes } = automaticTargetFixture()
   await monitor.detect(true)
   await Promise.all([

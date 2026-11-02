@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto"
 import path from "node:path"
 import { execFile } from "node:child_process"
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, Tray, type OpenDialogOptions } from "electron"
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, powerMonitor, safeStorage, Tray, type OpenDialogOptions } from "electron"
 import type { ControlRequest } from "../shared/contracts"
 import type { ApiProviderInput } from "../shared/usage"
 import { loadConfig, saveDisplayPreference } from "./config"
@@ -14,6 +14,7 @@ import { WallpaperManager } from "./wallpaper"
 import { MusicManager } from "./music"
 import { TouchSleepManager } from "./touch-sleep"
 import { DisplayPowerManager } from "./display-power"
+import { systemIdleSeconds } from "./system-idle"
 import { PowerDataService } from "./power-data"
 import { TouchRotationManager } from "./touch-rotation"
 import { CodexQuotaService } from "./codex-quota"
@@ -180,7 +181,7 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   app.once("before-quit", () => wallpaper.stop())
   const touchSleep = new TouchSleepManager(app.getPath("userData"))
   await measureStartup("touch-sleep", () => touchSleep.initialize())
-  const displayPower = new DisplayPowerManager(app.getPath("userData"), touchSleep, monitor)
+  const displayPower = new DisplayPowerManager(app.getPath("userData"), touchSleep, monitor, undefined, () => systemIdleSeconds(() => powerMonitor.getSystemIdleTime()))
   await measureStartup("display-power", () => displayPower.initialize())
   displayPower.start()
   app.once("before-quit", () => displayPower.stop())
@@ -346,7 +347,7 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   ipcMain.handle("wallpaper:set-idle-minutes", (_event, minutes: number) => wallpaper.setIdleMinutes(minutes))
   ipcMain.handle("wallpaper:upload", (_event, input) => wallpaper.upload(input))
   ipcMain.handle("wallpaper:remove", () => wallpaper.remove())
-  ipcMain.handle("touch-sleep:settings", () => touchSleep.settings())
+  ipcMain.handle("touch-sleep:settings", () => ({ ...touchSleep.settings(), externalFollow: displayPower.snapshot().touchBacklight }))
   ipcMain.handle("touch-sleep:update", async (_event, input) => {
     const settings = await touchSleep.update(input)
     await displayPower.sync()
@@ -354,7 +355,8 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   })
   ipcMain.handle("power:data", () => powerData.collect())
   ipcMain.handle("power:external-state", () => displayPower.snapshot())
-  ipcMain.handle("power:external-control", (_event, action) => displayPower.control(action))
+  ipcMain.handle("power:external-control", (_event, action, holdMinutes) => displayPower.control(action, new Date(), holdMinutes))
+  ipcMain.handle("power:update-schedule", (_event, input) => displayPower.updateSchedule(input))
   ipcMain.handle("touch-rotation:settings", () => touchRotation.settings())
   ipcMain.handle("touch-rotation:rotate-clockwise", () => touchRotation.rotateClockwise())
   ipcMain.handle("security:sign", (_event, message: string) => {

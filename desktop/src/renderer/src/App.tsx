@@ -76,6 +76,7 @@ export default function App() {
   const [pendingControls, setPendingControls] = useState<Set<ControlName>>(() => new Set())
   const editingRef = useRef(false)
   const pendingCountRef = useRef(0)
+  const controlRequestsRef = useRef<Record<ControlName, number>>({ brightness: 0, volume: 0, mute: 0, input: 0 })
   const initializedRef = useRef(false)
   const [message, setMessage] = useState("正在连接显示器")
   const [usb, setUsb] = useState<UsbDevice[]>([])
@@ -219,28 +220,31 @@ export default function App() {
   }, [tab, detectUsb])
 
   const setControl = async (control: ControlName, value: number | boolean | ControlTarget) => {
+    const request = ++controlRequestsRef.current[control]
     pendingCountRef.current++
     setPendingControls((current) => new Set(current).add(control))
+    if (control === "input") setMessage("正在发送输入源切换指令")
     try {
       const next = await window.azoria.monitor.control({ control, value, final: true })
+      if (request !== controlRequestsRef.current[control]) return
       setStatus((current) => ({ ...current, [control]: next[control] }))
       if (control === "input") {
-        const [nextState, nextDisplays] = await Promise.all([
-          window.azoria.monitor.controlState(), window.azoria.monitor.listDisplays(),
-        ])
+        const nextState = await window.azoria.monitor.controlState()
+        if (request !== controlRequestsRef.current[control]) return
         setStatus(nextState.status)
         setConnection(nextState.connection)
         setInputTargets(nextState.targets)
-        setDisplays(nextDisplays.displays)
         setActiveDisplayId(nextState.connection.displayId)
       }
       setOnline(true)
-      setMessage(control === "input" ? "已切换控制目标" : "已保存到显示器")
+      setMessage(control === "input" ? "已发送输入源切换指令" : "已保存到显示器")
     }
-    catch (error) { setMessage(error instanceof Error ? error.message : "控制失败") }
+    catch (error) { if (request === controlRequestsRef.current[control]) setMessage(error instanceof Error ? error.message : "控制失败") }
     finally {
       pendingCountRef.current = Math.max(0, pendingCountRef.current - 1)
-      setPendingControls((current) => { const next = new Set(current); next.delete(control); return next })
+      if (request === controlRequestsRef.current[control]) {
+        setPendingControls((current) => { const next = new Set(current); next.delete(control); return next })
+      }
     }
   }
   const selectedDevice = useMemo(() => usb.find((device) => device.path === selectedUsb), [usb, selectedUsb])
@@ -333,7 +337,7 @@ export default function App() {
                   const target = inputTargets.find(item => item.input === input.value)
                   const selected = status.input === input.value && target?.displayId === activeDisplayId
                   return <Button key={input.value} variant={selected ? "default" : "outline"} aria-pressed={selected}
-                    className="h-auto min-h-16 flex-col gap-1 px-2 py-3" disabled={busy || pendingControls.size > 0 || !target || target.action === "unavailable"}
+                    className="h-auto min-h-16 flex-col gap-1 px-2 py-3" disabled={busy || [...pendingControls].some(control => control !== "input") || !target || target.action === "unavailable"}
                     onClick={() => void setControl("input", input.value)}>
                     <span className="flex items-center gap-2">{selected && <Check />}{input.label}</span>
                     <span className="max-w-full truncate text-xs opacity-65">{target?.displayName || "请选择匹配的显示器"}</span>
