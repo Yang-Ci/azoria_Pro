@@ -71,8 +71,39 @@ jobs:
             ${{ matrix.artifact }}
             release/SHA256SUMS-${{ matrix.platform }}.txt
 
+  firmware:
+    permissions:
+      contents: read
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: touch-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini', 'firmware/scripts/*.py') }}
+      - run: python -m pip install platformio==6.1.19
+      - name: Build Touch firmware
+        run: pio run --project-dir firmware -e viewe_uedx48480040e_wb_a
+      - name: Prepare firmware and checksum
+        run: |
+          version="$(cat firmware/version.txt)"
+          mkdir -p release
+          cp firmware/.pio/build/viewe_uedx48480040e_wb_a/firmware.bin "release/YangCi-Touch-${version}-firmware.bin"
+          cd release
+          sha256sum *.bin > SHA256SUMS-touch.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yangci-touch
+          if-no-files-found: error
+          path: |
+            release/*.bin
+            release/SHA256SUMS-touch.txt
+
   publish:
-    needs: build
+    needs: [build, firmware]
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
@@ -96,3 +127,4 @@ jobs:
               --title "YangCi $tag" \
               --generate-notes
           fi
+          gh release edit "$tag" --latest --repo "$GITHUB_REPOSITORY"

@@ -1,3 +1,11 @@
+azoria-display-control (2.0.0) unstable; urgency=medium
+
+  * Release YangCi Desktop and AZORIA Touch V2.0.
+  * Add weekly external display schedules, activity delays and Touch backlight linkage.
+  * Improve display input routing, wallpaper stability and Touch power navigation.
+
+ -- Yang-Ci <Yang-Ci@users.noreply.github.com>  Mon, 02 Nov 2026 00:00:00 +0800
+
 azoria-display-control (1.0.1) unstable; urgency=medium
 
   * Add scheduled AZORIA Touch screen sleep with overnight time ranges.
