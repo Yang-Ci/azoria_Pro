@@ -6,7 +6,9 @@ def optimize_hot_path(env, node):
     # decoding loops get O3; whole-program speed optimization exceeds flash.
     flags = [flag for flag in env["CCFLAGS"] if str(flag) not in
              ("-Os", "-O0", "-O1", "-O2", "-O3", "-Og")]
-    return env.Object(node, CCFLAGS=flags + ["-O3"])
+    # Later ESP-IDF middleware expects one SCons Node with srcnode().
+    # Object() returns a NodeList even when it builds a single source.
+    return env.Object(node, CCFLAGS=flags + ["-O3"])[0]
 
 
 for source in [
