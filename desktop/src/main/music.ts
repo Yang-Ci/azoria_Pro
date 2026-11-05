@@ -3,7 +3,7 @@ import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { promisify } from "node:util"
 import type { LyricLine, LyricsProvider, MusicControlRequest, MusicControls, MusicSnapshot, MusicSource, MusicTrack } from "../shared/contracts"
-import { currentLyricIndex, projectedMusicPosition } from "../shared/music-timing"
+import { currentLyricIndex, lyricLookAheadMs, MusicPlaybackTimeline, playbackTime, type PlaybackTimeSource } from "../shared/music-timing"
 
 const run = promisify(execFile)
 const requestHeaders = {
@@ -13,7 +13,7 @@ const requestHeaders = {
 
 interface SidecarResponse { ok: boolean; result?: unknown; error?: string }
 interface CachedLyrics { provider: MusicSnapshot["provider"]; lines: LyricLine[]; plainText: string; matchedTitle: string; matchedArtist: string }
-interface PlaybackClock { key: string; positionMs: number; updatedAt: number; status: MusicTrack["status"]; source: MusicTrack["positionSource"] }
+interface PlaybackClock { key: string; positionMs: number; updatedAt: number; monotonicAt: number; playbackRate: number; status: MusicTrack["status"]; source: MusicTrack["positionSource"] }
 interface ArtworkCache { url: string; checkedAt: number }
 
 const noControls: MusicControls = { play: false, pause: false, previous: false, next: false, seek: false, shuffle: false, repeat: false }
@@ -245,8 +245,14 @@ export class MusicManager {
   private pollTimer?: NodeJS.Timeout
   private pollInFlight = false
   private snapshotInFlight?: Promise<MusicSnapshot>
+  private readonly timeline: MusicPlaybackTimeline
+  private readonly artworkRequests = new Map<string, Promise<void>>()
+  private readonly lyricRequests = new Map<string, Promise<void>>()
+  private readonly lyricRetryAt = new Map<string, number>()
 
-  constructor(private readonly sidecarBinary: string) {}
+  constructor(private readonly sidecarBinary: string, private readonly time: PlaybackTimeSource = playbackTime) {
+    this.timeline = new MusicPlaybackTimeline(time)
+  }
 
   startPolling(): void {
     if (this.pollTimer) return
@@ -275,11 +281,11 @@ export class MusicManager {
       : track?.repeatMode === "track" ? "track"
         : track?.repeatMode === "list" ? "list"
           : track?.repeatMode === "none" ? "order" : "unknown"
-    const positionMs = track ? projectedMusicPosition(track, Date.now()) : 0
+    const positionMs = track ? this.timeline.position(track) : 0
     const lyrics = this.latestSnapshot.lines.length
       ? this.latestSnapshot.lines
       : estimatePlainLyrics(this.latestSnapshot.plainText, track?.durationMs ?? 0)
-    const lyricIndex = currentLyricIndex(lyrics, positionMs)
+    const lyricIndex = currentLyricIndex(lyrics, positionMs + lyricLookAheadMs)
     return {
       musicAvailable: Boolean(track),
       musicCanSeek: Boolean(track?.controls?.seek && track.durationMs > 0),
@@ -341,30 +347,35 @@ export class MusicManager {
     const key = `${sourceName(sourceAppId)}\u0000${normalized(title)}\u0000${normalized(text(value.artist))}`
     const trackId = text(value.trackId)
     const artworkKey = artworkCacheKey(trackId, key)
-    let artwork = this.artwork.get(artworkKey)
-    if (!artwork || (!artwork.url && Date.now() - artwork.checkedAt > 30_000)) {
-      try {
-        const withArtwork = this.sessions(await this.sidecar({ operation: "current_media", include_artwork: true }, 12 * 1024 * 1024))
-        const artworkSession = withArtwork.find((session) => text(session.sourceAppId).toLowerCase() === sourceAppId.toLowerCase()
-          && normalized(text(session.title)) === normalized(title))
-        artwork = { url: text(artworkSession?.artworkUrl), checkedAt: Date.now() }
-      } catch {
-        artwork = { url: "", checkedAt: Date.now() }
-      }
-      this.artwork.set(artworkKey, artwork)
+    const artwork = this.artwork.get(artworkKey)
+    if ((!artwork || (!artwork.url && this.time.monotonicNow() - artwork.checkedAt > 30_000)) && !this.artworkRequests.has(artworkKey)) {
+      const request = Promise.resolve().then(async () => {
+        let url = ""
+        try {
+          const withArtwork = this.sessions(await this.sidecar({ operation: "current_media", include_artwork: true }, 12 * 1024 * 1024))
+          const session = withArtwork.find((candidate) => text(candidate.sourceAppId).toLowerCase() === sourceAppId.toLowerCase()
+            && normalized(text(candidate.title)) === normalized(title) && normalized(text(candidate.artist)) === normalized(text(value.artist)))
+          url = text(session?.artworkUrl)
+        } catch { /* Keep polling playback while artwork is unavailable. */ }
+        this.artwork.set(artworkKey, { url, checkedAt: this.time.monotonicNow() })
+      }).finally(() => { this.artworkRequests.delete(artworkKey) })
+      this.artworkRequests.set(artworkKey, request)
     }
     let status: MusicTrack["status"] = value.status === "playing" ? "playing"
       : value.status === "paused" ? "paused" : value.status === "stopped" ? "stopped" : "unknown"
     if (status === "unknown") {
-      this.unknownSince ??= Date.now()
-      if (this.clock?.key === key && this.clock.status === "playing" && Date.now() - this.unknownSince < 2500) status = "playing"
+      this.unknownSince ??= this.time.monotonicNow()
+      if (this.clock?.key === key && this.clock.status === "playing" && this.time.monotonicNow() - this.unknownSince < 2500) status = "playing"
     } else {
       this.unknownSince = undefined
     }
     const rawPosition = typeof value.positionMs === "number" && Number.isFinite(value.positionMs) ? Math.max(0, value.positionMs) : null
     const rawDuration = typeof value.durationMs === "number" && Number.isFinite(value.durationMs) ? Math.max(0, value.durationMs) : 0
-    const sampledAt = typeof value.sampledAt === "number" && Number.isFinite(value.sampledAt) ? value.sampledAt : Date.now()
+    const sampledAt = typeof value.sampledAt === "number" && Number.isFinite(value.sampledAt) ? value.sampledAt : this.time.wallNow()
     const playbackRate = typeof value.playbackRate === "number" && Number.isFinite(value.playbackRate) ? value.playbackRate : 1
+    const monotonicNow = this.time.monotonicNow()
+    const wallNow = this.time.wallNow()
+    const monotonicAt = monotonicNow - Math.max(0, wallNow - sampledAt)
     const reportedSource = value.positionSource === "system" || value.positionSource === "accessibility" ? value.positionSource : null
     const rawControls = value.controls && typeof value.controls === "object" ? value.controls as Record<string, unknown> : {}
     const reportedShuffle = typeof value.shuffleActive === "boolean" ? value.shuffleActive : undefined
@@ -379,16 +390,18 @@ export class MusicManager {
       repeat: rawControls.repeat === true,
     }
     if (!this.clock || this.clock.key !== key) {
-      this.clock = { key, positionMs: rawPosition ?? 0, updatedAt: rawPosition === null ? Date.now() : sampledAt, status, source: reportedSource ?? "estimated" }
+      this.clock = { key, positionMs: rawPosition ?? 0, updatedAt: rawPosition === null ? wallNow : sampledAt, monotonicAt: rawPosition === null ? monotonicNow : monotonicAt, playbackRate, status, source: reportedSource ?? "estimated" }
     } else if (rawPosition !== null && reportedSource) {
-      this.clock = { key, positionMs: rawPosition, updatedAt: sampledAt, status, source: reportedSource }
+      this.clock = { key, positionMs: rawPosition, updatedAt: sampledAt, monotonicAt, playbackRate, status, source: reportedSource }
     } else {
-      const elapsed = this.clock.status === "playing" ? Math.max(0, Date.now() - this.clock.updatedAt) : 0
+      const elapsed = this.clock.status === "playing" ? Math.max(0, monotonicNow - this.clock.monotonicAt) : 0
       this.clock = {
         ...this.clock,
         source: this.clock.source === "manual" ? "manual" : "estimated",
-        positionMs: this.clock.positionMs + elapsed * playbackRate,
-        updatedAt: Date.now(),
+        positionMs: this.clock.positionMs + elapsed * this.clock.playbackRate,
+        updatedAt: wallNow,
+        monotonicAt: monotonicNow,
+        playbackRate,
         status,
       }
     }
@@ -413,6 +426,7 @@ export class MusicManager {
       detectedBy: value.detectedBy === "window" || value.detectedBy === "mpris" || value.detectedBy === "mediaremote" || value.detectedBy === "app-script" ? value.detectedBy : "smtc",
     }
     this.lastTrack = track
+    this.timeline.sample(track)
     return track
   }
 
@@ -437,7 +451,7 @@ export class MusicManager {
     if (!this.clock || !this.lastTrack || !Number.isFinite(positionMs) || positionMs < 0 || positionMs > 86_400_000) {
       throw new Error("歌词定位位置无效")
     }
-    this.clock = { ...this.clock, positionMs, updatedAt: Date.now(), source: "manual" }
+    this.clock = { ...this.clock, positionMs, updatedAt: this.time.wallNow(), monotonicAt: this.time.monotonicNow(), source: "manual" }
     return this.snapshot()
   }
 
@@ -507,9 +521,11 @@ export class MusicManager {
       throw new Error("播放器没有执行此操作")
     }
     if (this.clock && request.action === "seek") {
-      this.clock = { ...this.clock, positionMs: request.positionMs, updatedAt: Date.now(), source: "system" }
+      this.clock = { ...this.clock, positionMs: request.positionMs, updatedAt: this.time.wallNow(), monotonicAt: this.time.monotonicNow(), source: "system" }
     } else if (this.clock && (request.action === "play" || request.action === "pause")) {
-      this.clock = { ...this.clock, updatedAt: Date.now(), status: request.action === "play" ? "playing" : "paused" }
+      const now = this.time.monotonicNow()
+      const positionMs = this.clock.positionMs + (this.clock.status === "playing" ? Math.max(0, now - this.clock.monotonicAt) * this.clock.playbackRate : 0)
+      this.clock = { ...this.clock, positionMs, updatedAt: this.time.wallNow(), monotonicAt: now, status: request.action === "play" ? "playing" : "paused" }
     }
     await new Promise((resolve) => setTimeout(resolve, 120))
     const pendingSnapshot = this.snapshotInFlight
@@ -521,9 +537,10 @@ export class MusicManager {
     if (this.snapshotInFlight) return this.snapshotInFlight
     const request = this.collectSnapshot()
     this.snapshotInFlight = request
-    void request.finally(() => {
+    const clear = () => {
       if (this.snapshotInFlight === request) this.snapshotInFlight = undefined
-    })
+    }
+    void request.then(clear, clear)
     return request
   }
 
@@ -533,8 +550,9 @@ export class MusicManager {
       const track = await this.currentTrack()
       if (!track) snapshot = { available: false, track: null, provider: null, lines: [], plainText: "", message: "没有检测到正在播放的音乐", syncReady: false }
       else {
-        const lyrics = await this.findLyrics(track)
-        if (!lyrics) snapshot = { available: true, track, provider: null, lines: [], plainText: "", message: `已识别 ${sourceLabel(track.source)}，暂未匹配到歌词`, syncReady: false }
+        const key = this.lyricKey(track)
+        const lyrics = this.cache.get(key)
+        if (!lyrics) snapshot = { available: true, track, provider: null, lines: [], plainText: "", message: `已识别 ${sourceLabel(track.source)}，${this.lyricRetryAt.has(key) ? "暂未匹配到歌词" : "正在匹配歌词"}`, syncReady: false }
         else {
           const providerLabel = lyrics.provider === "netease" ? "网易云音乐" : lyrics.provider === "qqmusic" ? "QQ 音乐" : "LRCLIB"
           const syncReady = track.positionSource === "system"
@@ -547,6 +565,27 @@ export class MusicManager {
       snapshot = { available: false, track: null, provider: null, lines: [], plainText: "", message: error instanceof Error ? error.message : "媒体检测失败", syncReady: false }
     }
     this.latestSnapshot = snapshot
-    return snapshot
+    if (snapshot.track) this.loadLyrics(snapshot.track)
+    return snapshot.track ? { ...snapshot, track: { ...snapshot.track, positionMs: this.timeline.position(snapshot.track), sampledAt: this.time.wallNow() } } : snapshot
+  }
+
+  private lyricKey(track: MusicTrack): string {
+    return `${track.trackId || "unknown"}\u0000${normalized(track.title)}\u0000${normalized(track.artist)}`
+  }
+
+  private loadLyrics(track: MusicTrack): void {
+    const key = this.lyricKey(track)
+    if (this.cache.has(key) || this.lyricRequests.has(key) || (this.lyricRetryAt.get(key) ?? 0) > this.time.monotonicNow()) return
+    const request = Promise.resolve().then(() => this.findLyrics(track)).then((lyrics) => {
+      if (!lyrics) { this.lyricRetryAt.set(key, this.time.monotonicNow() + 30_000); return }
+      this.cache.set(key, lyrics)
+      this.lyricRetryAt.delete(key)
+      const current = this.latestSnapshot.track
+      if (!current || this.lyricKey(current) !== key) return
+      const provider = lyrics.provider === "netease" ? "网易云音乐" : lyrics.provider === "qqmusic" ? "QQ 音乐" : "LRCLIB"
+      this.latestSnapshot = { ...this.latestSnapshot, ...lyrics, syncReady: ["system", "accessibility", "manual"].includes(current.positionSource), message: `已从${provider}获取歌词` }
+    }).catch(() => { this.lyricRetryAt.set(key, this.time.monotonicNow() + 30_000) })
+      .finally(() => { this.lyricRequests.delete(key) })
+    this.lyricRequests.set(key, request)
   }
 }

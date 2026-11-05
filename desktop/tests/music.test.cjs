@@ -20,7 +20,58 @@ timingModule._compile(buildSync({
   entryPoints: [timingFilename], bundle: true, write: false,
   platform: 'node', format: 'cjs', target: 'node20',
 }).outputFiles[0].text, timingFilename)
-const { currentLyricIndex, projectedMusicPosition } = timingModule.exports
+const { currentLyricIndex, projectedMusicPosition, MusicPlaybackTimeline, lyricLookAheadMs } = timingModule.exports
+
+function fakeTime() {
+  return { wall: 10000, mono: 1000, wallNow() { return this.wall }, monotonicNow() { return this.mono } }
+}
+
+function deferred() {
+  let resolve, reject
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
+
+async function promptly(promise) {
+  let timer
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('media polling waited for background metadata')), 1000)
+    })])
+  } finally { clearTimeout(timer) }
+}
+
+function sample(overrides = {}) {
+  return { sourceAppId: 'cloudmusic.exe', title: '测试歌曲', artist: '歌手',
+    status: 'playing', positionMs: 1000, sampledAt: 10000,
+    durationMs: 5000, playbackRate: 1, positionSource: 'system', ...overrides }
+}
+
+const lyrics = { provider: 'netease', lines: [{ timeMs: 0, text: '歌词' }], plainText: '', matchedTitle: '', matchedArtist: '' }
+
+test('anchors delayed samples once and ignores wall-clock jumps between polls', () => {
+  const time = fakeTime()
+  const timeline = new MusicPlaybackTimeline(time)
+  const track = sample({ sampledAt: 9500, playbackRate: 2 })
+  timeline.sample(track)
+  assert.equal(timeline.position(track), 2000)
+  time.wall += 3600000
+  time.mono += 250
+  assert.equal(timeline.position(track), 2500)
+  time.wall -= 7200000
+  time.mono += 250
+  assert.equal(timeline.position(track), 3000)
+  const paused = { ...track, positionMs: 3000, sampledAt: time.wall, status: 'paused' }
+  timeline.sample(paused)
+  time.mono += 1000
+  assert.equal(timeline.position(paused), 3000)
+  const seek = { ...track, positionMs: 100, sampledAt: time.wall }
+  timeline.sample(seek)
+  time.mono += 250
+  assert.equal(timeline.position(seek), 600)
+  time.mono += 10000
+  assert.equal(timeline.position(seek), 5000)
+})
 
 test('advances lyrics from the sample clock between media polls', () => {
   const track = { status: 'playing', positionMs: 1000, sampledAt: 10000, playbackRate: 1, durationMs: 5000 }
@@ -47,25 +98,142 @@ test('selects a zero-time lyric and the last of simultaneous timestamps', () => 
   assert.equal(currentLyricIndex(lines, 1000), 2)
 })
 
-test('compensates for artwork and IPC time when publishing Touch lyrics', async (t) => {
-  let now = 10000
-  t.mock.method(Date, 'now', () => now)
-  const manager = new MusicManager(filename)
+test('keeps artwork in the background and separates lyric pre-reading from real progress', async () => {
+  const time = fakeTime()
+  const cover = deferred()
+  let coverCalls = 0
+  const manager = new MusicManager(filename, time)
   manager.sidecar = async (request) => {
-    if (request.include_artwork) now += 400
-    return { sessions: [{
-      sourceAppId: 'cloudmusic.exe', title: '测试歌曲', artist: '歌手',
-      status: 'playing', positionMs: 1000, sampledAt: 10000,
-      durationMs: 5000, playbackRate: 1, positionSource: 'system',
-    }] }
+    if (request.include_artwork) { coverCalls++; return cover.promise }
+    return { sessions: [sample()] }
   }
-  const track = await manager.currentTrack()
+  const track = await promptly(manager.currentTrack())
   assert.equal(track.sampledAt, 10000)
+  assert.equal(track.artworkUrl, '')
+  await promptly(manager.currentTrack())
+  assert.equal(coverCalls, 1)
   manager.latestSnapshot = { track, lines: [{ timeMs: 0, text: '前句' }, { timeMs: 1250, text: '当前句' }] }
-  assert.equal(manager.touchStatus().musicPositionMs, 1400)
+  assert.equal(manager.touchStatus().musicPositionMs, 1000)
   assert.equal(manager.touchStatus().musicLyricCurrent, '当前句')
-  now += 350
+  assert.equal(lyricLookAheadMs, 350)
+  time.wall += 400
+  time.mono += 400
+  assert.equal(manager.touchStatus().musicPositionMs, 1400)
+  time.wall -= 3600000
+  time.mono += 350
   assert.equal(manager.touchStatus().musicPositionMs, 1750)
+  cover.resolve({ sessions: [sample({ artworkUrl: 'data:image/png;base64,cover' })] })
+  await Promise.all(manager.artworkRequests.values())
+  assert.equal((await manager.currentTrack()).artworkUrl, 'data:image/png;base64,cover')
+})
+
+test('polls pause, seek and track changes while lyrics are stalled, isolating late replies', async () => {
+  const time = fakeTime()
+  const manager = new MusicManager(filename, time)
+  let current = sample()
+  const first = deferred()
+  const second = deferred()
+  const calls = []
+  manager.sidecar = async () => ({ sessions: [current] })
+  manager.findLyrics = async (track) => { calls.push(track.title); return track.title === '测试歌曲' ? first.promise : second.promise }
+  const initial = await promptly(manager.snapshot())
+  assert.equal(initial.track.positionMs, 1000)
+  current = sample({ status: 'paused', positionMs: 2500 })
+  const paused = await promptly(manager.snapshot())
+  assert.equal(paused.track.status, 'paused')
+  assert.equal(paused.track.positionMs, 2500)
+  assert.equal(calls.length, 1)
+  current = sample({ title: '第二首', positionMs: 0 })
+  await promptly(manager.snapshot())
+  first.resolve({ ...lyrics, lines: [{ timeMs: 0, text: '旧歌歌词' }] })
+  await manager.lyricRequests.get(manager.lyricKey(initial.track))
+  assert.equal(manager.latestSnapshot.track.title, '第二首')
+  assert.equal(manager.latestSnapshot.lines.length, 0)
+  const pendingSecond = [...manager.lyricRequests.values()]
+  second.resolve({ ...lyrics, lines: [{ timeMs: 0, text: '新歌歌词' }] })
+  await Promise.all(pendingSecond)
+  assert.equal(manager.latestSnapshot.lines[0].text, '新歌歌词')
+})
+
+test('bounds failed lyric retries and never marks missing QQ progress as precise', async () => {
+  const time = fakeTime()
+  const manager = new MusicManager(filename, time)
+  const current = sample({ sourceAppId: 'QQMusic.exe', positionMs: null, durationMs: null, positionSource: 'unavailable' })
+  manager.sidecar = async () => ({ sessions: [current] })
+  let requests = 0
+  manager.findLyrics = async () => { requests++; throw new Error('offline') }
+  const initial = await manager.snapshot()
+  await Promise.all(manager.lyricRequests.values())
+  for (let i = 0; i < 3; i++) await manager.snapshot()
+  assert.equal(requests, 1)
+  assert.equal(initial.track.positionSource, 'estimated')
+  time.mono += 30001
+  time.wall -= 3600000
+  manager.findLyrics = async () => { requests++; return lyrics }
+  const next = await manager.snapshot()
+  await Promise.all(manager.lyricRequests.values())
+  assert.equal(requests, 2)
+  assert.equal(next.track.positionMs, 30001)
+  assert.equal(manager.latestSnapshot.syncReady, false)
+  assert.equal(manager.latestSnapshot.lines.length, 1)
+})
+
+test('keeps manual QQ calibration and freezes the elapsed position when pausing', async () => {
+  const time = fakeTime()
+  const manager = new MusicManager(filename, time)
+  let current = sample({ sourceAppId: 'QQMusic.exe', positionMs: null, positionSource: 'unavailable', playbackRate: 2 })
+  manager.findLyrics = async () => null
+  manager.sidecar = async (request) => {
+    if (request.operation === 'control_media') {
+      current = { ...current, status: request.action === 'pause' ? 'paused' : 'playing' }
+      return { acknowledged: true }
+    }
+    return { sessions: [current] }
+  }
+  await manager.snapshot()
+  await manager.calibrate(1000)
+  time.mono += 500
+  time.wall += 500
+  const paused = await manager.control({ action: 'pause' })
+  assert.equal(paused.track.positionMs, 2000)
+  assert.equal(paused.track.positionSource, 'manual')
+  time.mono += 1000
+  time.wall += 1000
+  assert.equal((await manager.snapshot()).track.positionMs, 2000)
+})
+
+test('retries failed artwork after the cooldown without blocking playback', async () => {
+  const time = fakeTime()
+  const manager = new MusicManager(filename, time)
+  let calls = 0
+  manager.sidecar = async (request) => {
+    if (request.include_artwork) { calls++; throw new Error('cover unavailable') }
+    return { sessions: [sample()] }
+  }
+  await promptly(manager.currentTrack())
+  await Promise.all(manager.artworkRequests.values())
+  await promptly(manager.currentTrack())
+  assert.equal(calls, 1)
+  time.mono += 30001
+  time.wall += 30001
+  await promptly(manager.currentTrack())
+  await Promise.all(manager.artworkRequests.values())
+  assert.equal(calls, 2)
+})
+
+test('publishes position and timestamp at the same instant for desktop and Touch', async () => {
+  const time = fakeTime()
+  const manager = new MusicManager(filename, time)
+  manager.sidecar = async () => ({ sessions: [sample({ sampledAt: 9500 })] })
+  manager.findLyrics = async () => null
+  const snapshot = await manager.snapshot()
+  assert.equal(snapshot.track.positionMs, 1500)
+  assert.equal(snapshot.track.sampledAt, 10000)
+  assert.equal(manager.touchStatus().musicPositionMs, 1500)
+  time.mono += 200
+  time.wall += 200
+  assert.equal(manager.touchStatus().musicPositionMs, 1700)
+  assert.equal(projectedMusicPosition(snapshot.track, time.wall), 1700)
 })
 
 test('advances estimated plain lyrics for Touch using the playback position', () => {
@@ -79,7 +247,7 @@ test('advances estimated plain lyrics for Touch using the playback position', ()
   assert.equal(manager.touchStatus().musicLyricNext, '第三句')
 })
 
-test('lets NetEase cycle once from its own live player mode', async () => {
+test('lets NetEase cycle once from its own live player mode', { skip: process.platform !== 'win32' }, async () => {
   const manager = new MusicManager(filename)
   manager.lastTrack = { sourceAppId: 'cloudmusic.exe', source: 'netease', repeatMode: 'unknown' }
   const calls = []
@@ -93,7 +261,7 @@ test('lets NetEase cycle once from its own live player mode', async () => {
   assert.equal(calls[0].action, 'cycle-repeat')
 })
 
-test('includes shuffle in the NetEase four-mode cycle', async () => {
+test('includes shuffle in the NetEase four-mode cycle', { skip: process.platform !== 'win32' }, async () => {
   const manager = new MusicManager(filename)
   manager.lastTrack = { sourceAppId: 'cloudmusic.exe', source: 'netease', shuffleActive: false, repeatMode: 'track' }
   const calls = []
@@ -109,7 +277,7 @@ test('includes shuffle in the NetEase four-mode cycle', async () => {
   assert.equal(calls[1].enabled, true)
 })
 
-test('maps every known NetEase mode to the next of four modes', async () => {
+test('maps every known NetEase mode to the next of four modes', { skip: process.platform !== 'win32' }, async () => {
   const cases = [
     [{ shuffleActive: false, repeatMode: 'none' }, { action: 'set-repeat', repeat_mode: 'list' }],
     [{ shuffleActive: false, repeatMode: 'list' }, { action: 'set-repeat', repeat_mode: 'track' }],
@@ -140,16 +308,19 @@ test('does not invent a repeat mode when the player stops reporting it', async (
 })
 
 test('keeps the progress sample timestamp and downgrades lost precise progress', async () => {
-  const manager = new MusicManager(filename)
-  let sample = { sourceAppId: 'QQMusic.exe', title: '测试歌曲', status: 'playing', positionMs: 1000, sampledAt: Date.now() - 1000, positionSource: 'accessibility' }
-  manager.sidecar = async () => ({ sessions: [sample] })
+  const time = fakeTime()
+  const manager = new MusicManager(filename, time)
+  let current = sample({ sourceAppId: 'QQMusic.exe', sampledAt: time.wall - 1000, positionSource: 'accessibility' })
+  manager.sidecar = async () => ({ sessions: [current] })
   const first = await manager.currentTrack()
-  assert.equal(first.sampledAt, sample.sampledAt)
+  assert.equal(first.sampledAt, current.sampledAt)
   assert.equal(first.positionSource, 'accessibility')
-  sample = { ...sample, positionMs: null, positionSource: 'unavailable' }
+  time.mono += 250
+  time.wall -= 3600000
+  current = { ...current, positionMs: null, positionSource: 'unavailable' }
   const second = await manager.currentTrack()
   assert.equal(second.positionSource, 'estimated')
-  assert.ok(second.positionMs >= 2000)
+  assert.equal(second.positionMs, 2250)
 })
 
 test('parses LRC timestamps and ignores metadata', () => {

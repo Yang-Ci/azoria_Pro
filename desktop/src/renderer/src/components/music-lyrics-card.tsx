@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Disc3, ListEnd, Music2, Pause, Play, RefreshCw, Repeat1, Repeat2, Shuffle, SkipBack, SkipForward } from "lucide-react"
 import type { MusicControlRequest, MusicSnapshot, MusicSource, MusicTrack } from "../../../shared/contracts"
-import { currentLyricIndex, projectedMusicPosition } from "../../../shared/music-timing"
+import { currentLyricIndex, lyricLookAheadMs, MusicPlaybackTimeline, projectedMusicPosition } from "../../../shared/music-timing"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -45,13 +45,13 @@ function neteasePlaybackModeLabel(track: MusicTrack) {
   return "未同步，点击切换"
 }
 
-export function optimisticMusicControl(snapshot: MusicSnapshot, request: MusicControlRequest): MusicSnapshot {
+export function optimisticMusicControl(snapshot: MusicSnapshot, request: MusicControlRequest, positionMs?: number): MusicSnapshot {
   if (!snapshot.track) return snapshot
-  const track = { ...snapshot.track }
   const now = Date.now()
-  if (request.action === "play") { track.positionMs = projectedMusicPosition(track, now); track.status = "playing"; track.sampledAt = now }
-  if (request.action === "pause") { track.positionMs = projectedMusicPosition(track, now); track.status = "paused"; track.sampledAt = now }
-  if (request.action === "seek") { track.positionMs = request.positionMs; track.sampledAt = now }
+  const track = { ...snapshot.track, positionMs: positionMs ?? projectedMusicPosition(snapshot.track, now), sampledAt: now }
+  if (request.action === "play") track.status = "playing"
+  if (request.action === "pause") track.status = "paused"
+  if (request.action === "seek") track.positionMs = request.positionMs
   if (request.action === "set-shuffle") track.shuffleActive = request.enabled
   if (request.action === "set-repeat") track.repeatMode = request.repeatMode
   if (request.action === "toggle-shuffle" && track.shuffleActive !== null) track.shuffleActive = !track.shuffleActive
@@ -124,6 +124,7 @@ function PlaybackControls({ track, positionMs, busy, onPositionChange, onControl
 }
 
 export function MusicLyricsCard() {
+  const timeline = useRef(new MusicPlaybackTimeline()).current
   const [snapshot, setSnapshot] = useState(empty)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -135,7 +136,7 @@ export function MusicLyricsCard() {
   const controlCooldownRef = useRef(false)
   const controlRequestRef = useRef(0)
   const controlInFlightRef = useRef(0)
-  const [playbackNow, setPlaybackNow] = useState(Date.now())
+  const [playbackNow, setPlaybackNow] = useState(() => performance.now())
   const refresh = useCallback(async () => {
     if (refreshingRef.current || controlInFlightRef.current > 0) return
     refreshingRef.current = true
@@ -158,15 +159,15 @@ export function MusicLyricsCard() {
 
   const track = snapshot.track
   useEffect(() => {
-    const now = Date.now()
+    const now = performance.now()
     setPlaybackNow(now)
     if (track?.status !== "playing") return
     let lastPublishedAt = now
-    let lastIndex = currentLyricIndex(snapshot.lines, seekingMs ?? projectedMusicPosition(track, now))
+    let lastIndex = currentLyricIndex(snapshot.lines, (seekingMs ?? timeline.position(track, now)) + lyricLookAheadMs)
     let frame: number
     const update = () => {
-      const nextNow = Date.now()
-      const nextIndex = currentLyricIndex(snapshot.lines, seekingMs ?? projectedMusicPosition(track, nextNow))
+      const nextNow = performance.now()
+      const nextIndex = currentLyricIndex(snapshot.lines, (seekingMs ?? timeline.position(track, nextNow)) + lyricLookAheadMs)
       // Check lyric boundaries every frame, while painting the progress bar at 10 Hz.
       if (nextIndex !== lastIndex || nextNow - lastPublishedAt >= 100) {
         lastIndex = nextIndex
@@ -177,9 +178,9 @@ export function MusicLyricsCard() {
     }
     frame = window.requestAnimationFrame(update)
     return () => window.cancelAnimationFrame(frame)
-  }, [track, snapshot.lines, seekingMs])
-  const positionMs = seekingMs ?? (track ? projectedMusicPosition(track, playbackNow) : 0)
-  const currentIndex = useMemo(() => track ? currentLyricIndex(snapshot.lines, positionMs) : -1, [snapshot.lines, track, positionMs])
+  }, [track, snapshot.lines, seekingMs, timeline])
+  const positionMs = seekingMs ?? (track ? timeline.position(track, playbackNow) : 0)
+  const currentIndex = useMemo(() => track ? currentLyricIndex(snapshot.lines, positionMs + lyricLookAheadMs) : -1, [snapshot.lines, track, positionMs])
 
   useLayoutEffect(() => {
     const container = lyricsRef.current
@@ -214,7 +215,7 @@ export function MusicLyricsCard() {
     let requestFailed = false
     setBusy(true)
     setControlError("")
-    setSnapshot((current) => optimisticMusicControl(current, request))
+    setSnapshot((current) => optimisticMusicControl(current, request, current.track ? timeline.position(current.track) : undefined))
     window.setTimeout(() => {
       controlCooldownRef.current = false
       setBusy(false)
@@ -234,7 +235,7 @@ export function MusicLyricsCard() {
       }
     })
     return Promise.resolve()
-  }, [refresh])
+  }, [refresh, timeline])
 
   const seekOrCalibrate = useCallback(async (linePositionMs: number) => {
     if (track?.controls.seek) {
