@@ -186,7 +186,7 @@ test('a stale cached display falls back to full enumeration', async t => {
   await writeFile(path.join(directory, 'generic.json'), readFileSync(path.resolve(__dirname, '../profiles/generic-ddc.json')))
   await writeFile(path.join(directory, 'display-topology.cache'), JSON.stringify({
     version: 1,
-    displays: [{ id: 'gone', index: 1, name: 'Disconnected screen' }],
+    displays: [{ id: 'gone', index: 2, name: 'Disconnected screen' }],
   }))
 
   const monitor = new MonitorController('gone', directory, directory)
@@ -196,7 +196,7 @@ test('a stale cached display falls back to full enumeration', async t => {
     }
     if (request.operation === 'probe') throw new Error('No USB HID display')
     if (request.operation === 'get') {
-      if (request.display_id === 'gone') throw new Error('display ID gone was not found')
+      if (request.display === 2 || request.display_id === 'gone') throw new Error('cached display was not found')
       return { current: 50, maximum: 100 }
     }
     if (request.operation === 'input_info') return { supported: false }
@@ -207,6 +207,43 @@ test('a stale cached display falls back to full enumeration', async t => {
   assert.equal(monitor.connectionSnapshot().displayId, 'stable-1')
   assert.equal(monitor.connectionSnapshot().transport, 'video-ddc')
   await monitor.displayTopologyRefresh
+})
+
+test('background enumeration replaces a stale cache even when its index is still readable', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'azoria-display-cache-reused-index-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await writeFile(path.join(directory, 'generic.json'), readFileSync(path.resolve(__dirname, '../profiles/generic-ddc.json')))
+  await writeFile(path.join(directory, 'display-topology.cache'), JSON.stringify({
+    version: 1,
+    displays: [{ id: 'gone', index: 1, name: 'Disconnected screen' }],
+  }))
+
+  let releaseEnumeration
+  const gate = new Promise(resolve => { releaseEnumeration = resolve })
+  const monitor = new MonitorController('gone', directory, directory)
+  monitor.sidecar = async request => {
+    if (request.operation === 'enumerate') {
+      await gate
+      return [{ display: 1, id: 'stable-1', manufacturer: 'GSM', model: '32UQ85R' }]
+    }
+    if (request.operation === 'probe') throw new Error('No USB HID display')
+    if (request.operation === 'get') return { current: 50, maximum: 100 }
+    if (request.operation === 'input_info') return { supported: false }
+    throw new Error(`Unexpected sidecar operation: ${request.operation}`)
+  }
+
+  try {
+    await monitor.initialize()
+    assert.equal(monitor.connectionSnapshot().displayId, 'gone')
+    assert.equal(monitor.connectionSnapshot().transport, 'video-ddc')
+  } finally {
+    releaseEnumeration()
+  }
+  await monitor.displayTopologyRefresh
+  assert.equal(monitor.connectionSnapshot().displayId, 'stable-1')
+  assert.equal(monitor.connectionSnapshot().transport, 'video-ddc')
+  const cache = JSON.parse(readFileSync(path.join(directory, 'display-topology.cache'), 'utf8'))
+  assert.deepEqual(cache.displays.map(display => display.id), ['stable-1'])
 })
 
 test('selecting another display re-routes native DDC requests and resets state', async () => {
