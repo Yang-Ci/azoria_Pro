@@ -4,6 +4,7 @@ import { existsSync } from "node:fs"
 import { readFile, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
+import { StringDecoder } from "node:string_decoder"
 import { promisify } from "node:util"
 import { SerialPort } from "serialport"
 import type { FirmwareImage, UsbDevice } from "../shared/contracts"
@@ -143,6 +144,8 @@ export class TouchManager {
     return new Promise((resolve, reject) => {
       const port = new SerialPort({ path: devicePath, baudRate: 115200, autoOpen: false })
       let received = ""
+      let pending = ""
+      const decoder = new StringDecoder("utf8")
       let settled = false
       const finish = (error?: Error) => {
         if (settled) return
@@ -153,9 +156,21 @@ export class TouchManager {
       }
       const timer = setTimeout(() => finish(new Error("小屏幕 USB 响应超时")), timeoutMs)
       port.on("data", (data: Buffer) => {
-        received += data.toString("utf8")
-        if (received.includes("AZORIA_ERROR")) finish(new Error(received.split("AZORIA_ERROR").at(-1)?.trim() || "小屏幕拒绝操作"))
-        else if (received.includes(marker)) finish()
+        const chunk = decoder.write(data)
+        received += chunk
+        pending += chunk
+        const lines = pending.split(/\r?\n/)
+        pending = lines.pop() || ""
+        for (const line of lines) {
+          if (line.startsWith("AZORIA_ERROR")) {
+            const reason = line.slice("AZORIA_ERROR".length).trim()
+            finish(new Error(reason === "Wi-Fi connection failed; check the password"
+              ? "小屏连接 Wi‑Fi 失败，请检查名称、密码和 2.4 GHz 信号；设备会尝试恢复之前的网络"
+              : reason || "小屏幕拒绝操作"))
+            return
+          }
+          if (line === marker || line.startsWith(`${marker} `)) { finish(); return }
+        }
       })
       port.on("error", (error) => finish(error))
       port.open((error) => {
@@ -167,7 +182,7 @@ export class TouchManager {
 
   async scanWifi(devicePath: string) {
     await this.assertDevice(devicePath)
-    const response = await this.exchange(devicePath, "AZORIA_SCAN\n", "AZORIA_NETWORKS_DONE", 20000)
+    const response = await this.exchange(devicePath, "AZORIA_SCAN\n", "AZORIA_NETWORKS_DONE", 45000)
     return response.split(/\r?\n/).filter((line) => line.startsWith("AZORIA_NETWORK ")).flatMap((line) => {
       const values = new URLSearchParams(line.slice("AZORIA_NETWORK ".length))
       const ssid = values.get("ssid")
@@ -181,7 +196,14 @@ export class TouchManager {
     if (!ssid || new TextEncoder().encode(ssid).length > 32) throw new Error("Wi‑Fi 名称无效")
     if (new TextEncoder().encode(password).length > 63) throw new Error("Wi‑Fi 密码过长")
     const values = new URLSearchParams({ ssid, pass: password, host: "", port: "8732", token: this.token })
-    await this.exchange(devicePath, `AZORIA_CONFIG ${values}\n`, "AZORIA_OK", 30000)
+    try {
+      await this.exchange(devicePath, `AZORIA_CONFIG ${values}\n`, "AZORIA_OK", 45000)
+    } catch (error) {
+      if (error instanceof Error && error.message === "小屏幕 USB 响应超时") {
+        throw new Error("配网结果未确认：USB 响应超时。小屏可能仍在连接或已重启，请检查小屏网络状态后再重试")
+      }
+      throw error
+    }
   }
 
   async prepareBle(devicePath: string): Promise<void> {

@@ -1,0 +1,37 @@
+html.island-document, html.island-document body, html.island-document #root { width: 100%; height: 100%; min-height: 0; overflow: hidden; background: transparent; }
+.island-shell { box-sizing: border-box; margin: 2px 4px; height: calc(100% - 6px); overflow: hidden; color: #f6f7fb; background: rgba(12, 13, 18, .97); border: 1px solid rgba(255,255,255,.13); border-radius: 25px; box-shadow: none; font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif; }
+.island-shell.is-expanded { border-radius: 25px; }
+.island-top { height: 48px; padding: 0 14px; display: flex; align-items: center; gap: 10px; cursor: default; }
+.island-mark { flex: none; width: 29px; height: 29px; display: grid; place-items: center; border-radius: 10px; color: #b7a6ff; background: #29243d; }
+.island-summary, .island-track { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.island-summary strong, .island-track strong, .island-track span, .island-monitor span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.island-summary strong { font-size: 12px; line-height: 15px; }
+.island-summary span { color: #9393a2; font-size: 10px; line-height: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.island-quota { flex: none; color: #94e2c1; border: 1px solid #496b62; border-radius: 999px; padding: 4px 7px; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.island-quota.is-stale { color: #e9bb76; border-color: #775a37; }
+.island-content { padding: 2px 15px 10px; animation: island-reveal 160ms ease-out; }
+@keyframes island-reveal { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .island-content { animation: none; } }
+.island-music { display: flex; align-items: center; gap: 10px; padding: 8px 0 12px; }
+.island-art { width: 43px; height: 43px; flex: none; display: grid; place-items: center; border-radius: 12px; color: #b7a6ff; background: #242231; overflow: hidden; }
+.island-art img { width: 100%; height: 100%; object-fit: cover; }
+.island-track strong { font-size: 13px; }
+.island-track span { color: #aaa9b8; font-size: 11px; }
+.island-buttons { display: flex; align-items: center; gap: 4px; flex: none; }
+.island-buttons button { width: 29px; height: 29px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; color: #e7e7ed; background: transparent; cursor: pointer; }
+.island-buttons button:hover { background: #30313b; }
+.island-buttons button:focus-visible { outline: 2px solid #b7a6ff; outline-offset: 1px; }
+.island-buttons button:disabled { opacity: .3; cursor: default; }
+.island-buttons .island-play { background: #eeeef4; color: #16161c; }
+.island-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.island-card { min-width: 0; height: 77px; padding: 9px 11px; display: flex; flex-direction: column; border-radius: 14px; background: #20212b; }
+.island-card span, .island-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a2a1b0; font-size: 10px; }
+.island-card strong { color: #e8e3ff; font-size: 21px; font-weight: 650; line-height: 27px; font-variant-numeric: tabular-nums; }
+.island-bottom { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; padding: 4px 0 0; }
+.island-monitor { display: flex; min-width: 0; align-items: center; gap: 7px; color: #c4c1d0; font-size: 11px; }
+.island-monitor svg { color: #efc987; flex: none; }
+.island-monitor strong { color: #f2f0f8; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.island-error { color: #ffaaa8; font-size: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.island-slider { display: grid; grid-template-columns: 53px 1fr 36px; gap: 10px; height: 30px; align-items: center; }
+.island-slider-label { display: flex; align-items: center; gap: 5px; color: #c4c1d0; font-size: 11px; }
+.island-slider strong { text-align: right; font-size: 10px; font-variant-numeric: tabular-nums; }

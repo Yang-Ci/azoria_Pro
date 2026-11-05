@@ -16,6 +16,7 @@ release/
 desktop/assets/icon.png
 desktop/assets/icons/
 sidecar/target/
+desktop/daozai/target/
 *.tsbuildinfo
 
 # Python

@@ -3,6 +3,10 @@ import type { ControlRequest, DesktopApi, MusicControlRequest } from "../shared/
 import type { ApiProviderInput } from "../shared/usage"
 
 const api: DesktopApi = {
+  island: {
+    settings: () => ipcRenderer.invoke("island:settings"),
+    update: (settings) => ipcRenderer.invoke("island:update", settings),
+  },
   computer: { snapshot: () => ipcRenderer.invoke("computer:snapshot") },
   desktop: {
     preferences: () => ipcRenderer.invoke("desktop:preferences"),

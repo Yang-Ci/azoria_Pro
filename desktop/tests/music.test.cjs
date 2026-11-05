@@ -13,6 +13,11 @@ compiled._compile(buildSync({
 }).outputFiles[0].text, filename)
 const { artworkCacheKey, lyricProviderOrder, matchScore, neteaseSongId, parseSyncedLyrics, selectMediaSession, sourceName } = compiled.exports
 const { MusicManager } = compiled.exports
+function createManager(...args) {
+  const manager = new MusicManager(...args)
+  manager.fetchCatalog = async () => null
+  return manager
+}
 const timingFilename = path.resolve(__dirname, '../src/shared/music-timing.ts')
 const timingModule = new Module(timingFilename, module)
 timingModule.paths = module.paths
@@ -102,7 +107,7 @@ test('keeps artwork in the background and separates lyric pre-reading from real 
   const time = fakeTime()
   const cover = deferred()
   let coverCalls = 0
-  const manager = new MusicManager(filename, time)
+  const manager = createManager(filename, time)
   manager.sidecar = async (request) => {
     if (request.include_artwork) { coverCalls++; return cover.promise }
     return { sessions: [sample()] }
@@ -127,9 +132,55 @@ test('keeps artwork in the background and separates lyric pre-reading from real 
   assert.equal((await manager.currentTrack()).artworkUrl, 'data:image/png;base64,cover')
 })
 
+test('catalog metadata fills missing duration and artwork without fabricating live progress or leaking across tracks', async () => {
+  const time = fakeTime()
+  const manager = createManager(filename, time)
+  let current = sample({ positionMs: null, durationMs: null, positionSource: 'unavailable' })
+  const first = deferred(), second = deferred()
+  manager.sidecar = async () => ({ sessions: [current] })
+  manager.fetchCatalog = track => track.title === '测试歌曲' ? first.promise : second.promise
+  const initial = await promptly(manager.currentTrack())
+  assert.equal(initial.durationMs, 0)
+  assert.equal(initial.positionSource, 'estimated')
+  current = sample({ title: '第二首', positionMs: null, durationMs: null, positionSource: 'unavailable' })
+  await manager.currentTrack()
+  first.resolve({ durationMs: 100000, artworkUrl: 'data:image/png;base64,first' })
+  await Promise.all([...manager.catalogRequests.values()].filter((_, index) => index === 0))
+  const before = await manager.currentTrack()
+  assert.equal(before.title, '第二首'); assert.equal(before.durationMs, 0); assert.equal(before.artworkUrl, '')
+  second.resolve({ durationMs: 200000, artworkUrl: 'data:image/png;base64,second' })
+  await Promise.all(manager.catalogRequests.values())
+  const after = await manager.currentTrack()
+  assert.equal(after.durationMs, 200000); assert.equal(after.artworkUrl, 'data:image/png;base64,second')
+  assert.equal(after.positionSource, 'estimated')
+  current = sample({ title: '第二首', durationMs: 180000, positionMs: 10000, positionSource: 'system' })
+  const precise = await manager.currentTrack()
+  assert.equal(precise.durationMs, 180000); assert.equal(precise.positionSource, 'system')
+})
+
+test('catalog artwork and duration require an exact song and artist match', async () => {
+  const manager = new MusicManager(filename)
+  const originalFetch = global.fetch
+  const requested = []
+  let artist = '其他歌手'
+  global.fetch = async url => {
+    const address = String(url); requested.push(address)
+    if (address.includes('/api/search/get')) return new Response(JSON.stringify({ result: { songs: [{ id: 123, name: '测试歌曲', artists: [{ name: artist }] }] } }), { status: 200 })
+    if (address.includes('/api/song/detail/')) return new Response(JSON.stringify({ songs: [{ id: 123, duration: 123000, album: { picUrl: 'https://p1.music.126.net/test.jpg' } }] }), { status: 200 })
+    return { ok: true, url: address, headers: new Headers({ 'content-type': 'image/jpeg' }), body: new ReadableStream({ start(controller) { controller.enqueue(Uint8Array.of(1, 2, 3)); controller.close() } }) }
+  }
+  try {
+    assert.equal(await manager.fetchCatalog(sample({ trackId: '' })), null)
+    assert.equal(requested.length, 1)
+    artist = '歌手'
+    const result = await manager.fetchCatalog(sample({ trackId: '' }))
+    assert.deepEqual(result, { durationMs: 123000, artworkUrl: 'data:image/jpeg;base64,AQID' })
+  } finally { global.fetch = originalFetch }
+})
+
 test('polls pause, seek and track changes while lyrics are stalled, isolating late replies', async () => {
   const time = fakeTime()
-  const manager = new MusicManager(filename, time)
+  const manager = createManager(filename, time)
   let current = sample()
   const first = deferred()
   const second = deferred()
@@ -157,7 +208,7 @@ test('polls pause, seek and track changes while lyrics are stalled, isolating la
 
 test('bounds failed lyric retries and never marks missing QQ progress as precise', async () => {
   const time = fakeTime()
-  const manager = new MusicManager(filename, time)
+  const manager = createManager(filename, time)
   const current = sample({ sourceAppId: 'QQMusic.exe', positionMs: null, durationMs: null, positionSource: 'unavailable' })
   manager.sidecar = async () => ({ sessions: [current] })
   let requests = 0
@@ -180,7 +231,7 @@ test('bounds failed lyric retries and never marks missing QQ progress as precise
 
 test('keeps manual QQ calibration and freezes the elapsed position when pausing', async () => {
   const time = fakeTime()
-  const manager = new MusicManager(filename, time)
+  const manager = createManager(filename, time)
   let current = sample({ sourceAppId: 'QQMusic.exe', positionMs: null, positionSource: 'unavailable', playbackRate: 2 })
   manager.findLyrics = async () => null
   manager.sidecar = async (request) => {
@@ -204,7 +255,7 @@ test('keeps manual QQ calibration and freezes the elapsed position when pausing'
 
 test('retries failed artwork after the cooldown without blocking playback', async () => {
   const time = fakeTime()
-  const manager = new MusicManager(filename, time)
+  const manager = createManager(filename, time)
   let calls = 0
   manager.sidecar = async (request) => {
     if (request.include_artwork) { calls++; throw new Error('cover unavailable') }
@@ -223,7 +274,7 @@ test('retries failed artwork after the cooldown without blocking playback', asyn
 
 test('publishes position and timestamp at the same instant for desktop and Touch', async () => {
   const time = fakeTime()
-  const manager = new MusicManager(filename, time)
+  const manager = createManager(filename, time)
   manager.sidecar = async () => ({ sessions: [sample({ sampledAt: 9500 })] })
   manager.findLyrics = async () => null
   const snapshot = await manager.snapshot()
@@ -237,7 +288,7 @@ test('publishes position and timestamp at the same instant for desktop and Touch
 })
 
 test('advances estimated plain lyrics for Touch using the playback position', () => {
-  const manager = new MusicManager(filename)
+  const manager = createManager(filename)
   manager.latestSnapshot = {
     track: { status: 'paused', positionMs: 1500, sampledAt: 10000, playbackRate: 1, durationMs: 3000 },
     lines: [], plainText: '第一句\n第二句\n第三句',
@@ -248,7 +299,7 @@ test('advances estimated plain lyrics for Touch using the playback position', ()
 })
 
 test('lets NetEase cycle once from its own live player mode', { skip: process.platform !== 'win32' }, async () => {
-  const manager = new MusicManager(filename)
+  const manager = createManager(filename)
   manager.lastTrack = { sourceAppId: 'cloudmusic.exe', source: 'netease', repeatMode: 'unknown' }
   const calls = []
   manager.sidecar = async (request) => {
@@ -262,7 +313,7 @@ test('lets NetEase cycle once from its own live player mode', { skip: process.pl
 })
 
 test('includes shuffle in the NetEase four-mode cycle', { skip: process.platform !== 'win32' }, async () => {
-  const manager = new MusicManager(filename)
+  const manager = createManager(filename)
   manager.lastTrack = { sourceAppId: 'cloudmusic.exe', source: 'netease', shuffleActive: false, repeatMode: 'track' }
   const calls = []
   manager.sidecar = async (request) => {
@@ -285,7 +336,7 @@ test('maps every known NetEase mode to the next of four modes', { skip: process.
     [{ shuffleActive: true, repeatMode: 'list' }, { action: 'set-repeat', repeat_mode: 'none' }],
   ]
   for (const [mode, expected] of cases) {
-    const manager = new MusicManager(filename)
+    const manager = createManager(filename)
     manager.lastTrack = { sourceAppId: 'cloudmusic.exe', source: 'netease', ...mode }
     const calls = []
     manager.sidecar = async (request) => {
@@ -301,7 +352,7 @@ test('maps every known NetEase mode to the next of four modes', { skip: process.
 })
 
 test('does not invent a repeat mode when the player stops reporting it', async () => {
-  const manager = new MusicManager(filename)
+  const manager = createManager(filename)
   manager.lastTrack = { sourceAppId: 'other.exe', source: 'other', repeatMode: 'list' }
   manager.sidecar = async () => ({ sessions: [{ sourceAppId: 'cloudmusic.exe', repeatMode: 'unknown' }] })
   await assert.rejects(manager.control({ action: 'cycle-repeat' }), /未提供当前循环模式/)
@@ -309,7 +360,7 @@ test('does not invent a repeat mode when the player stops reporting it', async (
 
 test('keeps the progress sample timestamp and downgrades lost precise progress', async () => {
   const time = fakeTime()
-  const manager = new MusicManager(filename, time)
+  const manager = createManager(filename, time)
   let current = sample({ sourceAppId: 'QQMusic.exe', sampledAt: time.wall - 1000, positionSource: 'accessibility' })
   manager.sidecar = async () => ({ sessions: [current] })
   const first = await manager.currentTrack()
@@ -393,7 +444,7 @@ test('keeps the actual playback source selected after it is paused', () => {
 })
 
 test('publishes the surrounding lyric lines for Touch', () => {
-  const manager = new MusicManager(filename)
+  const manager = createManager(filename)
   manager.latestSnapshot = {
     track: {
       title: '测试歌曲', artist: '测试歌手', source: 'netease', status: 'paused',

@@ -42,6 +42,12 @@ win:
   extraResources:
     - from: sidecar/target/release/azoria-ddc-sidecar.exe
       to: sidecar/azoria-ddc-sidecar.exe
+    - from: desktop/daozai/target/release/daozai.exe
+      to: daozai/daozai.exe
+    - from: desktop/daozai/LICENSE
+      to: daozai/LICENSE
+    - from: desktop/daozai/THIRD_PARTY_NOTICES.txt
+      to: daozai/THIRD_PARTY_NOTICES.txt
   executableName: yangci-desktop
   icon: desktop/assets/icon.png
   target:

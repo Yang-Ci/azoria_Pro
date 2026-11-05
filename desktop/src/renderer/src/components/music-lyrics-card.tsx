@@ -74,27 +74,29 @@ interface PlaybackControlsProps {
   busy: boolean
   onPositionChange(value: number | null): void
   onControl(request: MusicControlRequest): Promise<void>
+  onCalibrate(positionMs: number): Promise<void>
 }
 
-function PlaybackControls({ track, positionMs, busy, onPositionChange, onControl }: PlaybackControlsProps) {
+function PlaybackControls({ track, positionMs, busy, onPositionChange, onControl, onCalibrate }: PlaybackControlsProps) {
   const playing = track.status === "playing"
   const repeatActive = track.repeatMode === "track" || track.repeatMode === "list"
   const repeatStateKnown = track.repeatMode !== "unknown"
   const canCycleRepeat = track.controls.repeat && (repeatStateKnown || track.source === "netease")
   const neteaseMode = neteasePlaybackMode(track)
   const neteaseModeLabel = neteasePlaybackModeLabel(track)
-  const seekEnabled = track.controls.seek && track.durationMs > 0
+  const calibration = !track.controls.seek && (track.positionSource === "estimated" || track.positionSource === "manual")
+  const seekEnabled = track.durationMs > 0 && (track.controls.seek || calibration)
 
   return <div className="space-y-3">
     <div className="space-y-2">
       <Slider
-        aria-label="播放进度"
-        value={[Math.min(positionMs, track.durationMs || positionMs)]}
+        aria-label={calibration ? "校准当前播放进度" : "播放进度"}
+        value={[track.durationMs > 0 ? Math.min(positionMs, track.durationMs) : 0]}
         max={Math.max(track.durationMs, 1)}
         step={250}
         disabled={!seekEnabled || busy}
         onValueChange={(value) => onPositionChange(value[0] ?? 0)}
-        onValueCommit={(value) => void onControl({ action: "seek", positionMs: value[0] ?? 0 })}
+        onValueCommit={(value) => { const position = value[0] ?? 0; if (calibration) void onCalibrate(position); else void onControl({ action: "seek", positionMs: position }) }}
       />
       <div className="flex justify-between font-mono text-xs text-zinc-500">
         <span>{formatTime(positionMs)}</span>
@@ -242,13 +244,18 @@ export function MusicLyricsCard() {
       await runControl({ action: "seek", positionMs: linePositionMs })
       return
     }
-    setSnapshot(await window.azoria.music.calibrate(linePositionMs))
+    const requestId = ++controlRequestRef.current
+    controlInFlightRef.current += 1
+    setBusy(true); setControlError("")
+    try { const value = await window.azoria.music.calibrate(linePositionMs); if (requestId === controlRequestRef.current) setSnapshot(value) }
+    catch (error) { if (requestId === controlRequestRef.current) setControlError(error instanceof Error ? error.message : "进度校准失败") }
+    finally { controlInFlightRef.current = Math.max(0, controlInFlightRef.current - 1); if (requestId === controlRequestRef.current) { setSeekingMs(null); setBusy(false) } }
   }, [runControl, track?.controls.seek])
 
   const positionLabel = track?.positionSource === "system" ? "系统精确进度"
     : track?.positionSource === "accessibility" ? "播放器精确进度"
       : track?.positionSource === "manual" ? "手动校准进度"
-        : track?.positionSource === "estimated" ? "切歌时间估算"
+        : track?.positionSource === "estimated" ? "播放时间估算"
           : "没有播放进度"
 
   return <Card className="lg:col-span-2">
@@ -279,10 +286,10 @@ export function MusicLyricsCard() {
             {snapshot.provider && <Badge variant="outline" className="border-white/10">歌词：{snapshot.provider === "netease" ? "网易云" : snapshot.provider === "qqmusic" ? "QQ 音乐" : "LRCLIB"}</Badge>}
             {snapshot.provider && <Badge variant="outline" className="border-white/10">同步：{snapshot.syncReady ? "可用" : "需校准"}</Badge>}
           </div>
-          <PlaybackControls track={track} positionMs={positionMs} busy={busy} onPositionChange={setSeekingMs} onControl={runControl} />
+          <PlaybackControls track={track} positionMs={positionMs} busy={busy} onPositionChange={setSeekingMs} onControl={runControl} onCalibrate={seekOrCalibrate} />
           <div className="text-xs text-zinc-500">{positionLabel}{track.source === "netease" ? ` · ${neteasePlaybackModeLabel(track)}` : <>{track.shuffleActive !== null ? ` · 随机${track.shuffleActive ? "开" : "关"}` : ""}{track.repeatMode !== "unknown" ? ` · ${track.repeatMode === "track" ? "单曲循环" : track.repeatMode === "list" ? "列表循环" : "循环关"}` : ""}</>}</div>
           {controlError && <p role="alert" className="text-xs text-red-400">{controlError}</p>}
-          {track.positionSource === "estimated" && <p className="text-xs leading-5 text-zinc-500">当前播放器没有提供精确进度。点击右侧实际正在播放的歌词完成校准，之后会按播放/暂停状态继续计时。</p>}
+          {track.positionSource === "estimated" && <p className="text-xs leading-5 text-zinc-500">播放器没有提供实时进度。可将进度条拖到播放器当前时间，或点击正在播放的歌词校准；此操作不会改变播放器进度。</p>}
           {track.positionSource === "manual" && <p className="text-xs leading-5 text-zinc-500">已手动校准；若之后拖动了播放器进度，可再次点击实际歌词重新校准。</p>}
           {snapshot.matchedTitle && <div className="border-t border-white/10 pt-4 text-xs text-zinc-500">匹配：{snapshot.matchedTitle}{snapshot.matchedArtist ? ` · ${snapshot.matchedArtist}` : ""}</div>}
         </div>

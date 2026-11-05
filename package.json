@@ -10,7 +10,8 @@
   "desktopName": "azoria-desktop.desktop",
   "scripts": {
     "dev": "npm run icons:build && npm run sidecar:build && electron-vite dev",
-    "build": "npm run sidecar:build && npm run desktop:build",
+    "build": "npm run sidecar:build && npm run daozai:build && npm run desktop:build",
+    "daozai:build": "node scripts/build-daozai.cjs",
     "desktop:build": "npm run icons:build && electron-vite build",
     "icons:build": "node scripts/build-icons.cjs",
     "package:linux": "npm run typecheck && npm run build && electron-builder --linux deb --x64 --publish never",

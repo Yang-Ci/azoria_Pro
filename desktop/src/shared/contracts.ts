@@ -130,6 +130,27 @@ export interface DesktopPreferencesSnapshot extends DesktopPreferences {
   shortcutError: string | null
 }
 
+export interface IslandSettings { enabled: boolean; displayId: string; style: "pill" | "daozai" }
+export interface IslandSettingsSnapshot extends IslandSettings {
+  supported: boolean
+  displays: Array<{ id: string; label: string }>
+}
+export interface IslandSnapshot {
+  music: MusicSnapshot
+  monitor: MonitorStatus
+  monitorName: string
+  monitorAvailable: boolean
+  usage: import("./touch-usage").TouchUsageStatus
+  startAtLogin?: boolean
+}
+export interface IslandApi {
+  snapshot(): Promise<IslandSnapshot>
+  expand(expanded: boolean): Promise<void>
+  music(action: "play" | "pause" | "previous" | "next"): Promise<void>
+  monitor(control: "brightness" | "volume", value: number): Promise<void>
+  openMain(): Promise<void>
+}
+
 export type MonitorProfileSource = "built-in" | "user"
 export type MonitorProfileMatchState = "selected" | "match" | "fallback" | "available"
 
@@ -435,6 +456,10 @@ export interface PowerApi {
 }
 
 export interface DesktopApi {
+  island: {
+    settings(): Promise<IslandSettingsSnapshot>
+    update(settings: IslandSettings): Promise<IslandSettingsSnapshot>
+  }
   computer: { snapshot(): Promise<ComputerSnapshot> }
   desktop: {
     preferences(): Promise<DesktopPreferencesSnapshot>

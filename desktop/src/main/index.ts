@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto"
 import path from "node:path"
 import { execFile } from "node:child_process"
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, powerMonitor, safeStorage, Tray, type OpenDialogOptions } from "electron"
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, safeStorage, Tray, type OpenDialogOptions } from "electron"
 import type { ControlRequest } from "../shared/contracts"
 import type { ApiProviderInput } from "../shared/usage"
 import { loadConfig, saveDisplayPreference } from "./config"
@@ -24,12 +24,14 @@ import { TouchUsageService } from "./touch-usage"
 import { BrightnessLinkManager } from "./brightness-link"
 import { ComputerStatsService } from "./computer"
 import { DesktopPreferencesManager } from "./desktop-preferences"
+import { IslandWindow } from "./island"
 
 const isDevelopment = !app.isPackaged
 let quitting = false
 let tray: Tray | undefined
 let preferences: DesktopPreferencesManager | undefined
 let windowReady = false
+let mainWindow: BrowserWindow | undefined
 
 function appIconPath(): string {
   return isDevelopment
@@ -39,7 +41,7 @@ function appIconPath(): string {
 
 function showWindow(): void {
   if (!windowReady) return
-  const window = BrowserWindow.getAllWindows()[0] || createWindow()
+  const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow()
   if (window.isMinimized()) window.restore()
   window.show()
   window.focus()
@@ -92,6 +94,7 @@ function createWindow(): BrowserWindow {
       backgroundThrottling: false,
     },
   })
+  mainWindow = window
   window.on("close", (event) => {
     if (!quitting && tray && preferences?.snapshot().closeToTray) { event.preventDefault(); window.hide() }
   })
@@ -122,6 +125,8 @@ function createWindow(): BrowserWindow {
     if (bluetoothTimeout) clearTimeout(bluetoothTimeout)
     bluetoothTimeout = undefined
     bluetoothCallback = undefined
+    if (mainWindow === window) mainWindow = undefined
+    if (!quitting && process.platform !== "darwin") app.quit()
   })
   if (isDevelopment && process.env.ELECTRON_RENDERER_URL) {
     void window.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -236,12 +241,36 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   })
   preferences = preferencesManager
   await measureStartup("preferences", () => preferencesManager.initialize())
+  const islandSnapshot = async () => {
+    const [musicSnapshot, usage] = await Promise.all([music.snapshot(), touchUsage.snapshot()])
+    const connection = monitor.connectionSnapshot()
+    return { music: musicSnapshot, usage, monitor: monitor.statusSnapshot(), monitorName: connection.displayName, monitorAvailable: connection.transport !== "unavailable" && monitor.hasStatus() && !(displayPower.snapshot().off && connection.transport !== "internal-panel"), startAtLogin: preferencesManager.snapshot().startAtLogin }
+  }
+  const islandMonitor = (control: "brightness" | "volume", value: number) => {
+    if (displayPower.snapshot().off && monitor.connectionSnapshot().transport !== "internal-panel") throw new Error("外接屏已熄灭，请先恢复外接屏")
+    return brightnessLink.control({ control, value, final: true }, "desktop-ui")
+  }
+  const island = new IslandWindow(app.getPath("userData"), isDevelopment, { snapshot: islandSnapshot, monitor: islandMonitor, music: request => music.control(request),
+    notify: (title, body, sound) => {
+      if (tray) tray.displayBalloon({ title, content: body, iconType: "info", noSound: !sound })
+      else if (Notification.isSupported()) new Notification({ title, body, silent: !sound }).show()
+    },
+    setAutostart: enabled => preferencesManager.update({ ...preferencesManager.snapshot(), startAtLogin: enabled }), stopped: () => {
+    const state = island.snapshot()
+    if (!quitting && state.enabled && state.style === "daozai") {
+      void island.update({ ...state, enabled: false }).then(refreshTray).catch(() => undefined)
+      mainWindow?.webContents.send("desktop:message", "岛仔已退出；请检查是否已有独立的岛仔实例，或重新启用信息岛。")
+    }
+  } })
   function refreshTray(): void {
     if (!tray) return
     const state = brightnessLink.snapshot()
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: "打开 YangCi", click: showWindow },
-      { label: "隐藏到托盘", click: () => BrowserWindow.getAllWindows()[0]?.hide() }, { type: "separator" },
+      { label: "隐藏到托盘", click: () => mainWindow?.hide() },
+      ...(island.supported ? [{ label: "顶部信息岛", type: "checkbox" as const, checked: island.snapshot().enabled, click: () => { void island.update({ ...island.snapshot(), enabled: !island.snapshot().enabled }).then(refreshTray).catch(error => logger.error("island.update_failed", { error: String(error) })) } }] : []),
+      ...(island.supported && island.snapshot().enabled && island.snapshot().style === "daozai" ? [{ label: "信息岛设置", click: () => island.openNativeSettings() }] : []),
+      { type: "separator" },
       { label: "亮度提高 5 点", click: () => { void reportAction(() => brightnessLink.adjust(5), "亮度已提高") } },
       { label: "亮度降低 5 点", click: () => { void reportAction(() => brightnessLink.adjust(-5), "亮度已降低") } },
       { label: "亮度场景", enabled: state.scenes.length > 0, submenu: state.scenes.map(scene => ({ label: scene.name, type: "radio" as const, checked: state.activeSceneId === scene.id, click: () => { void reportAction(() => brightnessLink.applyScene(scene.id), `已切换到 ${scene.name}`) } })) },
@@ -263,6 +292,17 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
     logger.error("desktop.tray_failed", { error: error instanceof Error ? error.message : "托盘创建失败" })
   }
   const changedLink = async (operation: () => Promise<unknown>) => { const value = await operation(); refreshTray(); return value }
+  ipcMain.handle("island:settings", () => island.snapshot())
+  ipcMain.handle("island:update", async (_event, input) => { const value = await island.update(input); refreshTray(); return value })
+  const assertIsland = (event: Electron.IpcMainInvokeEvent) => { if (!island.owns(event.sender)) throw new Error("无权访问信息岛接口") }
+  ipcMain.handle("island:snapshot", async event => {
+    assertIsland(event)
+    return islandSnapshot()
+  })
+  ipcMain.handle("island:expand", (event, expanded) => { assertIsland(event); if (typeof expanded !== "boolean") throw new Error("无效状态"); island.setExpanded(expanded) })
+  ipcMain.handle("island:music", async (event, action) => { assertIsland(event); if (!["play", "pause", "previous", "next"].includes(action)) throw new Error("无效操作"); await music.control({ action }) })
+  ipcMain.handle("island:monitor", async (event, control, value) => { assertIsland(event); if (!["brightness", "volume"].includes(control) || !Number.isInteger(value) || value < 0 || value > 100) throw new Error("无效显示器控制"); await islandMonitor(control, value) })
+  ipcMain.handle("island:open-main", event => { assertIsland(event); showWindow() })
   ipcMain.handle("computer:snapshot", () => computer.snapshot())
   ipcMain.handle("desktop:preferences", () => preferences!.snapshot())
   ipcMain.handle("desktop:update-preferences", (_event, input) => preferences!.update(input))
@@ -388,6 +428,9 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   logger.info("desktop.startup_complete", { durationMs: Date.now() - startupStartedAt })
   windowReady = true
   createWindow()
+  await island.initialize()
+  refreshTray()
+  app.once("before-quit", () => island.dispose())
   app.on("activate", showWindow)
 })
 

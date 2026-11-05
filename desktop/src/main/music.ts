@@ -15,6 +15,7 @@ interface SidecarResponse { ok: boolean; result?: unknown; error?: string }
 interface CachedLyrics { provider: MusicSnapshot["provider"]; lines: LyricLine[]; plainText: string; matchedTitle: string; matchedArtist: string }
 interface PlaybackClock { key: string; positionMs: number; updatedAt: number; monotonicAt: number; playbackRate: number; status: MusicTrack["status"]; source: MusicTrack["positionSource"] }
 interface ArtworkCache { url: string; checkedAt: number }
+interface CatalogMetadata { durationMs: number; artworkUrl: string }
 
 const noControls: MusicControls = { play: false, pause: false, previous: false, next: false, seek: false, shuffle: false, repeat: false }
 
@@ -197,6 +198,61 @@ async function fromNetease(track: MusicTrack): Promise<CachedLyrics | null> {
   return { provider: "netease", lines, plainText: lines.map((line) => line.text).join("\n"), matchedTitle: text(best.song.name), matchedArtist: best.artist }
 }
 
+/** Song metadata can fill missing artwork/duration, but never playback position. */
+async function neteaseMetadata(track: MusicTrack): Promise<CatalogMetadata | null> {
+  let id = neteaseSongId(track.trackId)
+  if (!id) {
+    if (!track.title || !track.artist) return null
+    const body = new URLSearchParams({ s: `${track.title} ${track.artist}`, type: "1", limit: "10", offset: "0" })
+    const payload = await fetchJson("https://music.163.com/api/search/get", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body }) as { result?: { songs?: Array<Record<string, unknown>> } }
+    const matches = (payload.result?.songs ?? []).map(song => {
+      const artists = Array.isArray(song.artists) ? song.artists as Array<Record<string, unknown>> : []
+      const artist = artists.map(item => text(item.name)).filter(Boolean).join("/")
+      const exactTitle = normalized(text(song.name)) === normalized(track.title)
+      const exactArtist = normalized(artist) === normalized(track.artist) || artists.some(item => normalized(text(item.name)) === normalized(track.artist))
+      return { song, score: exactTitle && exactArtist ? matchScore(track, text(song.name), artist) : 0 }
+    }).sort((a, b) => b.score - a.score)
+    const best = matches[0]
+    if (!best || best.score < 10 || (typeof best.song.id !== "string" && !Number.isSafeInteger(best.song.id))) return null
+    id = String(best.song.id)
+  }
+  if (!/^\d+$/.test(id)) return null
+  const payload = await fetchJson(`https://music.163.com/api/song/detail/?ids=${encodeURIComponent(`[${id}]`)}`) as { songs?: Array<Record<string, unknown>> }
+  const song = payload.songs?.find(item => String(item.id) === id)
+  if (!song) return null
+  const durationMs = typeof song.duration === "number" && Number.isFinite(song.duration) && song.duration > 0 && song.duration <= 86_400_000 ? song.duration : 0
+  const album = song.album && typeof song.album === "object" ? song.album as Record<string, unknown> : {}
+  let artworkUrl = ""
+  try {
+    const url = new URL(text(album.picUrl))
+    if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("invalid artwork protocol")
+    if (!/(^|\.)music\.126\.net$/i.test(url.hostname)) throw new Error("invalid artwork host")
+    url.protocol = "https:"
+    url.searchParams.set("param", "256y256")
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 5000)
+    try {
+      const response = await fetch(url, { headers: requestHeaders, signal: controller.signal })
+      const finalUrl = new URL(response.url)
+      const type = (response.headers.get("content-type") ?? "").split(";")[0]!.toLowerCase()
+      if (!response.ok || finalUrl.protocol !== "https:" || !/(^|\.)music\.126\.net$/i.test(finalUrl.hostname) || !["image/jpeg", "image/jpg", "image/png", "image/webp"].includes(type)) throw new Error("invalid artwork response")
+      if (Number(response.headers.get("content-length")) > 2 * 1024 * 1024 || !response.body) throw new Error("artwork too large")
+      const reader = response.body.getReader()
+      const chunks: Uint8Array[] = []
+      let size = 0
+      for (;;) {
+        const item = await reader.read()
+        if (item.done) break
+        size += item.value.byteLength
+        if (size > 2 * 1024 * 1024) { await reader.cancel(); throw new Error("artwork too large") }
+        chunks.push(item.value)
+      }
+      if (size) artworkUrl = `data:${type === "image/jpg" ? "image/jpeg" : type};base64,${Buffer.concat(chunks).toString("base64")}`
+    } finally { clearTimeout(timer) }
+  } catch { /* Duration remains useful even when the cover cannot be downloaded. */ }
+  return { durationMs, artworkUrl }
+}
+
 export function neteaseSongId(trackId: string): string | null {
   return /^NCM-(\d+)$/i.exec(trackId.trim())?.[1] ?? null
 }
@@ -249,6 +305,9 @@ export class MusicManager {
   private readonly artworkRequests = new Map<string, Promise<void>>()
   private readonly lyricRequests = new Map<string, Promise<void>>()
   private readonly lyricRetryAt = new Map<string, number>()
+  private readonly catalog = new Map<string, CatalogMetadata>()
+  private readonly catalogRequests = new Map<string, Promise<void>>()
+  private readonly catalogRetryAt = new Map<string, number>()
 
   constructor(private readonly sidecarBinary: string, private readonly time: PlaybackTimeSource = playbackTime) {
     this.timeline = new MusicPlaybackTimeline(time)
@@ -406,17 +465,19 @@ export class MusicManager {
       }
     }
     const positionMs = this.clock.positionMs
+    const metadata = this.catalog.get(artworkKey)
+    const durationMs = rawDuration || metadata?.durationMs || 0
     const track: MusicTrack = {
       title,
       artist: text(value.artist),
       album: text(value.album),
       trackId,
-      artworkUrl: artwork?.url ?? "",
+      artworkUrl: artwork?.url || metadata?.artworkUrl || "",
       sourceAppId,
       source: sourceName(sourceAppId),
       status,
-      positionMs: rawDuration > 0 ? Math.min(positionMs, rawDuration) : positionMs,
-      durationMs: rawDuration,
+      positionMs: durationMs > 0 ? Math.min(positionMs, durationMs) : positionMs,
+      durationMs,
       playbackRate,
       sampledAt: this.clock.updatedAt,
       positionSource: this.clock.source,
@@ -427,8 +488,21 @@ export class MusicManager {
     }
     this.lastTrack = track
     this.timeline.sample(track)
+    if (track.source === "netease" && (!rawDuration || !artwork?.url)) this.loadCatalog(track, artworkKey)
     return track
   }
+
+  private loadCatalog(track: MusicTrack, key: string): void {
+    const cached = this.catalog.get(key)
+    if ((cached?.durationMs && cached.artworkUrl) || this.catalogRequests.has(key) || (this.catalogRetryAt.get(key) ?? 0) > this.time.monotonicNow()) return
+    const request = Promise.resolve().then(() => this.fetchCatalog(track)).then(metadata => {
+      if (metadata) this.catalog.set(key, { durationMs: metadata.durationMs || cached?.durationMs || 0, artworkUrl: metadata.artworkUrl || cached?.artworkUrl || "" })
+      this.catalogRetryAt.set(key, this.time.monotonicNow() + 30_000)
+    }).catch(() => { this.catalogRetryAt.set(key, this.time.monotonicNow() + 30_000) }).finally(() => { this.catalogRequests.delete(key) })
+    this.catalogRequests.set(key, request)
+  }
+
+  private fetchCatalog(track: MusicTrack): Promise<CatalogMetadata | null> { return neteaseMetadata(track) }
 
   private async findLyrics(track: MusicTrack): Promise<CachedLyrics | null> {
     const key = `${track.trackId || "unknown"}\u0000${normalized(track.title)}\u0000${normalized(track.artist)}`

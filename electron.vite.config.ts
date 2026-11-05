@@ -13,7 +13,7 @@ export default defineConfig({
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
-    build: { rollupOptions: { input: path.join(projectRoot, "desktop/src/preload/index.ts") } },
+    build: { rollupOptions: { input: { index: path.join(projectRoot, "desktop/src/preload/index.ts"), island: path.join(projectRoot, "desktop/src/preload/island.ts") } } },
   },
   renderer: {
     root: path.join(projectRoot, "desktop/src/renderer"),
