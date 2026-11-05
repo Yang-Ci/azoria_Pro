@@ -72,9 +72,13 @@ impl Bridge {
     pub fn notify(&self,title:&str,body:&str,sound:bool) {Self::send(json!({"type":"notification","title":title.chars().take(100).collect::<String>(),"body":body.chars().take(500).collect::<String>(),"sound":sound}));}
     pub fn set_autostart(&self, enabled:bool) {Self::send(json!({"type":"autostart","enabled":enabled}));}
     pub fn media_control(&self, command:Transport, playing:bool) {
-        let value=match command {Transport::Toggle=>json!({"action":if playing {"pause"} else {"play"}}),Transport::Prev=>json!({"action":"previous"}),Transport::Next=>json!({"action":"next"}),Transport::Seek(seconds)=>json!({"action":"seek","positionMs":(seconds.max(0.0)*1000.0).round() as u64})};
-        Self::send(json!({"type":"music","request":value}));
+        Self::send(music_command(command, playing));
     }
+}
+
+fn music_command(command: Transport, playing: bool) -> Value {
+    let request=match command {Transport::Toggle=>json!({"action":if playing {"pause"} else {"play"}}),Transport::Prev=>json!({"action":"previous"}),Transport::Next=>json!({"action":"next"}),Transport::Seek(seconds)=>json!({"action":"seek","positionMs":(seconds.max(0.0)*1000.0).round() as u64})};
+    json!({"type":"music","request":request})
 }
 
 #[cfg(test)]
@@ -93,5 +97,13 @@ mod tests {
         assert_eq!(lyrics.lines[0].t,1.0);assert_eq!(lyrics.lines[0].text,"第一句");
         tx.send(json!({"error":"控制失败"})).unwrap();assert!(bridge.poll().is_none());assert_eq!(bridge.error.as_deref(),Some("控制失败"));
         tx.send(json!({"command":"open-settings"})).unwrap();assert!(bridge.poll().is_none());assert!(bridge.settings_requested);
+    }
+    #[test]
+    fn music_controls_are_forwarded_to_yangci() {
+        assert_eq!(music_command(Transport::Toggle, true)["request"]["action"], "pause");
+        assert_eq!(music_command(Transport::Toggle, false)["request"]["action"], "play");
+        assert_eq!(music_command(Transport::Prev, true)["request"]["action"], "previous");
+        assert_eq!(music_command(Transport::Next, true)["request"]["action"], "next");
+        assert_eq!(music_command(Transport::Seek(12.5), true)["request"]["positionMs"], 12500);
     }
 }

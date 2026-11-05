@@ -759,7 +759,9 @@ impl App {
         if !self.settings_open{return;}
         let id=egui::ViewportId::from_hash_of("daozai-settings");
         let focus_requested=std::mem::take(&mut self.settings_focus_requested);
-        ctx.show_viewport_immediate(id,egui::ViewportBuilder::default().with_title("岛仔设置").with_icon(theme::app_icon()).with_inner_size([690.0,560.0]).with_min_inner_size([600.0,450.0]).with_active(true).with_window_level(egui::WindowLevel::Normal),|ctx,_|{
+        let builder=egui::ViewportBuilder::default().with_title("岛仔设置").with_icon(theme::app_icon()).with_inner_size([690.0,560.0]).with_min_inner_size([600.0,450.0]).with_active(true).with_window_level(egui::WindowLevel::Normal);
+        #[cfg(target_os="linux")] let builder=builder.with_taskbar(false);
+        ctx.show_viewport_immediate(id,builder,|ctx,_|{
             if focus_requested {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -856,6 +858,11 @@ impl App {
                         });
                     }
                     0=>{
+                        #[cfg(target_os="linux")]
+                        if std::env::args().any(|arg|arg=="--yangci-managed") {
+                            settings_label(ui,"显示器");
+                            settings_card(ui,|ui|{ui.label("在 YangCi 主窗口的「设置 → 顶部信息岛」中选择显示器或所有显示器。");});
+                        }
                         settings_label(ui,"启动");
                         settings_card(ui,|ui|{
                             let mut a=autostart;

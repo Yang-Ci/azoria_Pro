@@ -6,6 +6,10 @@ use daozai::app::{self, App, Cmd, Env, Options};
 use daozai::smtc;
 use std::time::{Duration, Instant};
 mod yangci;
+#[cfg(target_os = "linux")]
+mod linux_window;
+#[cfg(target_os = "linux")]
+mod linux_audio;
 
 struct Shell {
     app: App,
@@ -15,6 +19,8 @@ struct Shell {
     media: smtc::Shared,
     placed: bool,
     win_x: f32,
+    target_position: Option<Pos2>,
+    mirror: bool,
     sys: (Option<u8>, bool, Instant),
     #[cfg(windows)]
     system_state: daozai::system::Snapshot,
@@ -30,9 +36,19 @@ struct Shell {
     hidden: bool,
     #[cfg(windows)]
     native: Option<daozai::native::Window>,
+    #[cfg(target_os = "linux")]
+    linux_window: Option<linux_window::Window>,
+    #[cfg(target_os = "linux")]
+    audio_rx: std::sync::mpsc::Receiver<Option<(u32, bool)>>,
+    #[cfg(target_os = "linux")]
+    audio_tx: std::sync::mpsc::Sender<linux_audio::Action>,
+    #[cfg(target_os = "linux")]
+    audio: Option<(u32, bool)>,
     #[cfg(windows)]
     tray: Option<daozai::tray::Tray>,
     #[cfg(windows)]
+    autostart: bool,
+    #[cfg(target_os = "linux")]
     autostart: bool,
     /// v0.5.4：蓝牙音频设备（后台线程推送）与音量回声的静默窗口。
     #[cfg(windows)]
@@ -55,10 +71,12 @@ struct Shell {
 impl Shell {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let managed = std::env::args().any(|arg|arg=="--yangci-managed");
+        let mirror = managed && std::env::args().any(|arg|arg=="--yangci-mirror");
         let mut app = App::new(&cc.egui_ctx, Options { fetch_lyrics: !managed, ..Options::default() });
+        if mirror { app.settings.notifications=false; app.settings.mail_enabled=false; app.settings.calendar_auto_sync=false; }
         #[cfg(feature="record")] let quota_demo=std::env::var("DAOZAI_QUOTA_DEMO").is_ok();
         #[cfg(not(feature="record"))] let quota_demo=false;
-        if !quota_demo{app.quota_initialize();}
+        if !quota_demo{app.quota_initialize(managed && cfg!(target_os = "linux"));}
         if std::env::args().any(|arg|arg=="--settings"){app.open_settings();}
         if std::env::args().any(|arg|arg=="--calendar"){app.open_calendar(None);}
         #[cfg(feature="record")]
@@ -83,6 +101,7 @@ impl Shell {
         let initial_input=daozai::input::State::read();
         #[cfg(windows)] let system_state=daozai::system::Snapshot::read();
         #[cfg(windows)] let system_rx=daozai::system::observe(cc.egui_ctx.clone(),system_state.clone(),initial_input);
+        #[cfg(target_os = "linux")] let (audio_rx, audio_tx) = linux_audio::start(cc.egui_ctx.clone());
         Self {
             app,
             t0: Instant::now(),
@@ -91,6 +110,8 @@ impl Shell {
             media,
             placed: false,
             win_x: 0.0,
+            target_position: std::env::args().find_map(|arg|arg.strip_prefix("--yangci-position=").and_then(parse_target_position)).map(|target|target.position),
+            mirror,
             sys: (None, false, Instant::now() - Duration::from_secs(60)),
             #[cfg(windows)]
             system_state,
@@ -102,10 +123,20 @@ impl Shell {
             #[cfg(windows)] hidden:false,
             #[cfg(windows)]
             native: daozai::native::Window::new(cc),
+            #[cfg(target_os = "linux")]
+            linux_window: linux_window::Window::new(cc),
+            #[cfg(target_os = "linux")]
+            audio_rx,
+            #[cfg(target_os = "linux")]
+            audio_tx,
+            #[cfg(target_os = "linux")]
+            audio: None,
             #[cfg(windows)]
             tray,
             #[cfg(windows)]
             autostart,
+            #[cfg(target_os = "linux")]
+            autostart: false,
             #[cfg(windows)]
             bt_rx: Some(daozai::bt::spawn()),
             bt: Vec::new(),
@@ -164,7 +195,11 @@ impl Shell {
         }
         let ppp = ctx.pixels_per_point();
         let origin = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min).unwrap_or(Pos2::new(self.win_x, 0.0));
-        let cursor = cursor_logical(ppp).map(|(x, y)| Pos2::new(x - origin.x, y - origin.y));
+        #[cfg(target_os = "linux")]
+        let pointer = self.linux_window.as_ref().and_then(|window| window.cursor(ppp));
+        #[cfg(not(target_os = "linux"))]
+        let pointer = cursor_logical(ppp);
+        let cursor = pointer.map(|(x, y)| Pos2::new(x - origin.x, y - origin.y));
         Env {
             t: self.t0.elapsed().as_secs_f64(),
             clock,
@@ -172,7 +207,10 @@ impl Shell {
             date,
             battery: self.sys.0,
             charging: self.sys.1,
-            network: Some(self.system_state.network),
+            network: {
+                #[cfg(windows)] { Some(self.system_state.network) }
+                #[cfg(not(windows))] { None }
+            },
             cursor,
             idle_seconds: {
                 #[cfg(windows)] {Some(daozai::system::idle_seconds())}
@@ -183,7 +221,11 @@ impl Shell {
                 #[cfg(not(windows))] {None}
             },
             media: self.yangci.as_ref().map(|bridge| bridge.media.clone()).unwrap_or_else(||self.media.lock().map(|m| m.clone()).unwrap_or_default()),
-            volume: self.system_state.volume,
+            volume: {
+                #[cfg(windows)] { self.system_state.volume }
+                #[cfg(target_os = "linux")] { self.audio }
+                #[cfg(not(any(windows, target_os = "linux")))] { None }
+            },
             bt: self.bt.clone(),
             bt_ready: self.bt_ready,
             display: self.yangci.as_ref().map(|bridge|bridge.display.clone()),
@@ -212,10 +254,11 @@ impl eframe::App for Shell {
             self.app.foreground_changed();
         }
         if !self.placed {
-            if let Some(mon) = ctx.input(|i| i.viewport().monitor_size) {
+            let target=self.target_position.or_else(||ctx.input(|i| i.viewport().monitor_size).map(|mon|egui::pos2(((mon.x-app::WIN_W)/2.0).round(),0.0)));
+            if let Some(target) = target {
                 self.placed = true;
-                self.win_x = ((mon.x - app::WIN_W) / 2.0).round();
-                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(self.win_x, 0.0)));
+                self.win_x = target.x;
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(target));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             }
         }
@@ -256,11 +299,13 @@ impl eframe::App for Shell {
             if let Some(lyrics)=bridge.poll() {
                 self.app.set_lyrics(&bridge.media.title,&bridge.media.artist,bridge.media.duration,lyrics);
                 self.app.set_yangci_quota(&bridge.usage);
-                #[cfg(windows)] if let Some(enabled)=bridge.autostart {self.autostart=enabled;}
+                #[cfg(any(windows, target_os = "linux"))] if let Some(enabled)=bridge.autostart {self.autostart=enabled;}
             }
             if let Some(error)=bridge.error.take(){self.app.say(error);}
             if std::mem::take(&mut bridge.settings_requested){self.app.open_settings();}
         }
+        #[cfg(target_os = "linux")]
+        while let Ok(volume) = self.audio_rx.try_recv() { self.audio = volume; }
         let env = self.env(ctx);
         // v0.5.5 邮件：开关 / 间隔 / 账号清单变了就重新对齐收信线程，再把事件交给界面。
         let sig=(self.app.settings.mail_enabled,self.app.settings.mail_interval,self.app.mail_accounts().to_vec());
@@ -285,7 +330,7 @@ impl eframe::App for Shell {
         while let Some(ev)=self.cal.try_recv(){self.app.calendar_event(ev);}
         #[cfg(feature="record")] let quota_demo=std::env::var("DAOZAI_QUOTA_DEMO").is_ok();
         #[cfg(not(feature="record"))] let quota_demo=false;
-        if !quota_demo {
+        if !quota_demo && !self.mirror {
             let config=self.app.quota_config();let sig=(config.enabled,config.accounts.iter().cloned().map(|mut a|{a.alias.clear();a.pinned=false;a}).collect::<Vec<_>>());
             if self.quota_sig.as_ref()!=Some(&sig) || self.quota_at.elapsed()>Duration::from_secs(180){
                 let accounts:Vec<_>=sig.1.iter().filter(|a|sig.0 && a.enabled && a.id!="__yangci_codex__").cloned().collect();
@@ -309,6 +354,10 @@ impl eframe::App for Shell {
             let region=if self.hidden {(0.0,0.0,0.0,0.0)} else {r(out.region)};
             let hit=if self.hidden {(0.0,0.0,0.0,0.0)} else {r(out.hit)};
             native.update(region, hit, if self.hidden{None}else{out.notice_hit.map(r)},if self.hidden{None}else{out.file_drop_zone.map(r)},ctx.pixels_per_point(), out.editing, !self.hidden && out.expanded);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(window) = &mut self.linux_window {
+            window.update(out.hit, out.notice_hit, ctx.pixels_per_point());
         }
         for cmd in out.cmds {
             match cmd {
@@ -344,18 +393,22 @@ impl eframe::App for Shell {
                 Cmd::QuotaConnected=>{self.quota_sig=None;},
                 Cmd::ToggleAutostart=>{
                     #[cfg(windows)] {let want=!self.autostart;if let Some(bridge)=&self.yangci {bridge.set_autostart(want);}else{match daozai::tray::set_autostart(want){Ok(())=>self.autostart=want,Err(e)=>self.app.say(e)}}}
+                    #[cfg(target_os = "linux")] if let Some(bridge)=&self.yangci {bridge.set_autostart(!self.autostart);}
                 },
                 Cmd::SetVolume(v)=>{
                     #[cfg(windows)] daozai::system::set_volume(v);
+                    #[cfg(target_os = "linux")] { let _ = self.audio_tx.send(linux_audio::Action::Volume(v)); }
                     self.volume_quiet=Instant::now();
                 },
                 Cmd::ToggleMute=>{
                     #[cfg(windows)] daozai::system::toggle_mute();
+                    #[cfg(target_os = "linux")] { let _ = self.audio_tx.send(linux_audio::Action::ToggleMute); }
                     self.volume_quiet=Instant::now();
                 },
                 Cmd::Copy(text)=>{ctx.copy_text(text);self.app.say("已复制");},
                 Cmd::Notify(title,body)=>{
                     #[cfg(windows)] if let Some(bridge)=&self.yangci {bridge.notify(&title,&body,self.app.settings.sound);} else if let Some(tray)=&self.tray{tray.notify(&title,&body,self.app.settings.sound);}
+                    #[cfg(target_os = "linux")] if let Some(bridge)=&self.yangci {bridge.notify(&title,&body,self.app.settings.sound);}
                 },
                 Cmd::RequestNotifications=>{
                     #[cfg(windows)] {self.app.settings.read_notifications=true;self.app.settings.save();self.incoming=None;match daozai::system::connect(){Ok(rx)=>{self.incoming=Some(rx);self.app.listener_status="正在请求 Windows 通知权限…".into();},Err(e)=>self.app.listener_status=format!("Windows 未允许读取通知：{}。需要相应的系统权限或应用身份。",e.code())}}
@@ -381,13 +434,40 @@ impl eframe::App for Shell {
         }
 
 
-        #[cfg(windows)] let autostart = self.autostart;
-        #[cfg(not(windows))] let autostart = false;
+        #[cfg(any(windows, target_os = "linux"))] let autostart = self.autostart;
+        #[cfg(not(any(windows, target_os = "linux")))] let autostart = false;
         self.app.settings_ui(ctx, autostart);
         self.app.mail_reader_ui(ctx);
         #[cfg(windows)] let repaint_after=if self.hidden{Duration::from_secs(1)}else{out.repaint_after};
-        #[cfg(not(windows))] let repaint_after=out.repaint_after;
+        #[cfg(target_os = "linux")] let repaint_after=out.repaint_after.min(Duration::from_millis(100));
+        #[cfg(not(any(windows, target_os = "linux")))] let repaint_after=out.repaint_after;
         ctx.request_repaint_after(repaint_after);
+    }
+}
+
+struct TargetPosition { position: Pos2, canvas_width: f32 }
+
+fn parse_target_position(input: &str) -> Option<TargetPosition> {
+    let mut parts=input.split(',');
+    let x=parts.next()?.parse::<f32>().ok()?;
+    let y=parts.next()?.parse::<f32>().ok()?;
+    let width=parts.next()?.parse::<f32>().ok()?;
+    if parts.next().is_some() || !x.is_finite() || !y.is_finite() || !width.is_finite() || width <= 0.0 { return None; }
+    let offset=((width-app::WIN_W)/2.0).max(0.0).round();
+    Some(TargetPosition { position:egui::pos2(x+offset,y), canvas_width:app::CANVAS_W.min(width-offset) })
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+    #[test]
+    fn positions_island_relative_to_selected_work_area() {
+        let left=parse_target_position("-1280,40,1280").unwrap();
+        assert_eq!(left.position,egui::pos2(-960.0,40.0));assert_eq!(left.canvas_width,960.0);
+        let primary=parse_target_position("0,1080,1920").unwrap();
+        assert_eq!(primary.position,egui::pos2(640.0,1080.0));assert_eq!(primary.canvas_width,1280.0);
+        assert!(parse_target_position("0,0,0").is_none());
+        assert!(parse_target_position("NaN,0,100").is_none());
     }
 }
 
@@ -407,9 +487,11 @@ fn local_now() -> (String, String, String) {
 
 #[cfg(not(windows))]
 fn local_now() -> (String, String, String) {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let (h, m, s) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
-    (format!("{h:02}:{m:02}:{s:02}"), "1970-01-01".into(), "1月1日 周四".into())
+    use chrono::{Datelike, Local};
+    let now = Local::now();
+    let weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+    (now.format("%H:%M:%S").to_string(), now.format("%Y-%m-%d").to_string(),
+        format!("{}月{}日 {}", now.month(), now.day(), weekday[now.weekday().num_days_from_monday() as usize]))
 }
 
 #[cfg(windows)]
@@ -426,6 +508,16 @@ fn read_power() -> (Option<u8>, bool) {
 
 #[cfg(not(windows))]
 fn read_power() -> (Option<u8>, bool) {
+    #[cfg(target_os = "linux")]
+    if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if std::fs::read_to_string(path.join("type")).ok().as_deref().map(str::trim) != Some("Battery") { continue; }
+            let level = std::fs::read_to_string(path.join("capacity")).ok().and_then(|s| s.trim().parse::<u8>().ok()).filter(|v| *v <= 100);
+            let status = std::fs::read_to_string(path.join("status")).unwrap_or_default();
+            return (level, matches!(status.trim(), "Charging" | "Full"));
+        }
+    }
     (None, true)
 }
 
@@ -438,7 +530,7 @@ fn cursor_logical(ppp: f32) -> Option<(f32, f32)> {
     Some((p.x as f32 / ppp, p.y as f32 / ppp))
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 fn cursor_logical(_ppp: f32) -> Option<(f32, f32)> {
     None
 }
@@ -460,7 +552,10 @@ fn open_path(p: &std::path::Path)->Result<(),String> {
 }
 
 #[cfg(not(windows))]
-fn open_path(_p: &std::path::Path)->Result<(),String> {Ok(())}
+fn open_path(p: &std::path::Path)->Result<(),String> {
+    std::process::Command::new("xdg-open").arg(p).spawn()
+        .map(|_| ()).map_err(|e| format!("无法打开：{e}"))
+}
 
 fn main() -> eframe::Result<()> {
     // 单实例（与原版同名互斥体）
@@ -470,9 +565,10 @@ fn main() -> eframe::Result<()> {
         if std::env::args().any(|arg|arg=="--calendar"){daozai::tray::open_calendar();}
         return Ok(());
     }
+    let canvas_width=std::env::args().find_map(|arg|arg.strip_prefix("--yangci-position=").and_then(parse_target_position)).map_or(app::CANVAS_W,|target|target.canvas_width);
     let viewport = egui::ViewportBuilder::default()
         .with_title("岛仔").with_icon(daozai::theme::app_icon())
-        .with_inner_size([app::CANVAS_W, app::WIN_H])
+        .with_inner_size([canvas_width, app::WIN_H])
         .with_decorations(false)
         .with_transparent(true)
         .with_active(false)

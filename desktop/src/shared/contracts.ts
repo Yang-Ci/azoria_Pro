@@ -130,9 +130,11 @@ export interface DesktopPreferencesSnapshot extends DesktopPreferences {
   shortcutError: string | null
 }
 
-export interface IslandSettings { enabled: boolean; displayId: string; style: "pill" | "daozai" }
+export interface IslandSettings { enabled: boolean; displayId: string; style: "pill" | "daozai"; displayIds?: string[] }
 export interface IslandSettingsSnapshot extends IslandSettings {
   supported: boolean
+  nativeDisplaySelection: boolean
+  primaryDisplayId: string
   displays: Array<{ id: string; label: string }>
 }
 export interface IslandSnapshot {

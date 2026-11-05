@@ -12,6 +12,52 @@ use egui_winit::{EventResponse, WindowSettings};
 
 use crate::epi;
 
+// egui-winit 0.31 only applies the taskbar flag on Windows. Preserve it on
+// X11 too, including secondary viewports such as the settings window.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+pub(crate) fn skip_x11_taskbar(window: &winit::window::Window) {
+    use std::ffi::{c_char, c_int, c_long, c_ulong, c_void};
+    #[repr(C)]
+    struct ClientMessage { kind: c_int, serial: c_ulong, send_event: c_int, display: *mut c_void,
+        window: c_ulong, message_type: c_ulong, format: c_int, data: [c_long; 5] }
+    #[repr(C)]
+    union Event { client: std::mem::ManuallyDrop<ClientMessage>, pad: [c_long; 24] }
+    #[link(name = "X11")]
+    unsafe extern "C" {
+        fn XOpenDisplay(name: *const c_char) -> *mut c_void;
+        fn XCloseDisplay(display: *mut c_void) -> c_int;
+        fn XDefaultRootWindow(display: *mut c_void) -> c_ulong;
+        fn XInternAtom(display: *mut c_void, name: *const c_char, only_if_exists: c_int) -> c_ulong;
+        fn XChangeProperty(display: *mut c_void, window: c_ulong, property: c_ulong, kind: c_ulong,
+            format: c_int, mode: c_int, data: *const u8, count: c_int) -> c_int;
+        fn XSendEvent(display: *mut c_void, window: c_ulong, propagate: c_int, mask: c_long, event: *mut Event) -> c_int;
+        fn XFlush(display: *mut c_void) -> c_int;
+    }
+    let Ok(handle) = window.window_handle() else { return };
+    let window = match handle.as_raw() {
+        raw_window_handle::RawWindowHandle::Xlib(h) => h.window,
+        raw_window_handle::RawWindowHandle::Xcb(h) => h.window.get() as c_ulong,
+        _ => return,
+    };
+    unsafe {
+        let display = XOpenDisplay(std::ptr::null());
+        if display.is_null() { return; }
+        let state = XInternAtom(display, c"_NET_WM_STATE".as_ptr(), 0);
+        let hints = [XInternAtom(display, c"_NET_WM_STATE_SKIP_TASKBAR".as_ptr(), 0),
+            XInternAtom(display, c"_NET_WM_STATE_SKIP_PAGER".as_ptr(), 0)];
+        XChangeProperty(display, window, state, 4, 32, 2, hints.as_ptr().cast(), hints.len() as c_int);
+        let mut event = Event { pad: [0; 24] };
+        event.client = std::mem::ManuallyDrop::new(ClientMessage {
+            kind: 33, serial: 0, send_event: 1, display, window, message_type: state,
+            format: 32, data: [1, hints[0] as c_long, hints[1] as c_long, 1, 0],
+        });
+        XSendEvent(display, XDefaultRootWindow(display), 0, (1 << 19) | (1 << 20), &mut event);
+        XFlush(display);
+        XCloseDisplay(display);
+    }
+}
+
 #[cfg_attr(target_os = "ios", allow(dead_code, unused_variables, unused_mut))]
 pub fn viewport_builder(
     egui_zoom_factor: f32,

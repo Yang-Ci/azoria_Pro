@@ -10,6 +10,7 @@ pub(crate) struct State {
     pub provider:Provider,pub alias:String,pub source:String,pub note:String,
     pub login:Option<quota::grok::Login>,
     pub gemini_connecting:Option<quota::gemini::Connect>,pub gemini_email:String,pub gemini_cookie:String,
+    pub yangci_managed:bool,
 }
 impl State {
     pub fn load()->Self {Self{config:if cfg!(test){Config::default()}else{Config::load()},..Default::default()}}
@@ -118,7 +119,12 @@ impl App {
         match quota::grok::Login::start(alias){Ok((login,url))=>{self.quota.login=Some(login);self.quota.note="请在浏览器中完成登录，账号会自动添加".into();self.pending.push(Cmd::OpenUrl(url));},Err(error)=>self.quota.note=error}
     }
     pub fn quota_config(&self)->&Config{&self.quota.config}
-    pub fn quota_initialize(&mut self){if !crate::model::config_dir().join("ai-quota.json").exists(){self.quota.config.discover();self.quota.config.save();}}
+    pub fn quota_initialize(&mut self, managed: bool){
+        self.quota.yangci_managed=managed;
+        let removed=managed && self.quota.config.remove_auto_codex();
+        if !crate::model::config_dir().join("ai-quota.json").exists(){self.quota.config.discover_with_codex(!managed);self.quota.config.save();}
+        else if removed {self.quota.config.save();}
+    }
     pub fn quota_pending(&mut self,accounts:&[Account]){self.quota.busy.extend(accounts.iter().map(|a|a.id.clone()));}
     pub fn quota_event(&mut self,event:quota::Event){self.quota.receive(event);}
     pub fn set_yangci_quota(&mut self,usage:&serde_json::Value) {
@@ -134,7 +140,8 @@ impl App {
         let stale=usage["usageCodexStale"].as_bool().unwrap_or(false);
         let windows=[("Primary", "usagePrimaryMinutes", "usagePrimaryRemaining", "usagePrimaryResetsAt"),("Secondary", "usageSecondaryMinutes", "usageSecondaryRemaining", "usageSecondaryResetsAt")].into_iter().filter_map(|(_,minutes,remaining,reset)|{
             let value=usage[remaining].as_i64()?; let mins=usage[minutes].as_i64()?; if value<0 || mins<=0{return None;}
-            Some(quota::Window {label:format!("{} 分钟{}",mins,if stale {" · 数据较旧"}else{""}),seconds:Some(mins*60),remaining:(value as f32/10.0).clamp(0.0,100.0),reset:usage[reset].as_i64().filter(|value|*value>0)})
+            let seconds=mins.saturating_mul(60);
+            Some(quota::Window {label:format!("{}{}",quota::cadence(Some(seconds)),if stale {" · 数据较旧"}else{""}),seconds:Some(seconds),remaining:(value as f32/10.0).clamp(0.0,100.0),reset:usage[reset].as_i64().filter(|value|*value>0)})
         }).collect();
         self.quota.rows.insert(id.into(),Ok(Snapshot{plan:usage["usageCodexPlan"].as_str().unwrap_or("").into(),windows,extra:vec![],at:usage["usageCodexSampledAt"].as_i64().unwrap_or(0)}));
     }
@@ -207,8 +214,8 @@ impl App {
                 ui.label(egui::RichText::new(source).size(11.0).color(Color32::from_gray(170)));
                 let message=if self.quota.busy.contains(&a.id){"正在更新…".into()}else{match self.quota.rows.get(&a.id){Some(Ok(s))=>format!("已更新 · {} 个额度周期",s.windows.len()),Some(Err(e))=>e.clone(),None=>"等待更新".into()}};ui.label(egui::RichText::new(message).size(11.0).color(Color32::from_gray(170)));ui.add_space(6.0);
             });}
-            ui.horizontal(|ui|{if ui.button("识别本机账号").clicked(){self.quota.note=self.quota.config.discover().message();}if ui.add_enabled(self.quota.busy.is_empty(),egui::Button::new("刷新额度")).clicked(){self.pending.push(Cmd::QuotaRefresh);}});
-            ui.label(egui::RichText::new("本机识别支持 Codex、Claude 桌面版与 Code、Kimi Code、Grok Bot；Gemini 请连接浏览器。").size(12.0).color(Color32::from_gray(180)));
+            ui.horizontal(|ui|{if ui.button("识别本机账号").clicked(){self.quota.note=self.quota.config.discover_with_codex(!self.quota.yangci_managed).message();}if ui.add_enabled(self.quota.busy.is_empty(),egui::Button::new("刷新额度")).clicked(){self.pending.push(Cmd::QuotaRefresh);}});
+            ui.label(egui::RichText::new(if self.quota.yangci_managed {"Codex 额度使用 YangCi 数据；本机识别支持 Claude、Kimi Code 和 Grok Bot。"} else {"本机识别支持 Codex、Claude 桌面版与 Code、Kimi Code、Grok Bot；Gemini 请连接浏览器。"}).size(12.0).color(Color32::from_gray(180)));
         });
         if let Some(id)=remove{if let Some(account)=self.quota.config.accounts.iter().find(|a|a.id==id){match account.provider{Provider::GrokBot=>{quota::grok::forget(account);self.quota.login=None;},Provider::Gemini=>quota::gemini::forget(account),_=>{}}}self.quota.config.accounts.retain(|a|a.id!=id);self.quota.config.colors.remove(&id);self.quota.rows.remove(&id);self.quota.busy.remove(&id);if self.quota.config.selected==id{self.quota.config.selected=self.quota.config.accounts.first().map(|a|a.id.clone()).unwrap_or_default();}}
         if let Some(alias)=reconnect{self.quota_login(alias);}

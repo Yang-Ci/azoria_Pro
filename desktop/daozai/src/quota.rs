@@ -110,12 +110,16 @@ impl Config {
         Ok(added)
     }
     pub fn discover(&mut self)->Discovery {
+        self.discover_with_codex(true)
+    }
+    pub(crate) fn discover_with_codex(&mut self, include_codex: bool)->Discovery {
         let home=std::env::var_os("USERPROFILE").or_else(||std::env::var_os("HOME")).map(PathBuf::from).unwrap_or_default();
         let mut candidates=vec![(Provider::Codex,home.join(".codex/auth.json")),(Provider::Claude,home.join(".claude/.credentials.json")),(Provider::Kimi,home.join(".kimi/credentials/kimi-code.json")),(Provider::Kimi,home.join(".kimi-code/credentials/kimi-code.json"))];
         for (provider,key,file) in [(Provider::Codex,"CODEX_HOME","auth.json"),(Provider::Claude,"CLAUDE_CONFIG_DIR",".credentials.json")]{
             if let Some(dir)=std::env::var_os(key).filter(|s|!s.is_empty()){candidates.push((provider,PathBuf::from(dir).join(file)));}
         }
         candidates.extend(self.accounts.iter().filter(|a|matches!(a.provider,Provider::Codex|Provider::Kimi)||(a.provider==Provider::Claude&&a.slot.is_none())).map(|a|(a.provider,a.source.clone())));
+        if !include_codex { candidates.retain(|(provider, _)| *provider != Provider::Codex); }
         let before=self.accounts.len();
         let mut notes=self.discover_files(&candidates);
         if let (Some(roaming),Some(local))=(std::env::var_os("APPDATA"),std::env::var_os("LOCALAPPDATA")){
@@ -125,6 +129,16 @@ impl Config {
         }
         if let Some(path)=grok::native_path(){if let Err(error)=self.import_grok(&path,""){notes.push(error);}}
         notes.sort();notes.dedup();Discovery{added:self.accounts.len()-before,notes}
+    }
+    pub(crate) fn remove_auto_codex(&mut self) -> bool {
+        let removed: Vec<String> = self.accounts.iter()
+            .filter(|account| account.provider == Provider::Codex && account.alias.starts_with("Codex · 本机 "))
+            .map(|account| account.id.clone()).collect();
+        if removed.is_empty() { return false; }
+        self.accounts.retain(|account| !removed.contains(&account.id));
+        for id in &removed { self.colors.remove(id); }
+        if removed.contains(&self.selected) { self.selected.clear(); }
+        true
     }
     fn discover_files(&mut self,candidates:&[(Provider,PathBuf)])->Vec<String>{
         let mut notes=Vec::new();
@@ -151,7 +165,7 @@ impl Snapshot {
 }
 fn number(v:&Value)->Option<f64>{v.as_f64().or_else(||v.as_str()?.parse().ok()).filter(|n|n.is_finite())}
 fn reset(v:&Value)->Option<i64>{v.as_i64().filter(|n|*n>0).or_else(||chrono::DateTime::parse_from_rfc3339(v.as_str()?).ok().map(|d|d.timestamp()))}
-fn cadence(seconds:Option<i64>)->String{match seconds{Some(18000)=>"5 小时".into(),Some(604800)=>"本周".into(),Some(86400)=>"今日".into(),Some(s)if s>0 && s%86400==0=>format!("{} 天",s/86400),Some(s)if s>0 && s%3600==0=>format!("{} 小时",s/3600),Some(s)if s>0=>format!("{} 分钟",s/60),_=>"额度周期".into()}}
+pub(crate) fn cadence(seconds:Option<i64>)->String{match seconds{Some(18000)=>"5 小时".into(),Some(604800)=>"本周".into(),Some(86400)=>"今日".into(),Some(s)if s>0 && s%86400==0=>format!("{} 天",s/86400),Some(s)if s>0 && s%3600==0=>format!("{} 小时",s/3600),Some(s)if s>0=>format!("{} 分钟",s/60),_=>"额度周期".into()}}
 fn codex_window(v:&Value)->Option<Window>{
     let used=number(&v["used_percent"])?;let seconds=v["limit_window_seconds"].as_i64().filter(|s|*s>0);
     Some(Window{label:cadence(seconds),seconds,remaining:(100.0-used).clamp(0.0,100.0) as f32,reset:reset(&v["reset_at"])})

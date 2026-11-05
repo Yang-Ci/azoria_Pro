@@ -2,7 +2,7 @@ const assert = require('node:assert/strict')
 const { test } = require('node:test')
 const { EventEmitter } = require('node:events')
 const { PassThrough } = require('node:stream')
-const { mkdtemp, readFile, rm } = require('node:fs/promises')
+const { mkdtemp, readFile, rm, writeFile } = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
 const Module = require('node:module')
@@ -22,8 +22,9 @@ class Window extends EventEmitter {
 }
 Window.instances = []
 const children = []
-function spawnFake() {
+function spawnFake(file, args, options) {
   const child = new EventEmitter()
+  child.args = args; child.options = options
   child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.killed = false
   child.kill = () => { child.killed = true; child.stdout.end(); child.stderr.end(); child.emit('exit', 0) }
   children.push(child)
@@ -42,7 +43,15 @@ try {
   }
   compiled._compile(code, filename)
 } finally { Module._load = originalLoad }
-const { IslandWindow } = compiled.exports
+const { IslandWindow, isIslandSupported } = compiled.exports
+
+test('island supports Windows and X11 while leaving Wayland disabled', () => {
+  assert.equal(isIslandSupported('win32', undefined, undefined), true)
+  assert.equal(isIslandSupported('linux', 'x11', ':0'), true)
+  assert.equal(isIslandSupported('linux', 'wayland', ':0'), false)
+  assert.equal(isIslandSupported('linux', 'x11', undefined), false)
+  assert.equal(isIslandSupported('darwin', undefined, undefined), false)
+})
 
 test('island persists its setting, follows the selected display and recovers when it disconnects', async t => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'yangci-island-'))
@@ -80,8 +89,8 @@ test('managed island shares the parent tray for settings, notifications and star
   const directory = await mkdtemp(path.join(os.tmpdir(), 'yangci-island-tray-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   displays = [{ id: 1, label: '主屏', workArea: { x: 0, y: 0, width: 1920, height: 1080 } }]
-  const notifications = [], startup = []
-  const island = new IslandWindow(directory, true, { snapshot: async () => ({}), monitor: async () => {}, music: async () => {}, notify: (...args) => notifications.push(args), setAutostart: async enabled => startup.push(enabled) })
+  const notifications = [], startup = [], music = [], monitor = []
+  const island = new IslandWindow(directory, true, { snapshot: async () => ({ usage: { usageCodexAvailable: true }, music: { track: { title: '测试歌曲' } } }), monitor: async (...args) => { monitor.push(args) }, music: async request => { music.push(request) }, notify: (...args) => notifications.push(args), setAutostart: async enabled => startup.push(enabled) })
   island.supported = true; island.nativePath = () => process.execPath
   t.after(() => island.dispose())
   await island.initialize()
@@ -91,10 +100,80 @@ test('managed island shares the parent tray for settings, notifications and star
   island.openNativeSettings()
   child.stdout.write(JSON.stringify({ type: 'notification', title: '提醒', body: '该休息了', sound: false }) + '\n')
   child.stdout.write(JSON.stringify({ type: 'autostart', enabled: true }) + '\n')
+  child.stdout.write(JSON.stringify({ type: 'music', request: { action: 'pause' } }) + '\n')
+  child.stdout.write(JSON.stringify({ type: 'monitor', control: 'brightness', value: 63 }) + '\n')
+  child.stdout.write(JSON.stringify({ type: 'music', request: { action: 'invalid' } }) + '\n')
   await new Promise(resolve => setImmediate(resolve))
   assert.match(sent, /"command":"open-settings"/)
+  assert.match(sent, /"usageCodexAvailable":true/)
+  assert.match(sent, /测试歌曲/)
   assert.deepEqual(notifications, [['提醒', '该休息了', false]])
   assert.deepEqual(startup, [true])
+  assert.deepEqual(music, [{ action: 'pause' }])
+  assert.deepEqual(monitor, [['brightness', 63]])
   await island.update({ enabled: false, displayId: 'primary', style: 'daozai' })
   assert.equal(child.killed, true)
+})
+
+test('Linux native island follows the selected display and restores it after reconnection', { skip: process.platform !== 'linux' }, async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'yangci-island-displays-'))
+  await writeFile(path.join(directory, 'settings.txt'), 'minimal=1\n')
+  await writeFile(path.join(directory, 'ai-quota.json'), JSON.stringify({ enabled: true, compact: false, accounts: [{ source: 'private-login-path' }] }))
+  const oldSource = process.env.DAOZAI_DATA_DIR; process.env.DAOZAI_DATA_DIR = directory
+  t.after(async () => { if (oldSource === undefined) delete process.env.DAOZAI_DATA_DIR; else process.env.DAOZAI_DATA_DIR = oldSource; await rm(directory, { recursive: true, force: true }) })
+  const primary = { id: 1, label: '主屏', workArea: { x: 0, y: 20, width: 1920, height: 1060 } }
+  const secondary = { id: 2, label: '副屏', workArea: { x: -1280, y: 0, width: 1280, height: 1024 } }
+  displays = [primary, secondary]
+  const island = new IslandWindow(directory, true, { snapshot: async () => ({ music: { track: { title: '共享歌曲' } } }), monitor: async () => {}, music: async () => {}, notify: () => {}, setAutostart: async () => {} })
+  island.supported = true; island.nativePath = () => process.execPath
+  t.after(() => island.dispose())
+  await island.initialize()
+  await island.update({ enabled: true, displayId: '2', style: 'daozai' })
+  const onSecondary = children.at(-1)
+  assert.ok(onSecondary.args.includes('--yangci-position=-1280,0,1280'))
+  displays = [primary]; screens.emit('display-removed')
+  assert.equal(onSecondary.killed, true)
+  const fallback = children.at(-1); assert.ok(fallback.args.includes('--yangci-position=0,20,1920'))
+  assert.equal(island.snapshot().displayId, '2')
+  displays = [primary, secondary]; screens.emit('display-added')
+  assert.equal(fallback.killed, true)
+  assert.ok(children.at(-1).args.includes('--yangci-position=-1280,0,1280'))
+  await island.update({ enabled: true, displayId: 'all', style: 'daozai' })
+  const all = [...island.natives.values()]; assert.equal(all.length, 2)
+  assert.equal(all.filter(entry => entry.mirror).length, 1)
+  const mirror = all.find(entry => entry.mirror).child
+  assert.ok(mirror.args.includes('--yangci-mirror'))
+  assert.ok(mirror.options.env.DAOZAI_DATA_DIR.startsWith(directory))
+  assert.equal(await readFile(path.join(mirror.options.env.DAOZAI_DATA_DIR, 'settings.txt'), 'utf8'), 'minimal=1\n')
+  assert.deepEqual(JSON.parse(await readFile(path.join(mirror.options.env.DAOZAI_DATA_DIR, 'ai-quota.json'), 'utf8')), { enabled: true, compact: false })
+  let shared = ''; mirror.stdin.on('data', chunk => { shared += chunk.toString() })
+  await new Promise(resolve => setImmediate(resolve))
+  await island.publishNative()
+  assert.match(shared, /共享歌曲/)
+  const original = all.map(entry => entry.child)
+  screens.emit('display-metrics-changed')
+  assert.ok(original.every(child => !child.killed), 'unchanged geometry must not restart islands')
+  displays = [primary]; screens.emit('display-removed')
+  assert.equal(mirror.killed, true); assert.equal(island.natives.size, 1)
+  const third = { id: 3, label: '第三屏', workArea: { x: 1920, y: 0, width: 1600, height: 900 } }
+  displays = [primary, secondary, third]; screens.emit('display-added')
+  await island.update({ enabled: true, displayId: 'multiple', displayIds: ['2', '3'], style: 'daozai' })
+  assert.deepEqual([...island.natives.keys()].sort(), ['2', '3'])
+  assert.deepEqual(island.snapshot().displayIds, ['2', '3'])
+  displays = [primary, third]; screens.emit('display-removed')
+  assert.deepEqual([...island.natives.keys()], ['3'])
+  displays = [primary]; screens.emit('display-removed')
+  assert.deepEqual([...island.natives.keys()], ['1'])
+  displays = [primary, secondary, third]; screens.emit('display-added')
+  assert.deepEqual([...island.natives.keys()].sort(), ['2', '3'])
+  const restored = new IslandWindow(directory, true, { snapshot: async () => ({}), monitor: async () => {}, music: async () => {}, notify: () => {}, setAutostart: async () => {} })
+  restored.supported = true; restored.nativePath = () => process.execPath
+  await restored.initialize()
+  assert.equal(restored.snapshot().displayId, 'multiple')
+  assert.deepEqual(restored.snapshot().displayIds, ['2', '3'])
+  assert.deepEqual([...restored.natives.keys()].sort(), ['2', '3'])
+  restored.dispose()
+  assert.throws(() => island.update({ enabled: true, displayId: 'multiple', displayIds: [], style: 'daozai' }), /至少选择/)
+  assert.throws(() => island.update({ enabled: true, displayId: 'multiple', displayIds: ['2', '2'], style: 'daozai' }), /至少选择/)
+  assert.throws(() => island.update({ enabled: true, displayId: 'all', style: 'pill' }), /无效/)
 })

@@ -222,14 +222,36 @@ fn yangci_display_sliders_send_selected_values_and_disable_when_offline() {
 #[test]
 fn yangci_codex_quota_uses_shared_snapshot_without_saving_a_fake_login() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
-    h.app.set_yangci_quota(&serde_json::json!({"usageCodexAvailable":true,"usageCodexPlan":"plus","usagePrimaryMinutes":300,"usagePrimaryRemaining":690,"usagePrimaryResetsAt":2000000000,"usageCodexSampledAt":1900000000}));
+    h.app.set_yangci_quota(&serde_json::json!({"usageCodexAvailable":true,"usageCodexPlan":"plus","usagePrimaryMinutes":300,"usagePrimaryRemaining":690,"usagePrimaryResetsAt":2000000000,"usageSecondaryMinutes":10080,"usageSecondaryRemaining":600,"usageSecondaryResetsAt":2000000001,"usageCodexSampledAt":1900000000}));
     let row=h.app.quota.rows.get("__yangci_codex__").unwrap().as_ref().unwrap();
     assert_eq!(row.windows[0].remaining,69.0);
+    assert_eq!(row.windows[0].label,"5 小时");
+    assert_eq!(row.windows[1].label,"本周");
+    assert_eq!(row.windows[1].remaining,60.0);
     h.app.quota.config.save();
     let saved=std::fs::read_to_string(crate::model::config_dir().join("ai-quota.json")).unwrap();
     assert!(!saved.contains("__yangci_codex__"));
     h.app.set_yangci_quota(&serde_json::json!({"usageCodexAvailable":false}));
     assert!(!h.app.quota.rows.contains_key("__yangci_codex__"));
+}
+
+#[test]
+fn managed_yangci_removes_discovered_codex_but_preserves_other_accounts() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    use crate::quota::{Account,Provider};
+    let account=|id:&str,provider,alias:&str,pinned|Account{id:id.into(),provider,alias:alias.into(),source:"/tmp/login.json".into(),slot:None,enabled:true,pinned};
+    h.app.quota.config.accounts=vec![account("auto",Provider::Codex,"Codex · 本机 1",true),account("manual",Provider::Codex,"工作账号",false),account("claude",Provider::Claude,"Claude",false)];
+    h.app.quota.config.selected="auto".into();
+    h.app.quota.config.save();
+    h.app.quota_initialize(true);
+    assert!(h.app.quota.yangci_managed);
+    assert_eq!(h.app.quota.config.accounts.iter().map(|a|a.id.as_str()).collect::<Vec<_>>(),vec!["manual","claude"]);
+    assert!(h.app.quota.config.selected.is_empty());
+    h.app.set_yangci_quota(&serde_json::json!({"usageCodexAvailable":true,"usagePrimaryMinutes":300,"usagePrimaryRemaining":500}));
+    assert_eq!(h.app.quota.config.selected,"__yangci_codex__");
+    assert!(h.app.quota.config.accounts.iter().find(|a|a.id=="__yangci_codex__").unwrap().pinned);
+    let saved=std::fs::read_to_string(crate::model::config_dir().join("ai-quota.json")).unwrap();
+    assert!(!saved.contains("本机 1"));assert!(saved.contains("工作账号"));assert!(saved.contains("Claude"));
 }
 
 fn rand_id() -> u64 {

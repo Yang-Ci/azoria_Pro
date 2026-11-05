@@ -181,7 +181,9 @@ fn build_fonts()->FontDefinitions {
         if let Some(k) = add(&mut fonts, &latin[i], format!("latin{i}")) {
             list.push(k);
         }
-        if let Some(k) = add(&mut fonts, &cjk[i], format!("cjk{i}")) {
+        // Some Linux distributions ship regular and bold CJK fonts without a medium face.
+        let cjk_face = if cjk[i].is_some() { &cjk[i] } else { &cjk[0] };
+        if let Some(k) = add(&mut fonts, cjk_face, format!("cjk{i}")) {
             list.push(k);
         }
         list.extend(builtin.iter().cloned());
@@ -201,6 +203,19 @@ pub fn app_icon()->std::sync::Arc<eframe::egui::IconData>{
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cjk_regular_font_is_a_fallback_for_every_weight() {
+        use super::*;
+        if !Path::new("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc").exists() { return; }
+        let ctx = eframe::egui::Context::default();
+        load_fonts(&ctx);
+        let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+            for weight in [W::Regular, W::Semibold, W::Bold] {
+                assert!(ctx.fonts(|fonts| fonts.has_glyphs(&font(12.0, weight), "测试歌词")));
+            }
+        });
+    }
     #[cfg(windows)]
     #[test]
     fn mapped_fonts_prevent_in_place_writes_and_keep_shared_reads(){

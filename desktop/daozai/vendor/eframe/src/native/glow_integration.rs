@@ -1129,6 +1129,10 @@ impl GlutinWindowContext {
             }
             let window =
                 glutin_winit::finalize_window(event_loop, window_attributes, &self.gl_config)?;
+            #[cfg(target_os = "linux")]
+            if viewport.builder.taskbar == Some(false) {
+                epi_integration::skip_x11_taskbar(&window);
+            }
             egui_winit::apply_viewport_builder_to_window(
                 &self.egui_ctx,
                 &window,

@@ -13,6 +13,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
 fn env_dir(key: &str) -> PathBuf {
     PathBuf::from(std::env::var(key).unwrap_or_else(|_| ".".into()))
 }
@@ -21,7 +22,15 @@ pub fn config_dir() -> PathBuf {
     if let Ok(root) = std::env::var("DAOZAI_DATA_DIR") {
         return PathBuf::from(root);
     }
-    env_dir("APPDATA").join("Daozai")
+    #[cfg(windows)]
+    { env_dir("APPDATA").join("Daozai") }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("Daozai")
+    }
 }
 
 fn read_kv(path: &Path) -> Vec<(String, String)> {
