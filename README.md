@@ -217,6 +217,30 @@ npm run typecheck
 npm run build
 ```
 
+### macOS packages
+
+On a Mac with Node.js 22, Rust, and Xcode Command Line Tools installed, run:
+
+```bash
+npm ci
+npm run package:macos
+```
+
+The DMG and ZIP in `release/` use the build Mac's architecture: `arm64` for
+Apple Silicon and `x64` for Intel. The GitHub Actions Release workflow builds
+both separately; manually dispatched builds can be downloaded from Actions.
+These builds are not Developer ID signed or notarized, so macOS may require
+you to allow the app in Privacy & Security before opening it.
+
+Touch USB, Bluetooth and LAN connections, and external-display DDC/CI or the
+supported LG USB HID path need testing on the target Mac and hardware. DDC/CI
+availability depends on the Mac, monitor, cable and adapter; a successful build
+does not establish video-link DDC/CI support on Apple Silicon. Grant Bluetooth
+and music automation permissions when prompted. MacBook internal-panel control,
+the Windows information island and Linux power-data collection are not available
+on macOS. System-wide music detection optionally uses `nowplaying-cli`; without
+it, the app only attempts Apple Music and Spotify.
+
 ### Build AZORIA Touch firmware
 
 ```bash

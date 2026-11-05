@@ -23,8 +23,14 @@ jobs:
             os: ubuntu-22.04
             script: package:linux
             artifact: release/*.deb
-          - platform: macos
-            os: macos-latest
+          - platform: macos-arm64
+            os: macos-15
+            script: package:macos
+            artifact: |
+              release/*.dmg
+              release/*.zip
+          - platform: macos-x64
+            os: macos-15-intel
             script: package:macos
             artifact: |
               release/*.dmg
@@ -46,6 +52,22 @@ jobs:
 
       - run: npm ci
       - run: npm run ${{ matrix.script }}
+
+      - name: Verify macOS executable architectures
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          expected="${{ matrix.platform }}"
+          case "$expected" in
+            macos-arm64) expected=arm64 ;;
+            macos-x64) expected=x86_64 ;;
+            *) exit 1 ;;
+          esac
+          app="$(find release -maxdepth 3 -name 'YangCi.app' -type d -print -quit)"
+          test -n "$app"
+          for binary in "$app/Contents/MacOS/YangCi" "$app/Contents/Resources/sidecar/azoria-ddc-sidecar"; do
+            lipo -verify_arch "$expected" "$binary"
+          done
 
       - name: Generate checksums
         shell: bash

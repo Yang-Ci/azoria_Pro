@@ -186,6 +186,27 @@ npm run sidecar:build
 npm run dev
 ```
 
+### macOS 版本
+
+在 Mac 上安装 Node.js 22、Rust 和 Xcode Command Line Tools 后，在仓库根目录运行：
+
+```bash
+npm ci
+npm run package:macos
+```
+
+`release/` 中生成 DMG 和 ZIP，架构与构建用的 Mac 一致：Apple Silicon 为 `arm64`，
+Intel 为 `x64`。GitHub Actions 的 Release 工作流也分别构建这两种架构；手动运行
+工作流后可在 Actions 页面下载对应产物。此配置没有 Apple Developer 签名和公证，
+macOS 可能阻止直接打开，需要在系统设置的“隐私与安全性”中允许打开。
+
+Touch 的 USB、蓝牙和局域网连接以及外接屏的 DDC/CI 或支持的 LG USB HID 路径需要
+在目标 Mac 和实际设备上验证；显示器、线缆、转接器和 Mac 型号都会影响 DDC/CI。
+尤其 Apple Silicon 的视频链路 DDC/CI 不能仅凭打包成功判定可用。
+首次使用蓝牙或控制音乐应用时，请按系统提示授予相应权限。MacBook 内屏控制、
+Windows 顶部信息岛及 Linux 电源数据采集目前不支持 macOS；系统级音乐识别可选用
+`nowplaying-cli`，没有它时仅尝试 Apple Music 和 Spotify。
+
 桌面端首次启动时会在应用数据目录生成本机密钥。密钥、Wi‑Fi 密码和设备配置
 不会写入源码。主窗口可以控制显示器，并检测通过 USB 连接的小屏幕。
 
