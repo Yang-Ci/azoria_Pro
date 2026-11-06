@@ -299,3 +299,23 @@ test('duplicate and unmodified key shortcuts are rejected before registration', 
   assert.throws(() => validateDesktopPreferences({ ...defaultDesktopPreferences, brightnessUp: 'Delete' }), /修饰键/)
   assert.throws(() => validateDesktopPreferences({ ...defaultDesktopPreferences, brightnessUp: defaultDesktopPreferences.brightnessDown }), /重复/)
 })
+
+test('Touch follow mode migrates old preferences and persists per computer', async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'azoria-follow-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const adapter = { startupAvailable: false, getStartup: () => false, setStartup: () => {}, register: () => true, unregister: () => {} }
+  const { touchFollowMode, ...legacy } = defaultDesktopPreferences
+  await writeFile(path.join(directory, 'desktop-preferences.json'), JSON.stringify(legacy))
+  const manager = new DesktopPreferencesManager(directory, adapter)
+  await manager.initialize()
+  assert.equal(manager.snapshot().touchFollowMode, false)
+  await manager.update({ ...manager.snapshot(), touchFollowMode: true })
+  const restored = new DesktopPreferencesManager(directory, adapter)
+  await restored.initialize()
+  assert.equal(restored.snapshot().touchFollowMode, true)
+  await restored.update({ ...restored.snapshot(), touchFollowMode: false })
+  const again = new DesktopPreferencesManager(directory, adapter)
+  await again.initialize()
+  assert.equal(again.snapshot().touchFollowMode, false)
+  assert.throws(() => validateDesktopPreferences({ ...legacy, touchFollowMode: 'true' }), /跟随模式/)
+})

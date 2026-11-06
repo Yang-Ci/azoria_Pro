@@ -11,6 +11,7 @@ const api: DesktopApi = {
   desktop: {
     preferences: () => ipcRenderer.invoke("desktop:preferences"),
     updatePreferences: (input) => ipcRenderer.invoke("desktop:update-preferences", input),
+    setTouchFollowMode: (enabled) => ipcRenderer.invoke("desktop:set-touch-follow-mode", enabled),
     onMessage: (callback) => {
       const listener = (_event: Electron.IpcRendererEvent, message: string) => { if (typeof message === "string") callback(message) }
       ipcRenderer.on("desktop:message", listener)

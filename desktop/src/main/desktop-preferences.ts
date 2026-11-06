@@ -4,7 +4,7 @@ import type { DesktopPreferences, DesktopPreferencesSnapshot } from "../shared/c
 import { writeAtomicJson } from "./atomic-json"
 
 export const defaultDesktopPreferences: DesktopPreferences = {
-  closeToTray: true, startAtLogin: false, hotkeysEnabled: false,
+  touchFollowMode: false, closeToTray: true, startAtLogin: false, hotkeysEnabled: false,
   brightnessUp: "CommandOrControl+Alt+Up", brightnessDown: "CommandOrControl+Alt+Down", nextScene: "CommandOrControl+Alt+S",
 }
 type Action = "brightnessUp" | "brightnessDown" | "nextScene"
@@ -18,11 +18,12 @@ export interface DesktopIntegrationAdapter {
 }
 export function validateDesktopPreferences(value: DesktopPreferences): DesktopPreferences {
   if (!value || [value.closeToTray, value.startAtLogin, value.hotkeysEnabled].some(item => typeof item !== "boolean")) throw new Error("桌面设置无效")
+  if (value.touchFollowMode !== undefined && typeof value.touchFollowMode !== "boolean") throw new Error("Touch 跟随模式无效")
   const accelerators = actions.map(action => value[action])
   if (accelerators.some(item => typeof item !== "string" || item.length > 80 || !/^(?=.*(?:Control|Ctrl|Command|Cmd|Alt|Option|Super|Meta))[^\r\n]+\+[^+]+$/i.test(item))) throw new Error("快捷键需包含 Ctrl、Command 或 Alt 等修饰键")
   const normalized = accelerators.map(item => item.trim().toLowerCase().replace(/commandorcontrol|cmdorctrl/g, "primary").replace(/ctrl/g, "control").replace(/cmd/g, "command"))
   if (new Set(normalized).size !== actions.length) throw new Error("三个快捷键不能重复")
-  return { closeToTray: value.closeToTray, startAtLogin: value.startAtLogin, hotkeysEnabled: value.hotkeysEnabled,
+  return { touchFollowMode: value.touchFollowMode ?? false, closeToTray: value.closeToTray, startAtLogin: value.startAtLogin, hotkeysEnabled: value.hotkeysEnabled,
     brightnessUp: value.brightnessUp.trim(), brightnessDown: value.brightnessDown.trim(), nextScene: value.nextScene.trim() }
 }
 

@@ -117,6 +117,7 @@ export interface ComputerSnapshot extends ComputerSample {
   history: ComputerSample[]
 }
 export interface DesktopPreferences {
+  touchFollowMode: boolean
   closeToTray: boolean
   startAtLogin: boolean
   hotkeysEnabled: boolean
@@ -466,6 +467,7 @@ export interface DesktopApi {
   desktop: {
     preferences(): Promise<DesktopPreferencesSnapshot>
     updatePreferences(input: DesktopPreferences): Promise<DesktopPreferencesSnapshot>
+    setTouchFollowMode(enabled: boolean): Promise<void>
     onMessage(callback: (message: string) => void): () => void
   }
   brightnessLink: {

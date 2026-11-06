@@ -211,7 +211,6 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   touchUsage.start()
   app.once("before-quit", () => touchUsage.stop())
   const lan = new LanController(config.desktopId, monitor, wallpaper, music, touchSleep, touchUsage, computer, brightnessLink, touchRotation, displayPower, powerData)
-  await measureStartup("lan", () => lan.start())
   const devices = new TouchManager(config.token)
   const diagnostics = new DiagnosticsController(logger, monitor, lan)
 
@@ -241,6 +240,9 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   })
   preferences = preferencesManager
   await measureStartup("preferences", () => preferencesManager.initialize())
+  const touchFollowMode = preferencesManager.snapshot().touchFollowMode
+  if (!touchFollowMode) await measureStartup("lan", () => lan.start())
+  const requireTouchControl = () => { if (touchFollowMode) throw new Error("跟随模式下无法连接或配置 Touch，请先关闭跟随模式") }
   const islandSnapshot = async () => {
     const [musicSnapshot, usage] = await Promise.all([music.snapshot(), touchUsage.snapshot()])
     const connection = monitor.connectionSnapshot()
@@ -305,7 +307,14 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   ipcMain.handle("island:open-main", event => { assertIsland(event); showWindow() })
   ipcMain.handle("computer:snapshot", () => computer.snapshot())
   ipcMain.handle("desktop:preferences", () => preferences!.snapshot())
-  ipcMain.handle("desktop:update-preferences", (_event, input) => preferences!.update(input))
+  ipcMain.handle("desktop:update-preferences", (_event, input) => preferences!.update({ ...input, touchFollowMode }))
+  ipcMain.handle("desktop:set-touch-follow-mode", async (_event, enabled) => {
+    if (typeof enabled !== "boolean") throw new Error("Touch 跟随模式无效")
+    if (enabled === touchFollowMode) return
+    await preferencesManager.update({ ...preferencesManager.snapshot(), touchFollowMode: enabled })
+    app.relaunch()
+    setTimeout(() => app.quit(), 100)
+  })
   ipcMain.handle("brightness-link:snapshot", () => brightnessLink.snapshot())
   ipcMain.handle("brightness-link:set-enabled", (_event, enabled) => changedLink(() => brightnessLink.setEnabled(enabled)))
   ipcMain.handle("brightness-link:save", (_event, input) => changedLink(() => brightnessLink.save(input)))
@@ -326,14 +335,14 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
   ipcMain.handle("monitor:status", () => monitor.status())
   ipcMain.handle("monitor:status-snapshot", () => monitor.statusSnapshot())
   ipcMain.handle("monitor:control-state", () => monitor.controlState())
-  ipcMain.handle("monitor:relay-status", () => lan.relayStatus())
+  ipcMain.handle("monitor:relay-status", () => { requireTouchControl(); return lan.relayStatus() })
   ipcMain.handle("monitor:control", (_event, request: ControlRequest) => {
     if (displayPower.snapshot().off && monitor.connectionSnapshot().transport !== "internal-panel" &&
         !(request.control === "input" && request.value === "internal")) throw new Error("外接屏已熄灭，请先在电源面板恢复外接屏")
     return brightnessLink.control(request, "desktop-ui")
   })
   ipcMain.handle("monitor:relay-control", (_event, request: ControlRequest, sourceNonce: string, sourceCommandId: string) =>
-    lan.relayControl(request, sourceNonce, sourceCommandId))
+    (requireTouchControl(), lan.relayControl(request, sourceNonce, sourceCommandId)))
   ipcMain.handle("monitor:connection", () => monitor.connection())
   ipcMain.handle("monitor:list-displays", () => monitor.listDisplays())
   ipcMain.handle("monitor:select-display", async (_event, displayId: string) => {
@@ -355,14 +364,14 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
     if (result.canceled || !result.filePaths[0]) return null
     return monitor.importProfile(result.filePaths[0])
   })
-  ipcMain.handle("device:list-usb", () => devices.listUsb())
-  ipcMain.handle("device:discover-lan", () => lan.discover())
-  ipcMain.handle("device:list-lan", () => lan.devices())
-  ipcMain.handle("device:verify-usb", (_event, devicePath: string) => devices.verifyUsb(devicePath))
-  ipcMain.handle("device:scan-wifi", (_event, devicePath: string) => devices.scanWifi(devicePath))
+  ipcMain.handle("device:list-usb", () => touchFollowMode ? [] : devices.listUsb())
+  ipcMain.handle("device:discover-lan", () => touchFollowMode ? [] : lan.discover())
+  ipcMain.handle("device:list-lan", () => touchFollowMode ? [] : lan.devices())
+  ipcMain.handle("device:verify-usb", (_event, devicePath: string) => { requireTouchControl(); return devices.verifyUsb(devicePath) })
+  ipcMain.handle("device:scan-wifi", (_event, devicePath: string) => { requireTouchControl(); return devices.scanWifi(devicePath) })
   ipcMain.handle("device:configure-wifi", (_event, input: { path: string; ssid: string; password: string }) =>
-    devices.configureWifi(input.path, input.ssid, input.password))
-  ipcMain.handle("device:prepare-ble", (_event, devicePath: string) => devices.prepareBle(devicePath))
+    (requireTouchControl(), devices.configureWifi(input.path, input.ssid, input.password)))
+  ipcMain.handle("device:prepare-ble", (_event, devicePath: string) => { requireTouchControl(); return devices.prepareBle(devicePath) })
   ipcMain.handle("device:select-firmware", async (event) => {
     const options: OpenDialogOptions = {
       title: "选择 AZORIA Touch 固件",
@@ -375,7 +384,7 @@ if (hasInstanceLock) void app.whenReady().then(async () => {
     return devices.inspectFirmware(result.filePaths[0])
   })
   ipcMain.handle("device:flash", (_event, input: { path: string; firmwarePath: string; expectedSha256: string }) =>
-    devices.flash(input.path, input.firmwarePath, input.expectedSha256))
+    (requireTouchControl(), devices.flash(input.path, input.firmwarePath, input.expectedSha256)))
   ipcMain.handle("wallpaper:info", () => wallpaper.info())
   ipcMain.handle("wallpaper:settings", () => wallpaper.settings())
   ipcMain.handle("wallpaper:library", () => wallpaper.library())

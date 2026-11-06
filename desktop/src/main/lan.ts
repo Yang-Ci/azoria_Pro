@@ -764,6 +764,7 @@ export class LanController {
   }
 
   stop(): void {
+    for (const { socket, network } of this.coordination.values()) this.releaseMaster(socket, network)
     for (const server of this.servers) server.close()
     this.servers.length = 0
     for (const { timer } of this.coordination.values()) clearInterval(timer)
